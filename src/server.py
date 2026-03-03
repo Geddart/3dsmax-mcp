@@ -1,4 +1,7 @@
+import importlib
 import logging
+import os
+import tomllib
 from functools import lru_cache
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
@@ -9,8 +12,38 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 mcp = FastMCP("3dsmax-mcp")
 client = MaxClient()
 
-# Import tool modules to trigger @mcp.tool() registration
-from .tools import execute, scene, objects, materials, render, viewport, identify, transform, hierarchy, modifiers, selection, clone, scene_manage, visibility, inspect, build, grid, floor_plan, scene_query, effects, material_ops, state_sets, data_channel, wire_params, controllers, scattering, redshift  # noqa: E402, F401
+# --- Core tools (always loaded) ---
+from .tools import (  # noqa: E402, F401
+    execute, scene, objects, materials, render, viewport, identify,
+    transform, hierarchy, modifiers, selection, clone, scene_manage,
+    visibility, inspect, build, grid, floor_plan, scene_query, effects,
+    material_ops, state_sets, data_channel, wire_params, controllers,
+    scattering,
+)
+
+# --- Plugin tools (loaded based on plugins.toml or env var) ---
+_PLUGIN_MODULES = ["redshift", "tyflow", "rpmanager", "railclone", "forest_pack"]
+
+_plugins_toml = Path(__file__).resolve().parent / "plugins.toml"
+_plugin_enabled: dict[str, bool] = {}
+if _plugins_toml.exists():
+    with open(_plugins_toml, "rb") as _f:
+        _plugin_enabled = tomllib.load(_f).get("plugins", {})
+
+# Env var override: 3DSMAX_MCP_PLUGINS=redshift,forest_pack
+_env_override = os.environ.get("3DSMAX_MCP_PLUGINS")
+if _env_override is not None:
+    _allowed = {s.strip() for s in _env_override.split(",") if s.strip()}
+    _plugin_enabled = {mod: mod in _allowed for mod in _PLUGIN_MODULES}
+
+for _mod in _PLUGIN_MODULES:
+    if _plugin_enabled.get(_mod, True):  # default: enabled if not in config
+        try:
+            importlib.import_module(f".tools.{_mod}", package=__package__)
+        except ImportError:
+            pass  # Plugin file doesn't exist yet
+        except Exception as _exc:
+            logging.warning("Failed to load plugin %s: %s", _mod, _exc)
 
 
 SKILL_RESOURCE_URI = "resource://3dsmax-mcp/skill"

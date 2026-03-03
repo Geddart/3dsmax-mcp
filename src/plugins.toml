@@ -1,0 +1,13 @@
+# Enable/disable plugin tool modules.
+# Disabled plugins won't appear in Claude's tool list.
+# Restart Claude Code after changes.
+#
+# Env var override: set 3DSMAX_MCP_PLUGINS=redshift,forest_pack
+# in ~/.claude.json env dict to override this file.
+
+[plugins]
+redshift = true
+tyflow = true
+rpmanager = true
+railclone = true
+forest_pack = true
