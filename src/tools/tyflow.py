@@ -174,7 +174,7 @@ def create_tyflow(
             op_names.append(op_type)
 
         # Build per-event JSON fragment
-        ops_json = ", ".join(f'\\\\\\"{o}\\\\\\"' for o in op_names)
+        ops_json = ", ".join(f'\\"{o}\\"' for o in op_names)
         event_json_parts.append(
             f'"{{\\\"name\\\":\\\"{evt_name}\\\",\\\"operatorCount\\\":{len(op_names)},'
             f'\\\"operators\\\":[{ops_json}]}}"'
@@ -346,7 +346,7 @@ def modify_tyflow_operator(
         lines.append(f'        try (opRef.{prop_name} = {_ms_value(prop_val)}) catch ()')
         prop_names.append(prop_name)
 
-    props_json = ", ".join(f'\\\\\\"{p}\\\\\\"' for p in prop_names)
+    props_json = ", ".join(f'\\"{p}\\"' for p in prop_names)
     lines.append(f'        "{{\\\"success\\\":true,\\\"operator\\\":\\\"{safe_op}\\\",'
                  f'\\\"propertiesSet\\\":[{props_json}]}}"')
     lines.append('    )')
@@ -400,7 +400,7 @@ def add_tyflow_event(
             lines.append(f'    {var}.{prop_name} = {_ms_value(prop_val)}')
         op_names.append(op_type)
 
-    ops_json = ", ".join(f'\\\\\\"{o}\\\\\\"' for o in op_names)
+    ops_json = ", ".join(f'\\"{o}\\"' for o in op_names)
     lines.append(f'    "{{\\\"success\\\":true,\\\"event\\\":\\\"{safe_evt}\\\",'
                  f'\\\"operatorCount\\\":{len(op_names)},\\\"operators\\\":[{ops_json}]}}"')
     lines.append(')')
@@ -575,8 +575,7 @@ def set_tyflow_shape(
         if shapeOp == undefined then (
             "{{\\\"error\\\":\\\"Shape operator not found\\\"}}"
         ) else (
-            shapeOp.shapeMode = 1
-            shapeOp.shape_type_tab = #(1)
+            shapeOp.shape_type_tab = #(1)  -- sets shapeMode to 3D automatically
             shapeOp.type_3d_ID_tab = #({shape_id})
             shapeOp.frequency_tab = #({frequency:.4f})
             shapeOp.scaleVal_tab = #({scale:.4f})
@@ -657,7 +656,7 @@ def set_tyflow_physx(
     if not prop_lines:
         prop_lines.append("        -- no properties to set")
 
-    props_json = ", ".join(f'\\\\\\"{p}\\\\\\"' for p in set_names)
+    props_json = ", ".join(f'\\"{p}\\"' for p in set_names)
 
     maxscript = f"""(
     local tfObj = getNodeByName "{safe_tf}"
@@ -1129,8 +1128,7 @@ def create_tyflow_preset(
     lines.append('')
     lines.append(f'local shape_Op = ev1.addOperator "Shape" {op_idx}')
     op_idx += 1
-    lines.append(f'shape_Op.shapeMode = 1')
-    lines.append(f'shape_Op.shape_type_tab = #(1)')
+    lines.append(f'shape_Op.shape_type_tab = #(1)')  # sets shapeMode to 3D automatically
     lines.append(f'shape_Op.type_3d_ID_tab = #({shape_id})')
     lines.append(f'shape_Op.frequency_tab = #(100.0)')
     lines.append(f'shape_Op.scaleVal_tab = #({shape_scale:.1f})')

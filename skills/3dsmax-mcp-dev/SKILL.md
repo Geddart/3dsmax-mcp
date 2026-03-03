@@ -228,6 +228,29 @@ MAXScript has no `stringJoin`. Use manual concatenation loops.
 ### SubAnim keys
 - `numKeys` isn’t available on SubAnim; access controller keys via the actual controller object.
 
+### RailClone_Pro constructor
+- `RailClone_Pro name:"X"` — `name:` collides with an internal array property. Use `RailClone_Pro(); rc.name = "X"` instead.
+
+### tyFlow Shape operator
+- Single-item properties like `shapeMode` are READ-ONLY from MAXScript.
+- Only `_tab` arrays (`shape_type_tab`, `type_3d_ID_tab`, etc.) are writable.
+- Setting `shape_type_tab = #(1)` automatically flips `shapeMode` to 3D mode.
+- Shape IDs: Triangle=0, Cone=1, Quad=2, Cylinder=3, Sphere=4, Pyramid=5, Cube=6, Octahedron=7.
+- Operator variables: use `_Op` suffix to avoid MAXScript name conflicts.
+
+### Forest Pack + Redshift rendering
+- Materials on the Forest Pack object itself are VIEWPORT-ONLY — Redshift ignores them at render time.
+- Assign RS materials to the **source geometry** nodes, or populate `fp.matlist` (per-source override array).
+- `fp.rmesh = 0` (Automatic mode) is the correct setting for Redshift — enables native instancing.
+- Do NOT wrap FP source geometry in RedshiftProxy; Forest Pack handles the instancing bridge internally.
+- Correct FP scale properties: `scalexmin`, `scalexmax` (NOT `scalemin`/`scalemax`).
+- `divers` NOT `diversity`, `clusize` NOT `clustsize`, `animation` NOT `animmode`.
+- `at` is a MAXScript reserved word — never use as a variable name (use `atype` etc.).
+
+### RPManager UI dependency
+- `RPMdata.AddPass()` requires the RPManager UI to have been opened at least once in the current session.
+- Headless-safe functions: `version()`, `getpasscount()`, `GetPassOutputPath`, `GetPassBeforeScript`, `SetPassBeforeScript`, `GetPassAfterScript`, `SetPassAfterScript`, `GetPassTimeType`, `SetPassTimeType`, `GetPassRange`, `SetPassRange`, `GetPassVisSetName`, `GetPassBGColor`, `SetPassColor`.
+
 ---
 
 ## 8) Viewport Capture Rules

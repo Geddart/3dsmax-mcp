@@ -117,7 +117,8 @@ def create_railclone(
     lines: list[str] = [
         _rc_plugin_check(),
         '(',
-        f'local rc = RailClone_Pro name:"{safe}"',
+        'local rc = RailClone_Pro()',
+        f'rc.name = "{safe}"',
         f'rc.iconsize = {icon_size:.4f}',
         f'rc.seed = {seed}',
     ]
@@ -187,7 +188,7 @@ def create_railclone_from_style(
     lines: list[str] = [
         _rc_plugin_check(),
         '(',
-        f'local rc = RailClone_Pro name:"{safe}"',
+        f'local rc = RailClone_Pro(); rc.name = "{safe}"',
         f'local loadResult = rc.railclone.loadLibraryItemByPath "{safe_path}"',
         'if loadResult != 1 then (',
         '    delete rc',
@@ -709,7 +710,7 @@ def create_railclone_fence(
     lines: list[str] = [
         _rc_plugin_check(),
         '(',
-        f'local rc = RailClone_Pro name:"{safe}"',
+        f'local rc = RailClone_Pro(); rc.name = "{safe}"',
         f'local loadResult = rc.railclone.loadLibraryItemByPath "{style_path}"',
         'if loadResult != 1 then (',
         '    delete rc',
@@ -794,7 +795,7 @@ def create_railclone_railing(
     lines: list[str] = [
         _rc_plugin_check(),
         '(',
-        f'local rc = RailClone_Pro name:"{safe}"',
+        f'local rc = RailClone_Pro(); rc.name = "{safe}"',
         f'local loadResult = rc.railclone.loadLibraryItemByPath "{style_path}"',
         'if loadResult != 1 then (',
         '    delete rc',
@@ -876,7 +877,7 @@ def create_railclone_wall(
     lines: list[str] = [
         _rc_plugin_check(),
         '(',
-        f'local rc = RailClone_Pro name:"{safe}"',
+        f'local rc = RailClone_Pro(); rc.name = "{safe}"',
         f'local loadResult = rc.railclone.loadLibraryItemByPath "{style_path}"',
         'if loadResult != 1 then (',
         '    delete rc',
@@ -958,7 +959,7 @@ def create_railclone_array(
     lines: list[str] = [
         _rc_plugin_check(),
         '(',
-        f'local rc = RailClone_Pro name:"{safe}"',
+        f'local rc = RailClone_Pro(); rc.name = "{safe}"',
     ]
 
     # Assign spline

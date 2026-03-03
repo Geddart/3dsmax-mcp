@@ -274,8 +274,8 @@ def set_rpmanager_pass_property(
             f'            RPMdata.SetPassOutputPath idx "{safe_path}"\n'
             f'            RPMdata.fRefresh()\n'
             f'            local json = "{{\\\"set\\\":\\\"output\\\", \\\"index\\\":" + idx as string\n'
-            f'            json += ", \\\"old\\\":\\\\" + safeOld + "\\\\"\n'
-            f'            json += ", \\\"new\\\":\\\\\"{safe_path}\\\\\"}}"\n'
+            f'            json += ", \\\"old\\\":\\\"" + safeOld + "\\\""\n'
+            f'            json += ", \\\"new\\\":\\\"{safe_path}\\\"}}"\n'
             f'            json'
         )
     elif prop == "time_type":
@@ -330,8 +330,11 @@ def create_rpmanager_pass(name: str | None = None) -> str:
     """Create a new RPManager render pass.
 
     NOTE: This opens the RPManager UI temporarily because AddPass()
-    requires the floater dialog to be open for the pass to register
-    in RPManager's internal data structures.
+    requires the floater dialog to be open.  RPManager must have been
+    opened manually by the user at least once in the current Max session
+    to initialize its internal data structures; otherwise AddPass will
+    fail.  If it fails, ask the user to open RPManager once from the
+    3ds Max menu (Rendering > RPManager) and try again.
 
     Args:
         name: Optional name for the new pass.
@@ -460,7 +463,7 @@ def set_rpmanager_visibility(pass_index: int, vis_set_name: str) -> str:
         f'            )\n'
         f'            RPMdata.fRefresh()\n'
         f'            local newVS = try (RPMdata.GetPassVisSetName idx) catch("")\n'
-        f'            "{{\\\"index\\\":" + idx as string + ", \\\"old\\\":\\\\"" + (oldVS as string) + "\\\\", \\\"new\\\":\\\\"" + (newVS as string) + "\\\\"}}"'
+        f'            "{{\\\"index\\\":" + idx as string + ", \\\"old\\\":\\\"" + (oldVS as string) + "\\\", \\\"new\\\":\\\"" + (newVS as string) + "\\\"}}"'
     )
     ms = _index_guard(inner).replace("{IDX}", str(pass_index))
     response = client.send_command(ms)
@@ -828,7 +831,7 @@ def batch_update_rpmanager_passes(
         f'                ) catch (\n'
         f'                    if not first do json += ","\n'
         f'                    first = false\n'
-        f'                    json += "{{\\\"index\\\":" + passIdx as string + ", \\\"error\\\":\\\\"" + (getCurrentException()) + "\\\\\\"}}\"\n'
+        f'                    json += "{{\\\"index\\\":" + passIdx as string + ", \\\"error\\\":\\\"" + (getCurrentException()) + "\\\"}}\"\n'
         f'                )\n'
         f'            ) else (\n'
         f'                if not first do json += ","\n'

@@ -171,11 +171,11 @@ def get_forest_pack_info(name: str) -> str:
         for i = 1 to arNames.count do (
             if i > 1 do json += ","
             local an = arNames[i]
-            local at = if i <= arTypes.count then (arTypes[i] as string) else "0"
+            local atype = if i <= arTypes.count then (arTypes[i] as string) else "0"
             local ai = if i <= arIncExc.count then (arIncExc[i] as string) else "0"
             local aa = if i <= arActive.count then (arActive[i] as string) else "true"
             local anode = if i <= arNodes.count and arNodes[i] != undefined then arNodes[i].name else "null"
-            json += "{{\\"name\\":\\"" + an + "\\",\\"type\\":" + at + ",\\"includeExclude\\":" + ai + ",\\"active\\":" + aa + ",\\"node\\":\\"" + anode + "\\"}}"
+            json += "{{\\"name\\":\\"" + an + "\\",\\"type\\":" + atype + ",\\"includeExclude\\":" + ai + ",\\"active\\":" + aa + ",\\"node\\":\\"" + anode + "\\"}}"
         )
         json += "]"
 
@@ -315,7 +315,7 @@ def modify_forest_pack(
         lines.append(f'    local old_{i} = try ((getProperty fpb #{safe_prop}) as string) catch("N/A")')
         lines.append(f'    try (setProperty fpb #{safe_prop} {ms_val}) catch()')
         lines.append(f'    local new_{i} = try ((getProperty fpb #{safe_prop}) as string) catch("N/A")')
-        lines.append(f'    json += "{pfx}{{\\\"prop\\\":\\\"{safe_prop}\\\",\\\"old\\\":\\\\"" + old_{i} + "\\\\",\\\"new\\\":\\\\"" + new_{i} + "\\\\"}}"')
+        lines.append(f'    json += "{pfx}{{\\"prop\\":\\"{safe_prop}\\",\\"old\\":\\"" + old_{i} + "\\",\\"new\\":\\"" + new_{i} + "\\"}}"')
 
     lines.append('    json += "]}"')
     lines.append('    json')
@@ -1393,7 +1393,8 @@ def load_forest_pack_preset(
             "{{\\"error\\":\\"Preset file not found: {safe_path}\\"}}"
         ) else (
             -- Create Forest Pack object
-            local fpObj = Forest_Pro name:"{safe}"
+            local fpObj = Forest_Pro()
+            fpObj.name = "{safe}"
             if fpObj == undefined then (
                 "{{\\"error\\":\\"Failed to create Forest_Pro object.\\"}}"
             ) else (
