@@ -207,6 +207,21 @@ MAXScript has no `stringJoin`. Use manual concatenation loops.
 ### Python f-strings + braces
 - Double MAXScript braces in Python f-strings: `{{` and `}}`, or use raw strings.
 
+### Sphere/primitive UV mapping
+- `Sphere()` creates with `mapcoords = false` by default — textures render BLACK with no error.
+- Always set `s.mapcoords = true` on any primitive that will receive texture maps.
+- This applies to all Standard Primitives (Box, Sphere, Cylinder, etc.).
+
+### Redshift class names
+- `RS_Bump_Map` (with underscores), NOT `RS_BumpMap` — the latter silently fails.
+- `RS_Normal_Map` — dedicated normal map node; use `.tex0_filename` directly (no separate RS_Bitmap needed).
+- `RS_Bitmap` — Redshift native bitmap; set `.tex0_filename` and `.tex0_colorSpace` ("sRGB"/"Raw").
+- `CompositeTexturemap name:"X"` — the `name:` param collides with an array property; use `CompositeTexturemap(); .name = "X"` instead, or avoid for Redshift (use RS_Mix).
+
+### Redshift rendering
+- Use `redshift.renderView` interface for IPR, or standard `render()` for production frames.
+- `render_scene` tool uses the standard render pipeline which works with Redshift.
+
 ### .NET strings
 - Convert .NET string to MAXScript string with `str as string` before using `.count` etc.
 

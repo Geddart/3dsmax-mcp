@@ -21,7 +21,7 @@ def render_scene(
     save_msg = f' - saved to: {safe_path}' if safe_path else ""
 
     maxscript = f"""(
-        local bmp = render outputWidth:{width} outputHeight:{height} {output_clause} vfb:true
+        local bmp = render outputWidth:{width} outputHeight:{height} {output_clause} vfb:false
         if bmp != undefined then
             "Render completed ({width}x{height}){save_msg}"
         else

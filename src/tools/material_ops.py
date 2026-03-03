@@ -80,6 +80,9 @@ _RENDERER_CONFIGS: dict[str, dict] = {
             "roughness":     "refl_roughness_map",
             "glossiness":    "refl_roughness_map",  # + invert
             "metallic":      "metalness_map",
+            "normal":        "bump_input",           # via RS_Normal_Map
+            "bump":          "bump_input",           # via RS_Bump_Map
+            "displacement":  "displacement_input",   # via RS_Displacement
             "opacity":       "opacity_color_map",
             "emission":      "emission_color_map",
             "translucency":  "refr_color_map",
@@ -143,9 +146,9 @@ def _material_slot_hints(material_class: str) -> dict[str, str]:
         }
     if cls == "rs_standard_material":
         return {
-            "preferredBitmapClass": "Bitmaptexture",
-            "normalHelperClass": "RS_BumpMap",
-            "bumpHelperClass": "RS_BumpMap",
+            "preferredBitmapClass": "RS_Bitmap",
+            "normalHelperClass": "RS_Normal_Map",
+            "bumpHelperClass": "RS_Bump_Map",
         }
     if cls in {"physicalmaterial", "standardmaterial", "gltfmaterial", "maxusdpreviewsurface"}:
         return {
@@ -359,21 +362,20 @@ def _build_redshift_maxscript(
     for channel, fpath in matched.items():
         var = f"bm_{channel}"
         fp = _ms_path(fpath)
+        is_color = channel in _COLOR_CHANNELS
 
-        lines.append(f'{var} = Bitmaptexture name:"{channel}" fileName:"{fp}"')
+        # Use RS_Bitmap for Redshift — native color space control, RS filtering
+        cs = "sRGB" if is_color else "Raw"
+        lines.append(f'{var} = RS_Bitmap name:"{channel}"')
+        lines.append(f'{var}.tex0_filename = "{fp}"')
+        lines.append(f'{var}.tex0_colorSpace = "{cs}"')
 
         if channel == "diffuse":
+            # Skip AO compositing for Redshift — GI handles ambient occlusion
+            lines.append(f'mat.base_color_map = {var}')
             if "ao" in matched:
-                ao_fp = _ms_path(matched["ao"])
-                lines.append(f'bm_ao = Bitmaptexture name:"ao" fileName:"{ao_fp}"')
-                lines.append('comp = CompositeTexturemap name:"Diffuse_AO"')
-                lines.append(f'comp.mapList[1] = {var}')
-                lines.append('comp.mapList[2] = bm_ao')
-                lines.append('comp.blendMode[2] = 5')
-                lines.append('mat.base_color_map = comp')
-                lines.append('channelList += "diffuse(+ao), "')
+                lines.append('channelList += "diffuse(ao skipped-GI), "')
             else:
-                lines.append(f'mat.base_color_map = {var}')
                 lines.append('channelList += "diffuse, "')
         elif channel == "ao":
             continue
@@ -384,31 +386,34 @@ def _build_redshift_maxscript(
             lines.append('mat.refl_roughness_map = inv')
             lines.append('channelList += "glossiness(inverted), "')
         elif channel == "normal":
-            lines.append('rsBump = RS_BumpMap name:"NormalBump"')
-            lines.append(f'rsBump.input_map = {var}')
-            lines.append('rsBump.inputType = 1')  # tangent-space normal
+            # RS_Normal_Map uses tex0_filename directly (not a texturemap input)
+            lines.append('rsNormal = RS_Normal_Map name:"NormalMap"')
+            lines.append(f'rsNormal.tex0_filename = "{fp}"')
             if "bump" in matched:
                 bump_fp = _ms_path(matched["bump"])
-                lines.append(f'bm_bump_h = Bitmaptexture name:"bump" fileName:"{bump_fp}"')
-                # Redshift: chain bump into the bump map input
-                lines.append('rsBumpH = RS_BumpMap name:"BumpHeight"')
+                lines.append('bm_bump_h = RS_Bitmap name:"bump"')
+                lines.append(f'bm_bump_h.tex0_filename = "{bump_fp}"')
+                lines.append('bm_bump_h.tex0_colorSpace = "Raw"')
+                lines.append('rsBumpH = RS_Bump_Map name:"BumpHeight"')
                 lines.append('rsBumpH.input_map = bm_bump_h')
                 lines.append('rsBumpH.inputType = 0')  # bump
-                lines.append('-- Redshift: wire normal to bump_input, height bump separate')
-                lines.append('mat.bump_input = rsBump')
+                lines.append('mat.bump_input = rsNormal')
                 lines.append('channelList += "normal(+bump partially), "')
             else:
-                lines.append('mat.bump_input = rsBump')
+                lines.append('mat.bump_input = rsNormal')
                 lines.append('channelList += "normal, "')
         elif channel == "bump":
             if "normal" not in matched:
-                lines.append('rsBump = RS_BumpMap name:"Bump"')
+                lines.append('rsBump = RS_Bump_Map name:"Bump"')
                 lines.append(f'rsBump.input_map = {var}')
                 lines.append('rsBump.inputType = 0')
                 lines.append('mat.bump_input = rsBump')
                 lines.append('channelList += "bump, "')
         elif channel == "displacement":
-            lines.append(f'mat.displacement_input = {var}')
+            # Wire through RS_Displacement node (not directly to slot)
+            lines.append('rsDisp = RS_Displacement name:"Displacement"')
+            lines.append(f'rsDisp.texMap_map = {var}')
+            lines.append('mat.displacement_input = rsDisp')
             lines.append('channelList += "displacement, "')
         elif channel == "ior":
             lines.append('channelList += "ior(skipped-no-map-slot), "')
