@@ -566,17 +566,22 @@ def set_rpmanager_pass_property(
 
 **MAXScript template (dispatches by property):**
 
+> **NOTE (Phase 0 update):** Uses confirmed function names: `getpasscount()`, `GetPassNameFromID`,
+> `SetPassName`, `getpasscamera`, `captureCamera`, `GetPassOutputPath`, `GetPassRange`,
+> `SetPassRange`, `GetPassTimeType`, `SetPassTimeType`. All property get/set functions below
+> are **headless-safe** (work without UI open). Uses `fRefresh()` instead of unconfirmed `UpdateUI()`.
+
 For `property == "name"`:
 ```maxscript
 (
     local i = <pass_index>
-    local pc = RPMdata.GetPassCount()
+    local pc = RPMdata.getpasscount()
     if i < 1 or i > pc then (
         "Error: pass index " + i as string + " out of range"
     ) else (
-        local oldVal = RPMdata.GetPassName i
+        local oldVal = RPMdata.GetPassNameFromID i
         RPMdata.SetPassName i "<value>"
-        RPMdata.UpdateUI()
+        RPMdata.fRefresh()
         "Pass " + i as string + " name: \"" + oldVal + "\" -> \"<value>\""
     )
 )
@@ -590,10 +595,10 @@ For `property == "camera"`:
     if cam == undefined and "<value>" != "" then (
         "Error: camera \"<value>\" not found in scene"
     ) else (
-        local oldCam = RPMdata.GetPassCamera i
+        local oldCam = RPMdata.getpasscamera i
         local oldName = if oldCam != undefined then oldCam.name else "none"
-        RPMdata.SetPassCamera i cam
-        RPMdata.UpdateUI()
+        -- Camera assignment uses captureCamera; exact setter TBD during implementation
+        RPMdata.fRefresh()
         "Pass " + i as string + " camera: \"" + oldName + "\" -> \"<value>\""
     )
 )
@@ -605,7 +610,7 @@ For `property == "output_path"`:
     local i = <pass_index>
     local oldVal = RPMdata.GetPassOutputPath i
     RPMdata.SetPassOutputPath i "<value>"
-    RPMdata.UpdateUI()
+    RPMdata.fRefresh()
     "Pass " + i as string + " output: \"" + oldVal + "\" -> \"<value>\""
 )
 ```
@@ -616,7 +621,7 @@ For `property == "frame_range"`:
     local i = <pass_index>
     local oldRange = RPMdata.GetPassRange i
     RPMdata.SetPassRange i <frame_start> <frame_end> <nth_frame>
-    RPMdata.UpdateUI()
+    RPMdata.fRefresh()
     "Pass " + i as string + " range: [" + oldRange[1] as string + "," + oldRange[2] as string + "," + oldRange[3] as string + "] -> [<frame_start>,<frame_end>,<nth_frame>]"
 )
 ```
@@ -627,7 +632,7 @@ For `property == "time_type"`:
     local i = <pass_index>
     local oldVal = RPMdata.GetPassTimeType i
     RPMdata.SetPassTimeType i <value_int>
-    RPMdata.UpdateUI()
+    RPMdata.fRefresh()
     "Pass " + i as string + " timeType: " + oldVal as string + " -> <value>"
 )
 ```
@@ -700,17 +705,37 @@ def create_rpmanager_pass(
 
 ### 2.3 Tool: `delete_rpmanager_pass`
 
-**Conditional on Phase 0 results.** Same pattern as create.
+> **Phase 0 update:** `RMDeleteItem` CONFIRMED (1 arg: index, returns boolean).
+> May need UI open for proper cleanup -- needs testing with actual passes.
 
 ```
 Tool name:    delete_rpmanager_pass
 Parameters:
     pass_index: int   — 1-based pass index
 Returns:      Confirmation string
-Prerequisites: RPManager installed, deletion API confirmed
+Prerequisites: RPManager installed
 ```
 
-**Fallback:** Same stub approach as create, opening the UI for manual deletion.
+**MAXScript template:**
+```maxscript
+(
+    local pc = RPMdata.getpasscount()
+    local i = <pass_index>
+    if i < 1 or i > pc then (
+        "{\"error\": \"Pass index " + i as string + " out of range (1-" + pc as string + ")\"}"
+    ) else (
+        local pName = RPMdata.GetPassNameFromID i
+        -- Open UI in case RMDeleteItem needs it for cleanup
+        RPMdata.RMopenFloater()
+        local ok = RPMdata.RMDeleteItem i
+        RPMdata.fRefresh()
+        if ok then
+            "{\"deleted\": true, \"index\": " + i as string + ", \"name\": \"" + pName + "\"}"
+        else
+            "{\"error\": \"RMDeleteItem returned false for index " + i as string + "\"}"
+    )
+)
+```
 
 ---
 
@@ -741,29 +766,35 @@ def get_rpmanager_visibility_sets() -> str:
     """
 ```
 
-**MAXScript template (will be refined after Phase 0.4):**
+**MAXScript template:**
+
+> **NOTE (Phase 0 update):** RPMVisSets is NOT a sub-struct. Visibility is managed via top-level
+> RPMdata functions: `writeVisSetData`, `getVisUndoState`, `isolateSet`, `deleteVisSetsHolder`,
+> `UpdateLayerArray`, `CA_redefineVis`. The exact API for listing/enumerating visibility sets
+> needs further investigation with a scene that has visibility sets configured.
+> The template below is a placeholder that discovers set names via per-pass queries.
+
 ```maxscript
 (
     if RPMdata == undefined then (
         "{\"error\": \"RPManager is not installed\"}"
     ) else (
-        -- CONFIRMED (Phase 0): Visibility is managed via flat functions, NOT a sub-struct
-        -- Functions: writeVisSetData, getVisUndoState, isolateSet, deleteVisSetsHolder
-        -- RPMVisSets is NOT a sub-struct — visibility data is managed via functions on RPMdata directly
-        local count = vs.getVisSetCount()
-        local result = "{\"visSetCount\": " + count as string + ", \"visSets\": ["
-        for i = 1 to count do (
+        -- Phase 0 finding: visibility sets are NOT in a sub-struct.
+        -- They are managed via RPMdata.writeVisSetData, RPMdata.isolateSet, etc.
+        -- The exact enumeration API needs testing with a scene that has vis sets.
+        -- Placeholder: use GetPassVisSetName per pass to discover set names.
+        local pc = RPMdata.getpasscount()
+        local setNames = #()
+        for i = 1 to pc do (
+            local vsName = RPMdata.GetPassVisSetName i
+            if vsName != "" and findItem setNames vsName == 0 do
+                append setNames vsName
+        )
+        local result = "{\"visSetCount\": " + setNames.count as string + ", \"visSets\": ["
+        for i = 1 to setNames.count do (
             if i > 1 do result += ","
-            local setName = vs.getVisSetName i
-            local members = vs.getVisSetObjects i  -- expected: array of nodes
             result += "{\"index\": " + i as string
-            result += ", \"name\": \"" + (substituteString setName "\"" "\\\"") + "\""
-            result += ", \"members\": ["
-            for j = 1 to members.count do (
-                if j > 1 do result += ","
-                result += "\"" + members[j].name + "\""
-            )
-            result += "]}"
+            result += ", \"name\": \"" + (substituteString setNames[i] "\"" "\\\"") + "\"}"
         )
         result += "]}"
         result
@@ -803,20 +834,25 @@ def set_rpmanager_visibility(
 ```
 
 **MAXScript template:**
+
+> **NOTE (Phase 0 update):** RPMVisSets is NOT a sub-struct. Visibility management uses
+> top-level RPMdata functions (`writeVisSetData`, `isolateSet`). The exact add/remove API
+> needs further investigation with a real scene. This template is a placeholder.
+
 ```maxscript
 (
-    local vs = RPMdata.RPMVisSets
+    -- Phase 0 finding: RPMVisSets sub-struct does not exist.
+    -- Visibility sets use RPMdata.writeVisSetData and related functions.
+    -- Exact add/remove object API needs testing during implementation.
     local objs = #()
     local nameArr = #("<name1>", "<name2>", ...)
     for n in nameArr do (
         local obj = getNodeByName n
         if obj != undefined do append objs obj
     )
-    if "<action>" == "add" then
-        vs.addObjectsToVisSet objs <set_index>
-    else
-        vs.removeObjectsFromVisSet objs <set_index>
-    RPMdata.UpdateUI()
+    -- TODO: replace with confirmed API during implementation
+    RPMdata.writeVisSetData()
+    RPMdata.fRefresh()
     "<action>: " + (objs.count as string) + " objects to/from vis set " + <set_index> as string
 )
 ```
@@ -826,6 +862,15 @@ def set_rpmanager_visibility(
 ## Phase 4 — Capture Sets & Material Overrides
 
 **Priority: Medium — important for per-pass look development.**
+
+> **Phase 0 update:** `RPMObjProp` is `UndefinedClass` and `RPMCaptureProps` was not found.
+> Object property overrides are managed via top-level RPMdata functions:
+> `getObjPropPrefsData`, `setObjPropPrefsData`, `storePropOverrideData`,
+> `convertRenderPropertyOverrideToNewData`, `getPerObjectPreviewData`.
+> Material swap functions: `RPMpreRenderSwapMat`, `RPMpostRenderSwapMat`,
+> `stripInitialMaterials`, `setPostMaterial`, `getPreMaterial`, `putMatToSlate`.
+> The sub-struct-based templates below need significant rework during implementation.
+> Further introspection WITH UI OPEN is required to determine the correct API.
 
 ### 4.1 Tool: `get_rpmanager_capture_sets`
 
@@ -852,35 +897,49 @@ def get_rpmanager_capture_sets() -> str:
 ```
 
 **MAXScript template:**
+
+> **NOTE (Phase 0 update):** RPMCaptureProps/RPMObjProp are UndefinedClass. Object property
+> overrides use top-level RPMdata functions. This template is a placeholder that needs
+> rework once the correct API is determined (likely requires UI open for introspection).
+
 ```maxscript
 (
     if RPMdata == undefined then (
         "{\"error\": \"RPManager is not installed\"}"
     ) else (
-        local cp = RPMdata.RPMCaptureProps  -- or RPMdata.RPMObjProp
-        local count = cp.getCapSetCount()
-        local result = "{\"capSetCount\": " + count as string + ", \"captureSets\": ["
-        for i = 1 to count do (
-            if i > 1 do result += ","
-            local setName = cp.getCapSetName i
-            local objs = cp.getCapSetObjects i
-            local props = cp.getCapSetProperties i
-            result += "{\"index\": " + i as string
-            result += ", \"name\": \"" + (substituteString setName "\"" "\\\"") + "\""
-            result += ", \"objects\": ["
-            for j = 1 to objs.count do (
-                if j > 1 do result += ","
-                result += "\"" + objs[j].name + "\""
-            )
-            result += "], \"properties\": ["
-            for j = 1 to props.count do (
-                if j > 1 do result += ","
-                result += "\"" + (props[j] as string) + "\""
+        -- Phase 0 finding: RPMCaptureProps/RPMObjProp are UndefinedClass.
+        -- Use RPMdata.getObjPropPrefsData etc. instead.
+        -- TODO: Determine correct enumeration API during implementation (may need UI open).
+        local cp = undefined
+        try (cp = RPMdata.RPMCaptureProps) catch ()
+        if cp == undefined do try (cp = RPMdata.RPMObjProp) catch ()
+        if cp == undefined then (
+            "{\"error\": \"Capture set API not available (RPMObjProp is UndefinedClass). Try opening RPManager UI first: RPMdata.RMopenFloater()\"}"
+        ) else (
+            local count = cp.getCapSetCount()
+            local result = "{\"capSetCount\": " + count as string + ", \"captureSets\": ["
+            for i = 1 to count do (
+                if i > 1 do result += ","
+                local setName = cp.getCapSetName i
+                local objs = cp.getCapSetObjects i
+                local props = cp.getCapSetProperties i
+                result += "{\"index\": " + i as string
+                result += ", \"name\": \"" + (substituteString setName "\"" "\\\"") + "\""
+                result += ", \"objects\": ["
+                for j = 1 to objs.count do (
+                    if j > 1 do result += ","
+                    result += "\"" + objs[j].name + "\""
+                )
+                result += "], \"properties\": ["
+                for j = 1 to props.count do (
+                    if j > 1 do result += ","
+                    result += "\"" + (props[j] as string) + "\""
+                )
+                result += "]}"
             )
             result += "]}"
+            result
         )
-        result += "]}"
-        result
     )
 )
 ```
@@ -914,18 +973,17 @@ def add_to_rpmanager_capture_set(
 ```
 
 **MAXScript template:**
+
+> **NOTE (Phase 0 update):** RPMCaptureProps/RPMObjProp are UndefinedClass. This template
+> is a placeholder. The actual API uses top-level RPMdata functions like
+> `storePropOverrideData`. Needs further introspection with UI open.
+
 ```maxscript
 (
-    local cp = RPMdata.RPMCaptureProps
-    local objs = #()
-    local nameArr = #("<name1>", "<name2>", ...)
-    for n in nameArr do (
-        local obj = getNodeByName n
-        if obj != undefined do append objs obj
-    )
-    cp.addObjectsToSet objs <set_index>
-    RPMdata.UpdateUI()
-    "Added " + (objs.count as string) + " objects to capture set " + <set_index> as string
+    -- Phase 0 finding: RPMCaptureProps sub-struct does not exist.
+    -- Use RPMdata.storePropOverrideData etc. instead.
+    -- TODO: Determine correct API during implementation (may need UI open).
+    "{\"error\": \"Capture set add/remove API needs further introspection with RPManager UI open\"}"
 )
 ```
 
@@ -940,7 +998,8 @@ Returns:      Confirmation string
 Prerequisites: RPManager installed, valid set index
 ```
 
-Same pattern as 4.2 but calling `cp.removeObjectsFromSet objs <set_index>`.
+> **NOTE (Phase 0 update):** Same limitation as 4.2 -- RPMCaptureProps sub-struct does not exist.
+> Placeholder until correct API is determined with UI open.
 
 ### 4.4 Tool: `set_rpmanager_material_override`
 
@@ -979,31 +1038,20 @@ def set_rpmanager_material_override(
 ```
 
 **MAXScript template:**
+
+> **NOTE (Phase 0 update):** RPMCaptureProps sub-struct does not exist (UndefinedClass).
+> Material overrides are managed via top-level RPMdata functions:
+> `RPMpreRenderSwapMat`, `RPMpostRenderSwapMat`, `setPostMaterial`, `getPreMaterial`,
+> `putMatToSlate`, `RPMMATERIALCLASS`, `RPMMATERIALORIGCLASS`.
+> This template is a placeholder that needs rework during implementation.
+
 ```maxscript
 (
-    local cp = RPMdata.RPMCaptureProps
-    local capSets = #(<cs1>, <cs2>, ...)
-    local passArr = #(<p1>, <p2>, ...)
-    if "<material_name>" != "" then (
-        -- Find material by name in scene materials
-        local mat = undefined
-        for m in sceneMaterials do (
-            if m.name == "<material_name>" do (mat = m; exit)
-        )
-        if mat == undefined then (
-            "Error: material \"<material_name>\" not found in scene"
-        ) else (
-            cp.captureCapSetMaterial capSets passArr mat
-            RPMdata.UpdateUI()
-            "Set material override \"<material_name>\" on " + capSets.count as string + " capture sets, " + passArr.count as string + " passes"
-        )
-    ) else (
-        -- Clear override: use rpmdata.RPMObjProp.moAltMat.picked undefined
-        -- or cp.captureCapSetMaterial capSets passArr undefined
-        cp.captureCapSetMaterial capSets passArr undefined
-        RPMdata.UpdateUI()
-        "Cleared material override on " + capSets.count as string + " capture sets, " + passArr.count as string + " passes"
-    )
+    -- Phase 0 finding: RPMCaptureProps sub-struct does not exist.
+    -- Material overrides use RPMdata.RPMpreRenderSwapMat, RPMdata.setPostMaterial, etc.
+    -- TODO: Determine correct material override API during implementation.
+    -- May need UI open: RPMdata.RMopenFloater()
+    "{\"error\": \"Material override API needs further introspection with RPManager UI open\"}"
 )
 ```
 

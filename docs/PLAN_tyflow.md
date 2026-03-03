@@ -3,14 +3,15 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
-2. [Research Phase: Runtime Introspection Scripts](#2-research-phase-runtime-introspection-scripts)
-3. [Shape Type ID Investigation (Priority 0)](#3-shape-type-id-investigation-priority-0)
+2. [Research Phase: Runtime Introspection Scripts](#2-research-phase-runtime-introspection-scripts) -- COMPLETED
+3. [Shape Type ID Investigation (Priority 0)](#3-shape-type-id-investigation-priority-0) -- CONFIRMED
 4. [Tool Definitions](#4-tool-definitions)
 5. [Preset Templates](#5-preset-templates)
 6. [Testing Strategy](#6-testing-strategy)
 7. [Implementation Order](#7-implementation-order)
 8. [Known Risks & Mitigations](#8-known-risks--mitigations)
 9. [File Structure](#9-file-structure)
+10. [Confirmed API Surface (Phase 0 Results)](#10-confirmed-api-surface-phase-0-results)
 
 ---
 
@@ -540,11 +541,11 @@ triangles." This was almost certainly caused by setting the wrong `type_3d_ID_ta
 ### 3.1 The Problem
 
 The Shape operator's 3D shape type is controlled by `type_3d_ID_tab`, an array
-of integer IDs. The documentation says `0 = Sphere`, but this has not been
-verified at runtime. If the mapping is wrong, particles display the wrong geometry.
+of integer IDs. The original assumption was `0 = Sphere`, which was WRONG.
+Phase 0 confirmed: 0=Triangle, 4=Sphere, 5=Pyramid (the default). See Section 3.3.
 
-The read-only scalar `shapeMode3D` property *may* reflect the current 3D type as
-a readable enum value after the `_tab` is set, but this is also unconfirmed.
+The read-only scalar `shapeMode3D` property reflects the current 3D sub-mode
+setting (confirmed via Phase 0 introspection).
 
 ### 3.2 Systematic Discovery Procedure
 
@@ -2009,7 +2010,7 @@ After implementing the tool, test the full pipeline:
 
     local shapeOp = ev1.addOperator "Shape" -1
     shapeOp.shape_type_tab = #(1)
-    shapeOp.type_3d_ID_tab = #(4)
+    shapeOp.type_3d_ID_tab = #(4)           -- 4 = Sphere (confirmed)
     shapeOp.frequency_tab = #(100.0)
     shapeOp.scaleVal_tab = #(50.0)
 
@@ -2069,7 +2070,7 @@ After implementing the tool, test the full pipeline:
 
     local shapeOp = ev1.addOperator "Shape" -1
     shapeOp.shape_type_tab = #(1)
-    shapeOp.type_3d_ID_tab = #(4)
+    shapeOp.type_3d_ID_tab = #(4)           -- 4 = Sphere (confirmed)
     shapeOp.frequency_tab = #(100.0)
     shapeOp.scaleVal_tab = #(30.0)
 
@@ -2785,3 +2786,145 @@ def create_tyflow_preset(...) -> str: ...
 | Simulation | reset_simulation | 1 |
 | Presets | create_preset | 1 |
 | **Total** | | **13** |
+
+---
+
+## 10. Confirmed API Surface (Phase 0 Results)
+
+> Added 2026-03-03 from live introspection. See `docs/research/tyflow_introspection.md` for full details.
+
+### 10.1 tyEvent Interface Methods
+
+```
+getEnabled() -> boolean
+setEnabled(boolean enabled)
+getName() -> string
+setName(string name)
+getPosition() -> point2
+setPosition(point2 position)
+getWidth() -> integer
+setWidth(integer width)
+addOperator(string type, integer where) -> object    -- MUST provide both args
+remove()
+```
+
+### 10.2 tyFlow Object Interface
+
+```
+-- Simulation
+reset_simulation()
+reseed()
+updateParticles(integer frame)
+numParticles() -> integer
+sortParticlesByID()
+
+-- Events
+addEvent() -> tyEvent
+
+-- Editor
+editor_open()
+editor_close()
+
+-- Export
+exportPRT(integer opID, integer partitionFrom, integer partitionTo) -> integer
+exportTyCache(integer opID) -> integer
+
+-- License
+activate_license() / deactivate_license()
+switch_license_type(integer type)
+license_activated() -> integer
+
+-- DANGER: quickType_submit CRASHES with access violation -- do NOT use
+```
+
+### 10.3 Particle Data Access Functions
+
+**Single-particle (1-based index):**
+```
+getParticleID(index) -> integer
+getParticleAge(index) -> float
+getParticleTM(index) -> matrix3
+getParticlePosition(index) -> point3
+getParticleScale(index) -> point3
+getParticleVelocity(index) -> point3
+getParticleShapeMesh(index) -> mesh
+getParticleMatID(index) -> integer
+getParticleInstanceID(index) -> integer
+getParticleMass(index) -> float
+getParticleSimGroups(index) -> integer
+getParticleExportGroups(index) -> integer
+getParticleUVWChannels(index) -> integer array
+getParticleUVW(index, channel) -> point3
+```
+
+**Bulk (return arrays):**
+```
+getAllParticleIDs() -> integer array
+getAllParticleAges() -> float array
+getAllParticleTMs() -> value array
+getAllParticlePositions() -> value array
+getAllParticleScales() -> value array
+getAllParticleVelocities() -> value array
+getAllParticleShapeMeshes() -> value array
+getAllParticleMatIDs() -> integer array
+getAllParticleInstanceIDs() -> integer array
+getAllParticleMasses() -> float array
+getAllParticleSimGroups() -> integer array
+getAllParticleExportGroups() -> integer array
+getAllParticleUVWChannels() -> value array
+getAllParticleUVWs(channel) -> value array
+```
+
+**Volume interface:**
+```
+updateVolumes() / releaseVolumes()
+getVolumeScalar(point3 position, integer type) -> float
+getVolumeVector(point3 position, integer type) -> point3
+convertVolumeTemperature(float temperature, integer units) -> float
+```
+
+### 10.4 All Confirmed Operator Names (61 total)
+
+Birth, Speed, Shape, Display, Delete, Force, Spin, Kill Age, Rotation, Scale, Event, Spawn, Export Particles, PhysX Shape, PhysX Collision, Cloth, Cloth Bind, Fracture, Voronoi Fracture, Boolean, Noise, Mapping, Material Static, Material Dynamic, Color, Custom Properties, Script, Face Fracture, Editor, Position Object, Particle Object, Collision Spawn, Slow, PhysX Switch, PhysX Bind, PhysX Glue, Skin Wrap, Birth Objects, Birth Surface, Birth Spline, UVW Map, Find Target, Property Test, Age Test, Collision Test, Particle Test, Custom Properties Test, Distance Test, Surface Test, Density, Icon Settings, Path Follow, Brick Fracture, Extrude, Bind, Spring, Object Test, Element Fracture, Bounds Fracture, Multifracture, Convex Hull
+
+### 10.5 Shape Operator Key Properties
+
+**Shape mode control:**
+- `shapeMode` : integer (0=2D, 1=3D, 2=Reference)
+- `shapeMode2D` : integer (sub-mode for 2D)
+- `shapeMode3D` : integer (sub-mode for 3D)
+
+**Per-item tab arrays (ALL writable):**
+- `shape_type_tab` : integer array (0=2D, 1=3D, 2=Reference)
+- `type_2d_ID_tab` : integer array
+- `type_3d_ID_tab` : integer array (THE critical shape mapping, default `#(5)` = Pyramid)
+- `instancedGeo_tab` : node array (for Reference mode)
+- `frequency_tab` : float array
+- `scale_tab` : boolean array
+- `scaleVal_tab` : float array
+- `scaleVariation_tab` : float array
+- `materialMode_tab` : integer array
+- `material_tab` : material array
+- `matFile_tab` : string array
+- `vrmeshFilename_tab` : string array
+- `meshCenterPivots_tab`, `meshPreserveNormals_tab`, `meshSplitElements_tab` : boolean arrays
+- `meshAnimated_tab`, `meshAnimatedRender_tab` : boolean arrays
+- `meshAnimatedTiming_tab`, `meshAnimatedDefault_tab`, `meshAnimatedStart_tab`, `meshAnimatedEnd_tab` : various
+- `meshAnimatedLoop_tab`, `meshAnimatedInterp_tab`, `meshAnimatedSpeed_tab`, `meshAnimatedSpeedVariation_tab`, `meshAnimatedOffset_tab` : various
+
+**3D Shape ID confirmed mapping:**
+
+| ID | Shape | Verts | Faces |
+|---|---|---|---|
+| 0 | Triangle | 3 | 1 |
+| 1 | Cone | 28 | 26 |
+| 2 | Quad/Plane | 4 | 2 |
+| 3 | Cylinder | 25 | 32 |
+| 4 | Sphere | 289 | 512 |
+| 5 | Pyramid (DEFAULT) | 5 | 6 |
+| 6 | Cube/Box | 8 | 12 |
+| 7 | Octahedron | 6 | 8 |
+| 8 | GeoSphere (low) | 62 | 120 |
+| 9 | GeoSphere (medium) | 266 | 528 |
+| 10 | GeoSphere (high) | 1106 | 2208 |
+| 11 | Icosahedron | 12 | 20 |

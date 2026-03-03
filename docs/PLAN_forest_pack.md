@@ -1,6 +1,6 @@
 # Forest Pack Pro Extended Tools -- Implementation Plan
 
-> **Status:** Draft
+> **Status:** Phase 0 Complete (introspection done, property names verified)
 > **Date:** 2026-03-03
 > **Target file:** `src/tools/scattering.py` (extend existing module)
 > **Server registration:** Already registered via `scattering` import in `src/server.py` line 13
@@ -624,11 +624,11 @@ def get_forest_pack_info(name: str) -> str:
   - **Geometry:** `fp.cobjlist`, `fp.namelist`, `fp.problist`, `fp.geomlist` -- source objects with probabilities and types
   - **Areas:** `fp.arnodelist`, `fp.arnamelist`, `fp.artypelist`, `fp.arincexclist`, `fp.pf_aractivelist` -- full area configuration
   - **Distribution:** `fp.maxdensity`, `fp.units_x`, `fp.units_y`, distribution mode (needs property discovery), `fp.distmap` (if texture assigned)
-  - **Transform:** `fp.applyScale`, `fp.scalelock`, `fp.scalexmin/max`, `fp.scaleymin/max`, `fp.scalezmin/max`, `fp.applyRotation`, `fp.xrotmin/max`, `fp.yrotmin/max`, `fp.zrotmin/max`, `fp.applyTranslation` (if exists)
+  - **Transform:** `fp.applyscale`, `fp.scalelock`, `fp.scalexmin/max`, `fp.scaleymin/max`, `fp.scalezmin/max`, `fp.applyrotation`, `fp.xrotmin/max`, `fp.yrotmin/max`, `fp.zrotmin/max`, `fp.applytranslation`, `fp.mirror`
   - **Surface:** `fp.direction`, `fp.altlimited`, `fp.altmin`, `fp.altmax`, `fp.slopelimited`, `fp.slopemin`, `fp.slopemax`, `fp.surfaltdens`, `fp.surfaltscal`, `fp.surfslodens`, `fp.surfsloscal`
   - **Camera:** `fp.camera`, `fp.camlimit`, `fp.camnear`, `fp.camfar`, `fp.cambho`, `fp.uselookat`, `fp.lookattarget`, `fp.camlod`, `fp.camloddist`
   - **Animation:** `fp.animation`, `fp.animsamples`, `fp.animsoffset`, `fp.animstart`, `fp.animend`, `fp.animonlyrend`, `fp.animap`
-  - **Display:** `fp.vmesh`, `fp.rmesh`, `fp.iconSize`
+  - **Display:** `fp.vmesh`, `fp.rmesh`, `fp.iconsize`
   - **General:** `fp.seed`, `fp.name`
 
 **JSON output (example):**
@@ -839,7 +839,7 @@ def add_forest_pack_area(
 ```
 
 **MAXScript approach -- CRITICAL:**
-Area lists are interdependent. All 7 arrays must be read, appended to, and written back together:
+Area lists are interdependent. The core 7 arrays must be read, appended to, and written back together. Phase 0 confirmed 27+ area arrays total (see Section 4.2), but the core 7 are sufficient for basic area creation -- Forest Pack initializes additional per-area arrays with defaults:
 
 ```maxscript
 -- Read current arrays
@@ -899,10 +899,11 @@ def remove_forest_pack_area(
 ```
 
 **MAXScript approach:**
-- Read all 7 area arrays
+- Read all core 7 area arrays (plus any populated additional arrays from the 27+ confirmed)
 - Validate index bounds
-- Delete item at index from all 7 arrays
-- Write all 7 arrays back
+- Delete item at index from all populated arrays
+- Write all arrays back
+- See Section 4.2 for the complete list of area arrays
 
 ---
 
@@ -1599,6 +1600,131 @@ Source geometry arrays must also stay in sync. Phase 0 introspection confirmed *
 - Threads: `fp.threads` (integer), `fp.autothreads` (boolean) -- NOT ~~`fp.cputhreads`~~
 - Global: `fp.globsize` (boolean), `fp.width` (worldUnits), `fp.height` (worldUnits), `fp.globscale` (float), `fp.consmat` (boolean), `fp.mode` (integer), `fp.consgeom` (boolean)
 
+### 4.5 trees Interface (per-item manipulation)
+
+The `trees` interface provides full CRUD operations on individual scattered items. Confirmed via Phase 0 introspection.
+
+**Access:** `fp.trees` where `fp` is a Forest_Pro node.
+
+**Methods (confirmed):**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `create` | `(point3 p, float width, float height, integer geomid)` | Create a new tree at position |
+| `delete` | `(integer n)` | Delete tree by index |
+| `edit` | `(integer n, float width, float height, integer geomid, integer seed)` | Edit tree properties |
+| `count` | `() -> integer` | Get total tree count |
+| `move` | `(integer n, point3 p)` | Move tree to new position |
+| `setPosition` | `(integer n, point3 p)` | Set absolute position |
+| `getPosition` | `(integer n) -> point3` | Get position |
+| `setRotation` | `(integer n, point3 angle)` | Set rotation (Euler) |
+| `getRotation` | `(integer n) -> point3` | Get rotation |
+| `setWidth` | `(integer n, float width)` | Set width |
+| `getWidth` | `(integer n) -> float` | Get width |
+| `setHeight` | `(integer n, float height)` | Set height |
+| `getHeight` | `(integer n) -> float` | Get height |
+| `setSize` | `(integer n, point3 size)` | Set size (width, height, scale) |
+| `getSize` | `(integer n) -> point3` | Get size |
+| `setGeomID` | `(integer n, integer geomid)` | Set geometry ID (which source) |
+| `getGeomID` | `(integer n) -> integer` | Get geometry ID |
+| `setSeed` | `(integer n, integer seed)` | Set random seed |
+| `getSeed` | `(integer n) -> integer` | Get random seed |
+| `getFullTransform` | `(integer n) -> matrix3` | Get full 4x4 transform |
+| `getSelected` | `() -> integer` | Get selected tree index |
+| `update` | `()` | Refresh scatter (recompute) |
+| `update_ui` | `()` | Refresh UI display |
+
+**Render helpers:** `getRenderID`, `getRenderNode`, `getRenderNodes`, `clearRenderNodes`, `getRenderData`, `resetCreatedVersion`, `setCreatedVersion`
+
+**Usage example (MAXScript):**
+```maxscript
+-- Place 10 custom trees in a grid
+local fp = $MyForest
+local iface = fp.trees
+for i = 0 to 9 do (
+    local pos = [i * 100.0, 0, 0]
+    iface.create pos 10.0 50.0 1  -- position, width, height, geomid
+)
+iface.update()
+```
+
+### 4.6 Helper classes (confirmed)
+
+**ForestLOD** (19 properties):
+- Source arrays: `cobjlist`, `matlist`, `namelist`, `geomlist`, `tempidlist`, `tempnamelist`, `widthlist`, `heightlist`, `scalelist`, `zoffsetlist`, `centerlist`, `specidlist`
+- LOD: `distlist`, `screensizelist`, `iconsize`, `mode`, `distance`, `variation`, `update`
+
+**ForestSet** (7 properties):
+- `nodelist`, `iconsize`, `layerimport`, `layerchilds`, `layernames`, `wirecolor`, `disabled`
+
+**ForestColor** (18 properties):
+- `mapbase`, `mapidmode`, `colorbase`, `maplist`, `maponlist`, `colorlist`, `problist`
+- `tintmixmode`, `tintvariation`, `override`, `tintcolor1`, `tintcolor2`, `tintmin`, `tintmax`, `tintmode`, `tintmap`, `tintmapmode`, `applycor`
+
+**Forest_Lite:** NOT FOUND in this installation (3ds Max 2025 with Forest Pack Pro).
+
+### 4.7 Additional interfaces (confirmed)
+
+**ForestPack interface** (`fp.ForestPack`):
+- `registerEngine()`, `exportData(string filename, string fieldlist) -> integer`, `setEngineFeatures(integerPtr features)`, `openLister()`, `getRenderDataRaw() -> integerPtr`, `clearRenderDataRaw()`, `version() -> integer`
+
+**ui interface** (`fp.ui`):
+- `setRollup(integer64 state)` -- control UI rollup state
+
+**scatalog / catalog interface** (`fp.scatalog` or `fp.catalog`):
+- Browser control: `openBrowser()`, `closeBrowser()`, `refresh()`, `getMacroCount()`, `evalMacro()`, `getMacro()`, `setMacro()`, `setOverlay()`, `getSelItemName()`, `getSelItemProp()`, `getSelItemCustomProp()`
+
+---
+
+### 4.8 Confirmed Property Categories (all 341 properties)
+
+Complete reference organized by category. See `docs/research/forest_pack_introspection.md` for full details with types.
+
+**Source Geometry** (20 arrays):
+cobjlist, matlist, namelist, coloridlist, geomlist, tempidlist, tempnamelist, widthlist, heightlist, scalelist, zoffsetlist, centerlist, radiuslist, specidlist, usemeshdimlist, conamelist, includechildlist, keepgrouplist, nongeomlist, problist (+ old_problist legacy)
+
+**Area** (27 arrays + pf_aractivelist):
+aridlist, pf_aractivelist, arnamelist, arnodelist, arnodenamelist, artypelist, arincexclist, arresollist, arslicelist, arslicetoplist, arwidthlist, arforceopenlist, armaplist, arscalelist, arthresholdlist, arsurfidlist, arflafdenslist, arflafscalist, arflinvlist, arselspeclist, arspeclist, arpaintlist, arboundchecklist, arprojectlist, arshapelist, arobscalelist, arlinkidlist, arscalemin, arscalemax, arzoffset
+
+**Distribution**:
+distmap, distmapchan, densityMap, distmode, pixels_x, pixels_y, units_x, units_y, lock_ratio, collision, radius, collheight, collpreview, offset_x, offset_y, drotation, threshold, maxdensity, sdgizmo, divers, divtmap, divmapchan, divmapnoise, clusize, clurough, clunoise, cluedge
+
+**Distribution Modes**:
+distpathnodes, distpathmode, distpathgeomid, distpathspacing, distpathoffset, distpathrandpos, distpathxfollow, distpathzfollow, distrefnodes, distrefmode, distrefgetrot, distrefgetscale, distrefnumitems, distrefrandpos, distrefmatid, distrefmatchname, distrefmatchregex, distpflownodes, distpflowgetrot, distpflowgetscale, distpflowallevents, distpfloweventslist
+
+**Surface**:
+surflist, surflink, altlimited, altmax, altmin, surfaltdens, surfaltscal, slopelimited, slopemax, slopemin, surfslodens, surfsloscal, surfanim, linkeditsurf, direction, scalelope, surfmode, uvalign, uvscalex, uvscaley, uvmultscalex, uvmultscaley
+
+**Transform**:
+applytranslation, transxmin, transymin, transzmin, transxmax, transymax, transzmax, transmapx, transmapy, transmapz, transmap, transmapchan, transcolormap, transprobmap, applyrotation, xrotmin, xrotmax, yrotmin, yrotmax, zrotmin, zrotmax, rotmapx, rotmapy, rotmapz, userotprobcurve, rotprobcurve, rotmap, rotmapchan, rotcolormap, rotprobmap, applyscale, scalexmax, scalexmin, scaleymax, scaleymin, scalezmax, scalezmin, scamapx, scamapy, scamapz, usescaprobcurve, scaprobcurve, scamap, scamapchan, scacolormap, scaprobmap, scalelock, mirror
+
+**Camera/LOD**:
+camera, lookattarget, camlimit, uselookat, camlookat, camlod, camloddist, camlodlookat, camwidth, camnear, camfar, cambho, camdenscurve, camdensact, camscacurve, camscaact, camdensear, camdensfar
+
+**Tint/Color**:
+tintmixmode, tintcolor1, tintcolor2, tintmin, tintmax, tintmode, tintmap, tintmapmode, tintmapchan, fastopac, tracedepth, opaclevel, selfillum, irradiance, mathue, matsaturation, matbrightness, matapply, matapplycolor, matrangewidth
+
+**Animation**:
+animation, animsoffset, animsamples, animonlyrend, animap, animapchan, animstart, animend
+
+**Shadow**:
+usefakeshadows, light, hshadow, vshadow, hsplanes, custshadow, hsoffset, hsscale, selfshadow, ssitself
+
+**Display/Render**:
+vmesh, geomtexid, vtype, adaptfaces, cloudcolorid, cloudens, vmaxitems, rmesh, rskip, opacity, wireframe, rtype, rendermode, rmaxitems, maxfaces, hidecustom, manualupdate, disabled, dispflags, iconsize
+
+**Effects**:
+efidlist, efnamelist, efxmllist, efenablelist, efselspeclist, efspeclist, pf_efonlyrender, efpaid, efpaeffid, efpatype, efpaname, efpalimit, efpadesc, efpanumtype, efpaintval, efpaintmin, efpaintmax, efpaintdef, efpafloatval, efpafloatmin, efpafloatmax, efpafloatdef, efpaunitval, efpaunitmin, efpaunitmax, efpaunitdef, efpainode, efpaspline, efpacontref, efpacontanim, efpacontype, efpatexmap, efpacurve
+
+**Global**:
+seed, seedtype, threads, autothreads, geomtex, savedversion, renderid, globsize, width, height, globscale, consmat, mode, consgeom
+
+**Spline Density/Scale Curves**:
+spdenscurve, spdensact, spdensinc, spdensexc, spscalcurve, spscalact, spscalz, spscalinc, spscalexc
+
+**Reserved/Internal** (not for use):
+reserved1, reserved2, reserved3, reserved7, reserved10, reserved11, reserved12, reserved13, reserved14, reserved15, reserved17, reserved18, reserved19, reserved23, reserved40, randstacked, sepsubsplines
+
 ---
 
 ## 5. Testing Strategy
@@ -1761,18 +1887,18 @@ class ModifyForestPackTests(unittest.TestCase):
 
 ## 6. Implementation Order
 
-### Phase 1: Introspection (Week 1)
+### Phase 0/1: Introspection -- COMPLETED 2026-03-03
 
 **Goal:** Discover the complete Forest_Pro property namespace.
 
-1. Run ALL scripts from Section 2 inside 3ds Max
-2. Document every discovered property with its type and default value
-3. Map properties to UI rollout sections
-4. Verify/correct the guessed property names in Section 4.4
-5. Update this plan with correct property names
-6. Create a `docs/forest_pack_property_reference.md` with the full dump
+1. ~~Run ALL scripts from Section 2 inside 3ds Max~~ -- DONE
+2. ~~Document every discovered property with its type and default value~~ -- DONE (341 properties in `docs/research/forest_pack_introspection.md`)
+3. ~~Map properties to UI rollout sections~~ -- DONE (Section 4.8)
+4. ~~Verify/correct the guessed property names in Section 4.4~~ -- DONE (many corrections applied)
+5. ~~Update this plan with correct property names~~ -- DONE
+6. Full dump in `docs/research/forest_pack_introspection.md` (replaces `docs/forest_pack_property_reference.md`)
 
-**Deliverable:** Verified property name mapping.
+**Deliverable:** Verified property name mapping -- COMPLETE.
 
 ### Phase 2: Inspection Tools (Week 2)
 
@@ -1875,15 +2001,15 @@ class ModifyForestPackTests(unittest.TestCase):
 
 ## 7. Known Risks and Mitigations
 
-### Risk 1: Property names are wrong
+### Risk 1: Property names are wrong -- MITIGATED
 
 **Impact:** High -- tools will silently fail or crash
-**Likelihood:** High for unverified properties
+**Likelihood:** ~~High for unverified properties~~ LOW -- Phase 0 introspection completed 2026-03-03, all 341 properties confirmed
 **Mitigation:**
-- Phase 1 introspection is mandatory before any implementation
+- ~~Phase 1 introspection is mandatory before any implementation~~ DONE
 - Every property access wrapped in `try/catch` in MAXScript
 - Return meaningful error messages when property access fails
-- Keep a verified vs. unverified property list in this plan
+- ~~Keep a verified vs. unverified property list in this plan~~ All properties now verified (Section 4.4)
 
 ### Risk 2: Array synchronization failures
 
