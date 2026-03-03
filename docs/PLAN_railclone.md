@@ -4,7 +4,7 @@
 
 1. [Overview](#1-overview)
 2. [Research Summary: RailClone MAXScript API](#2-research-summary-railclone-maxscript-api)
-3. [Phase 1: Runtime Introspection (Discovery Scripts)](#3-phase-1-runtime-introspection-discovery-scripts)
+3. [Phase 0/1: Runtime Introspection (Discovery Scripts)](#3-phase-01-runtime-introspection-discovery-scripts) -- COMPLETED
 4. [Phase 2: Tool Architecture](#4-phase-2-tool-architecture)
 5. [Phase 3: Proposed Tools](#5-phase-3-proposed-tools)
 6. [Phase 4: High-Level Presets](#6-phase-4-high-level-presets)
@@ -14,7 +14,8 @@
 10. [Known Risks and Mitigations](#10-known-risks-and-mitigations)
 11. [Reference: RailClone Concepts](#11-reference-railclone-concepts)
 12. [Reference: Confirmed API Surface](#12-reference-confirmed-api-surface)
-13. [Sources](#13-sources)
+13. [Reference: Complete Introspected Property List](#13-reference-complete-introspected-property-list)
+14. [Sources](#14-sources)
 
 ---
 
@@ -57,12 +58,15 @@ The `banode` property is an indexed array of base objects (splines). Index 1 is 
 **Style/Library Loading** (added in RailClone 6):
 ```maxscript
 -- Load a library preset by its path in the library browser
-$.railclone.loadLibraryItemByPath "\RailClone Library\Architecture\Exterior\Railings\Vynil Handrail 1"
--- Returns 0 on success, 1 on error
+$.railclone.loadLibraryItemByPath "\\RailClone Library\\Architecture\\Exterior\\Railings\\Handrail 1"
+-- Returns integer (1 = success, confirmed via introspection)
+-- NOTE: path uses backslashes, style name must match library browser exactly
 
 -- Get the currently loaded style path
-$.style
+$.style  -- NOTE: remains empty string after loading; style data is stored internally
 ```
+
+> **Introspection correction:** Return value is 1 on success (not 0 as originally documented). The `$.style` property does NOT reflect the loaded library path -- it remains empty string. Style data is stored in the internal graph.
 
 **Style Description**:
 ```maxscript
@@ -75,24 +79,45 @@ for obj in selection do (obj.railclone.setStyleDesc("my style"))
 **Exposed Parameters** (Numeric node system):
 Parameters exposed via Numeric nodes in the Style Editor are accessible as parallel arrays:
 ```maxscript
+-- Core identification
 $.paid       -- #("id1", "id2")       -- unique identifiers
 $.paname     -- #("Distance", "Y Offset") -- display names
-$.patype     -- #(3, 3)               -- type enum: 0=int, 1=float, 2=percent, 3=worldUnits
+$.patype     -- #(3, 3)               -- type enum: 0=int, 1=float, 3=worldUnits (others TBD)
 $.padesc     -- #("...", "...")        -- descriptions/tooltips
+
+-- Value arrays (by type)
 $.paintval   -- #(0, 0)               -- integer values
-$.pafloatval -- #(0.0, 0.0)           -- float/percent values
+$.paintmin   -- integer array          -- min constraint for int params
+$.paintmax   -- integer array          -- max constraint for int params
+$.pafloatval -- #(0.0, 0.0)           -- float values
+$.pafloatmin -- float array            -- min constraint for float params
+$.pafloatmax -- float array            -- max constraint for float params
 $.paunitval  -- #(10.0, 5.0)          -- worldUnit values
+$.paunitmin  -- worldUnits array       -- min constraint for unit params
+$.paunitmax  -- worldUnits array       -- max constraint for unit params
+$.paboolval  -- boolean array          -- boolean values
+$.pastrval   -- string array           -- string values
+
+-- Metadata
+$.palimit    -- boolean array          -- whether min/max constraints are active
+$.paselector -- string array           -- selector binding (if any)
+$.pamodified -- boolean array          -- whether param has been changed from default
+$.paretain   -- integer array          -- retain setting
 
 -- Set a parameter by array index
 $.paunitval[2] = 10
 ```
 
-**Proxy Cache Management**:
+> **Introspection note:** 19 pa* arrays confirmed (vs. 7 originally documented). The additional arrays for min/max constraints and boolean/string value types expand what can be queried and set programmatically.
+
+**Proxy Cache Management** (via `.railclone` interface):
 ```maxscript
-$.setProxyMode 0 ""                           -- Disabled
-$.setProxyMode 1 ""                           -- Embedded (returns size)
-$.setProxyMode 2 "proxyFileName.rcproxy"      -- External file
+$.railclone.setProxyMode 0 ""                           -- Disabled
+$.railclone.setProxyMode 1 ""                           -- Embedded (returns size)
+$.railclone.setProxyMode 2 "proxyFileName.rcproxy"      -- External file
 ```
+
+> **Introspection note:** `setProxyMode` is on the `.railclone` interface, not directly on the object. Also confirmed: `proxymode` (integer) and `proxyfile` (filename) are direct properties for reading proxy state.
 
 **Instantiation** (RailClone Tools):
 ```maxscript
@@ -124,7 +149,9 @@ RailClone_Pro.openLister()
 
 ### 2.3 What Is NOT Directly Scriptable
 
-Based on research, these operations appear to require the Style Editor GUI and cannot be performed purely via MAXScript:
+> **Confirmed by introspection (2026-03-03):** The segment arrays (s*) are populated by the internal style graph. While 37 segment arrays exist and are readable, they cannot be used to construct styles programmatically.
+
+Based on research and confirmed by introspection, these operations require the Style Editor GUI and cannot be performed purely via MAXScript:
 
 - **Creating/wiring nodes** in the style graph (generators, segments, operators)
 - **Assigning geometry to segment slots** (Default, Start, Corner, End, Evenly) -- these are internal node connections
@@ -137,10 +164,12 @@ This is the critical difference from Forest Pack, where `cobjlist`, `geomlist`, 
 
 ### 2.4 Implications for Tool Design
 
+> **VALIDATED by introspection (2026-03-03):** Library-first approach confirmed working. `loadLibraryItemByPath` returns 1 on success. `banode[1] = splineObject` confirmed. 19 pa* arrays available for parameter manipulation.
+
 The tool strategy must be **library-centric**:
 1. Load pre-built styles from the RailClone library (hundreds of presets available)
 2. Assign spline paths via `banode`
-3. Tweak exposed parameters via the `pa*` arrays
+3. Tweak exposed parameters via the `pa*` arrays (19 arrays confirmed, including min/max constraints and bool/string types)
 4. Use introspection to report what parameters are available
 
 For users who need custom styles, the workflow would be:
@@ -150,11 +179,24 @@ For users who need custom styles, the workflow would be:
 
 ---
 
-## 3. Phase 1: Runtime Introspection (Discovery Scripts)
+## 3. Phase 0/1: Runtime Introspection (Discovery Scripts)
 
-Before implementing any tools, we need to run discovery scripts in a live 3ds Max session with RailClone installed. These scripts will confirm the API surface and discover undocumented properties.
+> **Phase 0 Status:** COMPLETED 2026-03-03
+> **Full results:** `docs/research/railclone_introspection.md`
+> **Key findings:**
+> - Class confirmed: `RailClone_Pro` (GeometryClass), 166 properties
+> - loadLibraryItemByPath WORKS (returned 1) -- library-first approach is viable
+> - banode[1] = splineObject WORKS -- spline assignment confirmed
+> - Exposed parameter arrays confirmed: pa* (paid, patype, paname, paintval, pafloatval, paunitval, paboolval, pastrval, etc.)
+> - Additional classes: RailClone_Color (textureMap), RC_Slice (modifier), RC_Spline (modifier)
+> - RailClone_Exporter and RailClone_Importer found -- .rcproxy export/import possible
+> - Segment arrays (s*) are extensive but likely read-only from MAXScript
+
+All discovery scripts below have been executed in a live 3ds Max 2025 session (PID 91996) with RailClone Pro installed. Each script includes a result summary.
 
 ### 3.1 Class Discovery
+
+> **Result:** Found 7 classes -- RailClone_Pro (GeometryClass), RailClone_Tools (UtilityPlugin), RailClone_Exporter, RailClone_Importer, RailClone_Color (textureMap), RC_Slice (modifier), RC_Spline (modifier).
 
 ```maxscript
 -- Find the exact class name
@@ -174,6 +216,8 @@ try (
 
 ### 3.2 Property Enumeration
 
+> **Result:** 166 properties found. Organized into: core (spline, seed, style, etc.), base object arrays (ba*), exposed parameter arrays (pa*), segment arrays (s*), display/render, and v1 legacy properties. Full listing in `docs/research/railclone_introspection.md` Section 2.
+
 ```maxscript
 -- Create a temporary RailClone object and dump all properties
 (
@@ -191,6 +235,8 @@ try (
 ```
 
 ### 3.3 Interface Discovery
+
+> **Result:** Three interfaces found -- `global` (static: RegisterEngine, version, SetEngineFeatures, Instantiate, InstantiateDelete, InstantiateEnable, exportData), `railclone` (instance: segmentsUpdate, getStyleDesc, setStyleDesc, loadLibraryItemByPath, etc.), `scatalog` (browser: openBrowser, closeBrowser, refresh, getMacroCount, evalMacro, etc.).
 
 ```maxscript
 -- List all interfaces on a RailClone object
@@ -215,6 +261,8 @@ try (
 ```
 
 ### 3.4 The `.railclone` Interface
+
+> **Result:** Confirmed. `rc.railclone` exists. Methods: segmentsUpdate(), getStyleDesc(), setStyleDesc(), resetCreatedVersion(), setCreatedVersion(), upgradeFromVersion(), setNodesCache(), setProxyMode(), loadLibraryItemByPath(). `RailClone_Pro.global` also confirmed with Instantiate/InstantiateDelete/InstantiateEnable/exportData/RegisterEngine/version/SetEngineFeatures.
 
 ```maxscript
 -- Specifically probe the .railclone sub-interface
@@ -257,6 +305,8 @@ try (
 ```
 
 ### 3.5 Base Object (`banode`) Exploration
+
+> **Result:** `rc.banode[1] = splineObject` WORKS. banode.count starts at 0, becomes 1 after assignment. Full ba* arrays confirmed: baid, batype, baname, banode, bafull, bastart, balength, badesc (all start empty, populated by library loading).
 
 ```maxscript
 -- Test base object assignment with a real spline
@@ -302,6 +352,8 @@ try (
 
 ### 3.6 Full Property Dump with Types
 
+> **Result:** 166 properties enumerated with types and defaults. Includes 37 s* (segment) arrays, 19 pa* (exposed param) arrays, 8 ba* (base object) arrays, 17 display/render properties, and 11 v1 legacy properties. Full listing in `docs/research/railclone_introspection.md` Section 2.
+
 ```maxscript
 -- Exhaustive property dump with read/write testing
 (
@@ -343,6 +395,8 @@ try (
 
 ### 3.7 Library Path Discovery
 
+> **Result:** `loadLibraryItemByPath` returned 1 (success) for `"\\RailClone Library\\Architecture\\Exterior\\Railings\\Handrail 1"`. After loading: paname.count = 0 (this style had no exposed parameters). The `style` property remained empty string (style data is stored internally, not in this field). Path format uses backslashes: `"\\RailClone Library\\Category\\SubCategory\\StyleName"`.
+
 ```maxscript
 -- Discover available library paths
 (
@@ -376,6 +430,8 @@ try (
 
 ### 3.8 Segment and Generator Property Discovery
 
+> **Result:** 37 segment arrays (s*) found after loading a style -- sid, sname, sflags, sobjref, sobjoffset, sobjnodetm, sobjnode, sobjmtl, spos, srot, ssca, sxalign/syalign/szalign, spadin/spadout/spadtop/spadbottom, sfixedsize, sinstance, sbend, sslice, snesting, srandtrans/rot/scale/mat, srt1/2, srr1/2, srs1/2, smaterial, smapping, smapreal, smapchans, smapsize/off/rotx/y/z. These are likely read-only from MAXScript (populated by the style graph internally).
+
 ```maxscript
 -- After loading a style, probe for generator/segment-related properties
 (
@@ -408,6 +464,8 @@ try (
 ```
 
 ### 3.9 Installed Script Discovery
+
+> **Result:** Not yet executed. To be run if library XML parsing (Section 7.1 Option A) is pursued.
 
 ```maxscript
 -- Look for RailClone .ms files in the 3ds Max installation
@@ -535,7 +593,8 @@ rc.banode[2] = getNodeByName "<spline2>"
 ```maxscript
 local rc = RailClone_Pro name:"<name>"
 local loadResult = rc.railclone.loadLibraryItemByPath "<style_path>"
-if loadResult != 0 then (
+-- NOTE: loadResult == 1 means success (confirmed by introspection)
+if loadResult != 1 then (
     delete rc
     "{\\"error\\":\\"Failed to load style: <style_path>\\"}"
 ) else (
@@ -545,6 +604,8 @@ if loadResult != 0 then (
         if sp != undefined do rc.banode[i] = sp
     )
     -- Return JSON with style info + exposed parameters
+    -- NOTE: rc.style remains "" after load; use getStyleDesc() for description
+    -- NOTE: paname.count may be 0 if style has no exposed Numeric nodes
 )
 ```
 
@@ -591,8 +652,10 @@ for paramKey in parameterKeys do (
         case ptype of (
             0: rc.paintval[idx] = <value> as integer
             1: rc.pafloatval[idx] = <value> as float
-            2: rc.pafloatval[idx] = <value> as float
             3: rc.paunitval[idx] = <value>
+            -- Additional types confirmed by introspection:
+            -- paboolval for boolean params, pastrval for string params
+            -- palimit[idx] indicates if min/max constraints are active
         )
     )
 )
@@ -641,7 +704,12 @@ local rc = getNodeByName "<name>"
 **MAXScript logic**:
 ```maxscript
 local rc = getNodeByName "<name>"
-rc.setProxyMode <mode> "<proxy_file>"
+rc.railclone.setProxyMode <mode> "<proxy_file>"
+-- Additional display properties confirmed by introspection:
+-- rc.vmesh (integer), rc.adaptfaces (integer), rc.cloudens (integer)
+-- rc.rmesh (integer), rc.rendermode (boolean), rc.maxseg (integer)
+-- rc.maxfaces (float), rc.proxymode (integer), rc.proxyfile (filename)
+-- rc.autoupdate (boolean), rc.disabled (boolean)
 ```
 
 ### 5.7 `railclone_instantiate` -- Convert to Instances

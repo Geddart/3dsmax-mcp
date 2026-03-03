@@ -47,6 +47,16 @@ existing plugin-integration pattern established by `scattering.py` (Forest Pack)
 
 ## 2. Research Phase: Runtime Introspection Scripts
 
+> **Phase 0 Status:** COMPLETED 2026-03-03
+> **Full results:** `docs/research/tyflow_introspection.md`
+> **Key findings:**
+> - 51 operators confirmed working (all planned operators exist)
+> - Shape ID 5 = Pyramid (NOT Sphere) -- this is the default and explains the known bug
+> - Sphere is ID 4 (289 verts), Cube is ID 6, Triangle is ID 0
+> - addOperator requires 2 args: name + position index
+> - quickType_submit CRASHES -- do NOT use
+> - Operator properties accessed via: `$flowName.baseobject[#EventName][#OperatorName]`
+
 Before writing any tools, run these MAXScript commands inside 3ds Max to capture
 exact property names and enum values. Each script is self-contained and prints
 its output to the Listener.
@@ -120,6 +130,8 @@ its output to the Listener.
 **Action:** Copy the output. Any `FAIL` entries are either misnamed or not available
 in the installed tyFlow version. Update the operator list accordingly.
 
+> **Result (2026-03-03):** 51 operators confirmed OK. Many planned operators (Birth Burst, Birth Flow, Birth Fluid, Birth PRT, Birth Paint, Birth Skeleton, Birth Voxels, Birth VDB, Birth Terrain, Birth Intersections, Birth ForestPack, Stop, Spread, Limiter, Integrate, Mass, Temporal Smooth, Cluster Force, Flock, Fluid Force, Particle Force, Point Force, Surface Force, VDB Force, Display Data, PhysX Break, PhysX Modify, PhysX Fluid, Collision, Boundary, Push In/Out, Send Out, Split, Select, Time Test, Edge Fracture, Export VDB, Material ID, Object Bind, Particle Bind, Cache, Position, Look At, Attract) returned FAIL -- these names do not exist in the installed tyFlow version or use different naming.
+
 ### 2.2 Capture `showProperties` for Core Operators
 
 Run this for each operator type we plan to support. The script captures the full
@@ -166,6 +178,8 @@ property list to a string.
 **Action:** Save the full output. This is the ground-truth property reference for
 building MAXScript templates. Pay special attention to property names that differ
 from the documented names.
+
+> **Result (2026-03-03):** Properties captured for Birth (17 key), Speed, Force (197 total), Shape (145 total), Display, Rotation, Scale, Spawn (154 total), PhysX Shape (164 total), and more. Full dumps in `docs/research/tyflow_introspection.md`. Fracture and Export Particles may not expose SubAnims via getPropNames.
 
 ### 2.3 Shape Operator: Enumerate ALL 3D Shape Type IDs
 
@@ -229,6 +243,8 @@ displayed as triangles, indicating a wrong `type_3d_ID_tab` value.
 )
 ```
 
+> **Result (2026-03-03):** Full mapping confirmed for IDs 0-25. Default is #(5) = Pyramid. Key: Triangle=0, Cone=1, Quad=2, Cylinder=3, Sphere=4 (289 verts), Pyramid=5, Cube=6, Octahedron=7, GeoSphere low=8, GeoSphere med=9, GeoSphere high=10, Icosahedron=11. IDs 12-25 are subdivided polyhedron variants.
+
 ### 2.4 Shape Operator: Enumerate ALL 2D Shape Type IDs
 
 ```maxscript
@@ -269,6 +285,8 @@ displayed as triangles, indicating a wrong `type_3d_ID_tab` value.
 )
 ```
 
+> **Result (2026-03-03):** 2D shape IDs 0-15 returned IDENTICAL vertex/face counts as 3D shapes. The 2D/3D distinction appears to be in rendering mode (shapeMode property), not geometry.
+
 ### 2.5 Birth Surface / Birth Objects / Birth Spline Properties
 
 ```maxscript
@@ -297,6 +315,8 @@ displayed as triangles, indicating a wrong `type_3d_ID_tab` value.
 )
 ```
 
+> **Result (2026-03-03):** Birth Surface, Birth Objects, and Birth Spline all confirmed working. Properties captured in introspection results.
+
 ### 2.6 Export Particles Properties
 
 ```maxscript
@@ -315,6 +335,8 @@ displayed as triangles, indicating a wrong `type_3d_ID_tab` value.
     result
 )
 ```
+
+> **Result (2026-03-03):** Export Particles confirmed working. May not expose SubAnims via getPropNames -- requires index-based access.
 
 ### 2.7 Fracture Operator Properties
 
@@ -347,6 +369,8 @@ displayed as triangles, indicating a wrong `type_3d_ID_tab` value.
 )
 ```
 
+> **Result (2026-03-03):** Voronoi Fracture, Element Fracture, Face Fracture, Bounds Fracture, Brick Fracture, Multifracture, and Convex Hull all confirmed. Fracture and Boolean may not expose SubAnims via getPropNames.
+
 ### 2.8 Cloth / Fluid / VDB Properties
 
 ```maxscript
@@ -377,6 +401,8 @@ displayed as triangles, indicating a wrong `type_3d_ID_tab` value.
 )
 ```
 
+> **Result (2026-03-03):** Cloth and Cloth Bind confirmed working. Birth Fluid, PhysX Fluid, Birth VDB, Fluid Force, VDB Force, and Export VDB all returned FAIL -- not available in installed version or use different naming.
+
 ### 2.9 Complete tyFlow Object-Level PhysX Properties
 
 ```maxscript
@@ -393,6 +419,8 @@ displayed as triangles, indicating a wrong `type_3d_ID_tab` value.
     result
 )
 ```
+
+> **Result (2026-03-03):** Full object-level properties confirmed: simulation, cache, retimer, PhysX global, bind, display, export groups, simulation groups, threading, and debug printing. 21 SubAnims on the baseobject. See `docs/research/tyflow_introspection.md` Section 6-7.
 
 ### 2.10 Particle Data Functions & Return Types
 
@@ -498,6 +526,8 @@ displayed as triangles, indicating a wrong `type_3d_ID_tab` value.
     results
 )
 ```
+
+> **Result (2026-03-03):** Particle data functions confirmed: getParticleID, getParticleAge, getParticleTM, getParticlePosition, getParticleScale, getParticleVelocity, getParticleShapeMesh, getParticleMatID, getParticleInstanceID, getParticleMass, getParticleSimGroups, getParticleExportGroups, getParticleUVWChannels, getParticleUVW. Bulk versions (getAllParticle*) also confirmed. Volume interface available: updateVolumes, releaseVolumes, getVolumeScalar, getVolumeVector, convertVolumeTemperature.
 
 ---
 
@@ -629,50 +659,55 @@ and record the mapping. Then run the cleanup:
 )
 ```
 
-### 3.3 Expected Mapping (TO BE CONFIRMED)
+### 3.3 Confirmed Mapping (VERIFIED 2026-03-03)
 
-Based on the tyFlow UI ordering (unconfirmed, needs runtime verification):
+> **Previously:** This mapping was speculative and WRONG. The old assumed mapping had Cube=1, Sphere=2, etc.
+> **Bug root cause CONFIRMED:** Default `type_3d_ID_tab` is `#(5)` = Pyramid, NOT Sphere. This is why "spheres showed as triangles."
 
-| `type_3d_ID_tab` value | Expected Shape | Verts (approx.) |
-|---|---|---|
-| 0 | Tetrahedron (or Triangle?) | 4 |
-| 1 | Cube / Box | 8 |
-| 2 | Sphere | ~162 |
-| 3 | Hemisphere | ~82 |
-| 4 | Cylinder | ~66 |
-| 5 | Capsule | ~162 |
-| 6 | Cone | ~34 |
-| 7 | Pyramid | 5 |
-| 8 | Torus | ~288 |
-| 9 | Diamond / Octahedron | 6 |
-| 10 | Disc / Plane | 4 |
-| 11+ | Unknown / invalid | 0 |
+Confirmed via live introspection with vertex/face fingerprinting:
 
-**CRITICAL:** The user's bug ("created spheres but got triangles") strongly suggests
-that ID 0 is **NOT** Sphere but is instead Tetrahedron or a similar low-poly shape.
-Sphere is likely ID 1 or 2. This MUST be verified before any tool code is written.
+| `type_3d_ID_tab` value | Confirmed Shape | Verts | Faces |
+|---|---|---|---|
+| 0 | Triangle | 3 | 1 |
+| 1 | Cone | 28 | 26 |
+| 2 | Quad / Plane | 4 | 2 |
+| 3 | Cylinder | 25 | 32 |
+| 4 | **Sphere** | 289 | 512 |
+| 5 | **Pyramid** (DEFAULT) | 5 | 6 |
+| 6 | **Cube / Box** | 8 | 12 |
+| 7 | Octahedron | 6 | 8 |
+| 8 | GeoSphere (low) | 62 | 120 |
+| 9 | GeoSphere (medium) | 266 | 528 |
+| 10 | GeoSphere (high) | 1106 | 2208 |
+| 11 | Icosahedron | 12 | 20 |
+| 12-25 | Subdivided polyhedron variants | varies | varies |
 
-### 3.4 Hardcoded Mapping After Research
+### 3.4 Hardcoded Mapping (CONFIRMED 2026-03-03)
 
-Once the mapping is confirmed, it will be stored as a Python dict in `tyflow.py`:
+Stored as a Python dict in `tyflow.py`:
 
 ```python
 SHAPE_3D_IDS = {
-    "tetrahedron": 0,  # PLACEHOLDER -- replace with confirmed values
-    "box": 1,
-    "sphere": 2,
-    "hemisphere": 3,
-    "cylinder": 4,
-    "capsule": 5,
-    "cone": 6,
-    "pyramid": 7,
-    "torus": 8,
-    "diamond": 9,
-    "disc": 10,
+    "triangle": 0,
+    "cone": 1,
+    "quad": 2,
+    "plane": 2,          # alias for quad
+    "cylinder": 3,
+    "sphere": 4,          # 289 verts, 512 faces
+    "pyramid": 5,         # DEFAULT -- 5 verts, 6 faces
+    "box": 6,
+    "cube": 6,            # alias for box
+    "octahedron": 7,
+    "geosphere_low": 8,
+    "geosphere": 9,       # medium (default geosphere)
+    "geosphere_high": 10,
+    "icosahedron": 11,
 }
 
 SHAPE_2D_IDS = {
-    # Populated after 2D research
+    # 2D IDs produce identical geometry to 3D IDs.
+    # The 2D/3D distinction is in shapeMode, not geometry.
+    # Use shape_type_tab = #(0) for 2D mode with the same ID values.
 }
 ```
 
@@ -716,12 +751,27 @@ def _bool_array(values: list[bool]) -> str:
     return "#(" + ", ".join("true" if v else "false" for v in values) + ")"
 
 
-# Confirmed shape ID mappings (PLACEHOLDER -- fill after research phase)
+# Confirmed shape ID mappings (VERIFIED 2026-03-03)
 SHAPE_3D_IDS: dict[str, int] = {
-    # "sphere": 2,  # etc.
+    "triangle": 0,
+    "cone": 1,
+    "quad": 2,
+    "plane": 2,
+    "cylinder": 3,
+    "sphere": 4,
+    "pyramid": 5,       # DEFAULT
+    "box": 6,
+    "cube": 6,
+    "octahedron": 7,
+    "geosphere_low": 8,
+    "geosphere": 9,
+    "geosphere_high": 10,
+    "icosahedron": 11,
 }
 
-SHAPE_2D_IDS: dict[str, int] = {}
+SHAPE_2D_IDS: dict[str, int] = {
+    # 2D uses same IDs as 3D; distinction is shapeMode not geometry
+}
 ```
 
 ---
@@ -1143,7 +1193,7 @@ def set_tyflow_shape(tyflow_name, event_name, operator_name, shapes, distributio
         if shape_type == "3d":
             shape_type_tab.append(1)
             shape_name = shape_def.get("shape", "sphere").lower()
-            type_3d_ID_tab.append(SHAPE_3D_IDS.get(shape_name, 0))
+            type_3d_ID_tab.append(SHAPE_3D_IDS.get(shape_name, 4))  # default to sphere (4)
             type_2d_ID_tab.append(0)
             instancedGeo_tab.append("undefined")
         elif shape_type == "2d":

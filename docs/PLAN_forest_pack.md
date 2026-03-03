@@ -86,13 +86,28 @@ No changes to `src/server.py` are needed if we keep everything in `scattering.py
 
 ## 2. Research Phase -- Runtime Introspection Scripts
 
+> **Phase 0 Status:** COMPLETED 2026-03-03
+> **Full results:** `docs/research/forest_pack_introspection.md`
+> **Key findings:**
+> - 341 properties confirmed (plan estimated "200+")
+> - Distribution map: `distmap` (texturemap) -- confirmed
+> - Diversity: `divers` (integer), NOT `diversity`
+> - Cluster: `clusize`, `clurough`, `clunoise`, `cluedge` -- NOT `clustsize`, `clustrough`
+> - 27 area arrays (ar*) confirmed -- more than the 7 documented in existing tool
+> - trees interface confirmed with full CRUD (create, delete, edit, move, setPosition, setRotation, etc.)
+> - ForestLOD (19 props), ForestSet (7 props), ForestColor (18 props) -- ALL exist
+> - Forest_Lite does NOT exist in this installation
+> - 4 interfaces: trees, ForestPack, ui, scatalog/catalog
+
 **CRITICAL:** Forest Pack is a closed-source plugin with no published MAXScript API reference. Property names discovered online are incomplete and may vary between versions. The following introspection scripts MUST be run inside 3ds Max with Forest Pack installed before implementing any new tool.
 
 Run each script via the existing `execute_maxscript` tool or the MAXScript Listener.
 
 ### 2.1 Complete property dump
 
-This is the single most important research step. Forest Pack objects can have 200+ properties.
+> **Result:** 341 properties found via getPropNames. Full dump in `docs/research/forest_pack_introspection.md` Section 1.
+
+This is the single most important research step. Forest Pack objects have 341 properties (confirmed).
 
 ```maxscript
 -- Dump ALL Forest_Pro properties with types and current values
@@ -133,6 +148,8 @@ This is the single most important research step. Forest Pack objects can have 20
 
 ### 2.2 Show interfaces (methods and functions)
 
+> **Result:** 4 interfaces found: trees (full CRUD), ForestPack (engine/export), ui (rollup), scatalog/catalog (browser). See introspection doc Section 2.
+
 ```maxscript
 -- Dump all interfaces available on a Forest_Pro object
 (
@@ -160,6 +177,8 @@ This is the single most important research step. Forest Pack objects can have 20
 Run these targeted queries to map Forest Pack's property namespace. Each focuses on a known UI rollout.
 
 #### Distribution properties
+
+> **Result:** Confirmed: `distmap`, `distmapchan`, `densityMap`, `distmode`, `divers` (NOT `diversity`), `clusize`/`clurough`/`clunoise`/`cluedge` (NOT `clustsize`/`clustrough`/`clustblur`/`clustnoise`), `collision`, `radius`, `collheight`, `threshold`, `maxdensity`.
 ```maxscript
 -- Find distribution-related properties
 (
@@ -186,6 +205,9 @@ Run these targeted queries to map Forest Pack's property namespace. Each focuses
 ```
 
 #### Area properties
+
+> **Result:** 27 area arrays with `ar*` prefix confirmed (plus `pf_aractivelist`). Includes falloff arrays `arflafdenslist`, `arflafscalist`, `arflinvlist` not previously documented. Per-area scale overrides via `arscalemin`, `arscalemax`, `arzoffset`.
+
 ```maxscript
 -- Find area-related properties
 (
@@ -211,6 +233,9 @@ Run these targeted queries to map Forest Pack's property namespace. Each focuses
 ```
 
 #### Transform properties
+
+> **Result:** Confirmed: `applytranslation`, `transxmin`-`transzmax`, `transmapx/y/z`, `transmap`, `applyrotation`, `xrotmin`-`zrotmax`, `rotmapx/y/z`, `rotmap`, `applyscale`, `scalexmin`-`scalezmax`, `scamapx/y/z`, `scamap`, `scalelock`, `mirror`. All with texture map support via `transmapchan`, `rotmapchan`, `scamapchan`.
+
 ```maxscript
 -- Find transform-related properties
 (
@@ -237,6 +262,9 @@ Run these targeted queries to map Forest Pack's property namespace. Each focuses
 ```
 
 #### Camera/LOD properties
+
+> **Result:** Confirmed: `camera`, `lookattarget`, `camlimit`, `uselookat`, `camlookat`, `camlod`, `camloddist`, `camlodlookat`, `camwidth`, `camnear`, `camfar`, `cambho`, `camdenscurve`, `camdensact`, `camscacurve`, `camscaact`, `camdensear`, `camdensfar`. No `limitvisibility` or `expand` -- use `camlimit` and `camwidth` instead.
+
 ```maxscript
 -- Find camera and LOD-related properties
 (
@@ -263,6 +291,9 @@ Run these targeted queries to map Forest Pack's property namespace. Each focuses
 ```
 
 #### Material/Color properties
+
+> **Result:** Confirmed: `tintmixmode`, `tintcolor1`, `tintcolor2`, `tintmin`, `tintmax`, `tintmode`, `tintmap`, `tintmapmode`, `tintmapchan`. Color correction: `mathue`, `matsaturation`, `matbrightness`, `matapply`, `matapplycolor`, `matrangewidth`. Opacity: `fastopac`, `tracedepth`, `opaclevel`, `selfillum`, `irradiance`. No `usetint` -- use `tintmode` instead.
+
 ```maxscript
 -- Find material and color-related properties
 (
@@ -289,6 +320,9 @@ Run these targeted queries to map Forest Pack's property namespace. Each focuses
 ```
 
 #### Animation properties
+
+> **Result:** Confirmed: `animation` (integer, NOT `animmode`), `animsoffset` (time), `animsamples` (integer), `animonlyrend` (boolean), `animap` (texturemap, NOT `animmap`), `animapchan` (integer), `animstart` (time), `animend` (time). No `animoffset` -- use `animsoffset` instead.
+
 ```maxscript
 -- Find animation-related properties
 (
@@ -314,6 +348,9 @@ Run these targeted queries to map Forest Pack's property namespace. Each focuses
 ```
 
 #### Display properties
+
+> **Result:** Confirmed: `vmesh` (integer), `geomtexid`, `vtype`, `adaptfaces`, `cloudcolorid`, `cloudens`, `vmaxitems`, `rmesh` (integer), `rskip`, `opacity`, `wireframe`, `rtype`, `rendermode`, `rmaxitems`, `maxfaces`, `hidecustom`, `manualupdate`, `disabled`, `dispflags`, `iconsize`.
+
 ```maxscript
 -- Find display-related properties
 (
@@ -341,6 +378,9 @@ Run these targeted queries to map Forest Pack's property namespace. Each focuses
 ```
 
 #### Surface properties
+
+> **Result:** Confirmed: `surflist`, `surflink`, `altlimited`, `altmax`, `altmin` (NOT `alttop`/`altbottom`), `surfaltdens`, `surfaltscal`, `slopelimited`, `slopemax`, `slopemin`, `surfslodens`, `surfsloscal`, `surfanim`, `linkeditsurf`, `direction`, `scalelope`, `surfmode`, `uvalign`, `uvscalex`, `uvscaley`, `uvmultscalex`, `uvmultscaley`.
+
 ```maxscript
 -- Find surface-related properties
 (
@@ -366,6 +406,8 @@ Run these targeted queries to map Forest Pack's property namespace. Each focuses
 ```
 
 ### 2.4 Discover the "trees" interface
+
+> **Result:** Full CRUD confirmed -- create, delete, edit, count, move, setPosition/getPosition, setRotation/getRotation, setWidth/getWidth, setHeight/getHeight, setSize/getSize, setGeomID/getGeomID, setSeed/getSeed, getFullTransform, getSelected, update, update_ui, plus render helpers.
 
 Forest Pack exposes a programmatic interface for per-item manipulation:
 
@@ -393,6 +435,8 @@ Forest Pack exposes a programmatic interface for per-item manipulation:
 ```
 
 ### 2.5 Discover Forest LOD class
+
+> **Result:** ForestLOD EXISTS with 19 properties including cobjlist, matlist, namelist, geomlist, distlist, screensizelist, iconsize, mode, distance, variation, update.
 
 ```maxscript
 -- Check if ForestLOD class exists and dump its properties
@@ -429,6 +473,8 @@ Forest Pack exposes a programmatic interface for per-item manipulation:
 ```
 
 ### 2.6 Discover Forest Set and Forest Color classes
+
+> **Result:** ForestSet EXISTS (7 props: nodelist, iconsize, layerimport, layerchilds, layernames, wirecolor, disabled). ForestColor EXISTS (18 props: mapbase, mapidmode, colorbase, maplist, maponlist, colorlist, problist, tintmixmode, tintvariation, override, tintcolor1, tintcolor2, tintmin, tintmax, tintmode, tintmap, tintmapmode, applycor). Forest_Lite NOT FOUND.
 
 ```maxscript
 -- Check for Forest Set and Forest Color map classes
@@ -579,9 +625,9 @@ def get_forest_pack_info(name: str) -> str:
   - **Areas:** `fp.arnodelist`, `fp.arnamelist`, `fp.artypelist`, `fp.arincexclist`, `fp.pf_aractivelist` -- full area configuration
   - **Distribution:** `fp.maxdensity`, `fp.units_x`, `fp.units_y`, distribution mode (needs property discovery), `fp.distmap` (if texture assigned)
   - **Transform:** `fp.applyScale`, `fp.scalelock`, `fp.scalexmin/max`, `fp.scaleymin/max`, `fp.scalezmin/max`, `fp.applyRotation`, `fp.xrotmin/max`, `fp.yrotmin/max`, `fp.zrotmin/max`, `fp.applyTranslation` (if exists)
-  - **Surface:** `fp.direction`, altitude/slope limits (property names TBD from introspection)
-  - **Camera:** clipping enabled, far clip distance, expand, look-at (property names TBD)
-  - **Animation:** mode, sample count, time offset (property names TBD)
+  - **Surface:** `fp.direction`, `fp.altlimited`, `fp.altmin`, `fp.altmax`, `fp.slopelimited`, `fp.slopemin`, `fp.slopemax`, `fp.surfaltdens`, `fp.surfaltscal`, `fp.surfslodens`, `fp.surfsloscal`
+  - **Camera:** `fp.camera`, `fp.camlimit`, `fp.camnear`, `fp.camfar`, `fp.cambho`, `fp.uselookat`, `fp.lookattarget`, `fp.camlod`, `fp.camloddist`
+  - **Animation:** `fp.animation`, `fp.animsamples`, `fp.animsoffset`, `fp.animstart`, `fp.animend`, `fp.animonlyrend`, `fp.animap`
   - **Display:** `fp.vmesh`, `fp.rmesh`, `fp.iconSize`
   - **General:** `fp.seed`, `fp.name`
 
@@ -900,7 +946,7 @@ def set_forest_pack_distribution_map(
 - Property name is likely `fp.distmap` (needs verification in Phase 1)
 - If `map_file` provided: `fp.distmap = Bitmaptexture filename:"<path>"`
 - If `map_variable` provided: `fp.distmap = <variable>`
-- Set threshold property (name TBD from introspection)
+- Set `fp.threshold` (integer) for density threshold
 - Optionally set density units
 
 ---
@@ -917,8 +963,8 @@ def set_forest_pack_cluster_settings(
     enabled: bool = True,
     cluster_size_cm: float = 100.0,
     roughness: float = 50.0,
-    blur: float = 50.0,
     noise: float = 0.0,
+    edge: float = 0.0,
 ) -> str:
     """Configure cluster distribution on a Forest Pack object.
 
@@ -929,16 +975,21 @@ def set_forest_pack_cluster_settings(
     Args:
         name: The Forest Pack object name.
         enabled: Enable cluster mode.
-        cluster_size_cm: Cluster size in centimeters.
-        roughness: Cluster boundary roughness (0-100%).
-        blur: Cluster edge blur (0-100%).
-        noise: Random noise to break up clusters (0-100%).
+        cluster_size_cm: Cluster size in centimeters (property: clusize).
+        roughness: Cluster boundary roughness (property: clurough, float).
+        noise: Random noise to break up clusters (property: clunoise, float).
+        edge: Cluster edge softness (property: cluedge, float).
     """
 ```
 
-**MAXScript approach:**
-- Property names likely: `fp.diversity` (mode: 0=random, 1=color match, 2=cluster), `fp.clustsize`, `fp.clustrough`, `fp.clustblur`, `fp.clustnoise`
-- Exact names MUST come from Phase 1 introspection
+**MAXScript approach (confirmed property names):**
+- Diversity mode: `fp.divers` (integer) -- NOT `fp.diversity`
+- Diversity map: `fp.divtmap` (texturemap), `fp.divmapchan` (integer), `fp.divmapnoise` (float)
+- Cluster size: `fp.clusize` (worldUnits) -- NOT `fp.clustsize`
+- Cluster roughness: `fp.clurough` (float) -- NOT `fp.clustrough`
+- Cluster noise: `fp.clunoise` (float) -- NOT `fp.clustnoise`
+- Cluster edge: `fp.cluedge` (float) -- no `clustblur` exists
+- All names confirmed via Phase 0 introspection
 
 ---
 
@@ -969,8 +1020,12 @@ def set_forest_pack_edge_settings(
     """
 ```
 
-**MAXScript approach:**
-- Property names TBD from introspection (likely `fp.edgemode`, `fp.falldensity`, `fp.fallscale` or similar)
+**MAXScript approach (confirmed property names):**
+- Edge/boundary checking mode is per-area via `fp.arboundchecklist` (integer array) -- NOT a single `fp.edgemode`
+- Falloff density per-area: `fp.arflafdenslist` (float array) -- NOT `fp.falldensity`
+- Falloff scale per-area: `fp.arflafscalist` (float array) -- NOT `fp.fallscale`
+- Falloff invert per-area: `fp.arflinvlist` (boolean array)
+- NOTE: edge settings are per-area, not global. Tool signature may need revision to accept `area_index`.
 
 ---
 
@@ -1035,7 +1090,8 @@ def set_forest_pack_transform(
 **MAXScript approach:**
 - Known property names: `fp.applyScale`, `fp.scalelock`, `fp.scalexmin`, `fp.scalexmax`, `fp.scaleymin`, `fp.scaleymax`, `fp.scalezmin`, `fp.scalezmax`
 - Known: `fp.applyRotation`, `fp.xrotmin`, `fp.xrotmax`, `fp.yrotmin`, `fp.yrotmax`, `fp.zrotmin`, `fp.zrotmax`
-- Translation and mirror property names TBD from introspection
+- Translation: `fp.applytranslation`, `fp.transxmin`, `fp.transxmax`, `fp.transymin`, `fp.transymax`, `fp.transzmin`, `fp.transzmax`, `fp.transmapx`, `fp.transmapy`, `fp.transmapz`, `fp.transmap`
+- Mirror: `fp.mirror` (boolean)
 
 ---
 
@@ -1078,7 +1134,8 @@ def set_forest_pack_color_variation(
 ```
 
 **MAXScript approach:**
-- Property names TBD from introspection. Expected patterns: `fp.usetint`, `fp.tintcolor1`, `fp.tintcolor2`, `fp.tintmin`, `fp.tintmax`, `fp.hueshift`, `fp.saturation`, `fp.brightness`
+- Confirmed property names: `fp.tintmixmode` (integer), `fp.tintcolor1` (color), `fp.tintcolor2` (color), `fp.tintmin` (integer), `fp.tintmax` (integer), `fp.tintmode` (integer), `fp.tintmap` (texturemap), `fp.tintmapmode` (integer), `fp.tintmapchan` (integer)
+- Color correction: `fp.mathue` (float), `fp.matsaturation` (float), `fp.matbrightness` (float), `fp.matapply` (boolean), `fp.matapplycolor` (color)
 - Color values converted to MAXScript `color R G B` format
 
 ---
@@ -1116,7 +1173,7 @@ def set_forest_pack_camera_clipping(
 ```
 
 **MAXScript approach:**
-- Property names TBD from introspection. Expected patterns: `fp.limitvisibility`, `fp.expand`, `fp.farclip`, `fp.farclipDist`, `fp.backoffset`, `fp.camobj`
+- Confirmed property names: `fp.camera` (node), `fp.camlimit` (boolean), `fp.camnear` (worldUnits), `fp.camfar` (worldUnits), `fp.cambho` (worldUnits = back offset), `fp.uselookat` (boolean), `fp.lookattarget` (node), `fp.camlookat` (boolean), `fp.camlod` (boolean), `fp.camloddist` (worldUnits), `fp.camwidth` (integer)
 
 ---
 
@@ -1158,7 +1215,7 @@ def set_forest_pack_animation(
 ```
 
 **MAXScript approach:**
-- Property names TBD from introspection. Expected: `fp.animmode`, `fp.animsamples`, `fp.animoffset`, `fp.animstart`, `fp.animend`, `fp.animmap`
+- Confirmed property names: `fp.animation` (integer = mode), `fp.animsamples` (integer), `fp.animsoffset` (time), `fp.animstart` (time), `fp.animend` (time), `fp.animap` (texturemap), `fp.animapchan` (integer), `fp.animonlyrend` (boolean)
 
 ---
 
@@ -1187,7 +1244,8 @@ def set_forest_pack_lod(
 ```
 
 **MAXScript approach:**
-- Property names TBD from introspection. Expected: `fp.lodoverridedist`, `fp.lodusenvrange`
+- LOD uses per-item distances via ForestLOD helper class (properties: `distlist`, `screensizelist`, `mode`, `distance`, `variation`)
+- Camera density/scale curves: `fp.camdenscurve` (maxObject), `fp.camdensact` (boolean), `fp.camscacurve` (maxObject), `fp.camscaact` (boolean), `fp.camdensear` (worldUnits), `fp.camdensfar` (worldUnits)
 
 ---
 
@@ -1268,8 +1326,8 @@ def set_forest_pack_path_distribution(
 ```
 
 **MAXScript approach:**
-- Switch distribution mode property to path mode (property name TBD)
-- Set spacing, follow, offset properties (names TBD)
+- Switch distribution mode: `fp.distmode` (integer) — set to path mode value
+- Path properties: `fp.distpathnodes` (node array), `fp.distpathmode` (integer), `fp.distpathspacing` (worldUnits), `fp.distpathoffset` (worldUnits), `fp.distpathrandpos` (worldUnits), `fp.distpathxfollow` (boolean), `fp.distpathzfollow` (boolean), `fp.distpathgeomid` (integer)
 - Add splines to area list as path type
 
 ---

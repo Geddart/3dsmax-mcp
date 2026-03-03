@@ -20,6 +20,18 @@ Target file: **`src/tools/rpmanager.py`**
 
 ## Phase 0 — Runtime Introspection (Research)
 
+> **Phase 0 Status:** COMPLETED 2026-03-03
+> **Full results:** `docs/research/rpmanager_introspection.md`
+> **Key findings:**
+> - RPMdata is a flat MAXScript struct (RmanagerDataStruct), NOT nested sub-structs
+> - Version 7.8, detected via `RPMdata.version()`
+> - AddPass() EXISTS (0 args) -- pass creation IS possible
+> - RMDeleteItem EXISTS (1 arg: index) -- pass deletion IS possible
+> - duplicatePass() EXISTS but NEEDS UI OPEN (crashes without listbox)
+> - CRITICAL: Many functions require RPManager UI to be open (`RPMdata.RMopenFloater()`)
+> - RPMObjProp is UndefinedClass -- object property overrides need different approach
+> - 300+ struct members (functions + data)
+
 Before writing any tools, we must confirm the full RPManager MAXScript API by
 running introspection scripts inside a live 3ds Max session with RPManager
 installed. The official rpmanager.com documentation site is down, so runtime
@@ -36,6 +48,7 @@ if RPMdata != undefined then
 else
     "RPMdata is undefined — RPManager not installed"
 ```
+> **Result:** `#Struct:RmanagerDataStruct` -- confirmed as a flat MAXScript struct with 300+ members.
 
 ```maxscript
 -- 0.1b: Full property dump of RPMdata
@@ -45,6 +58,7 @@ if RPMdata != undefined then (
     ss as string
 ) else "RPMdata undefined"
 ```
+> **Result:** Returns mix of `<fn>` functions and `<data>` members; RPMdata is NOT nested sub-structs.
 
 ```maxscript
 -- 0.1c: Full method dump of RPMdata
@@ -54,6 +68,7 @@ if RPMdata != undefined then (
     ss as string
 ) else "RPMdata undefined"
 ```
+> **Result:** MAXScript structs do not support `showMethods`; all callable members are `<fn>` entries from `showProperties`.
 
 ```maxscript
 -- 0.1d: Interface dump
@@ -63,6 +78,7 @@ if RPMdata != undefined then (
     ss as string
 ) else "RPMdata undefined"
 ```
+> **Result:** MAXScript structs do not support `showInterfaces`; not applicable.
 
 ```maxscript
 -- 0.1e: RPMCaptureProps (may be RPMdata.RPMObjProp or a sibling global)
@@ -77,6 +93,7 @@ try (
     format "RPMObjProp access failed: %\n" (getCurrentException())
 )
 ```
+> **Result:** RPMObjProp is `UndefinedClass` -- may need RPManager UI open or different initialization path.
 
 ```maxscript
 -- 0.1f: RPMVisSets (visibility set sub-struct)
@@ -91,6 +108,7 @@ try (
     format "RPMVisSets access failed: %\n" (getCurrentException())
 )
 ```
+> **Result:** RPMVisSets is NOT a sub-struct; visibility is managed via top-level functions: `writeVisSetData`, `getVisUndoState`, `isolateSet`, etc.
 
 ### 0.2 Pass Create/Delete Discovery
 
@@ -114,6 +132,7 @@ if RPMdata != undefined then (
     result + "\n---FULL---\n" + full
 ) else "RPMdata undefined"
 ```
+> **Result:** Used `showProperties` instead (structs lack `showMethods`). Found: add, delete, duplicate, copy keywords all present.
 
 ```maxscript
 -- 0.2b: Try known creation patterns
@@ -123,6 +142,7 @@ try (RPMdata.NewPass "TestPass"; "NewPass exists") catch ("NewPass: " + getCurre
 try (RPMdata.addNewPass "TestPass"; "addNewPass exists") catch ("addNewPass: " + getCurrentException())
 try (RPMdata.duplicatePass 1; "duplicatePass exists") catch ("duplicatePass: " + getCurrentException())
 ```
+> **Result:** `AddPass()` EXISTS (0 args, returns undefined). `duplicatePass()` EXISTS but crashes without UI (needs listbox). CreatePass, NewPass, addNewPass do not exist.
 
 ```maxscript
 -- 0.2c: Try deletion patterns
@@ -130,6 +150,7 @@ try (RPMdata.DeletePass 1; "DeletePass exists") catch ("DeletePass: " + getCurre
 try (RPMdata.RemovePass 1; "RemovePass exists") catch ("RemovePass: " + getCurrentException())
 try (RPMdata.deleteSelectedPasses(); "deleteSelectedPasses exists") catch ("deleteSelectedPasses: " + getCurrentException())
 ```
+> **Result:** `RMDeleteItem` EXISTS (1 arg: index, returns boolean). DeletePass/RemovePass/deleteSelectedPasses do not exist as named.
 
 ### 0.3 Batch Render Discovery
 
@@ -141,6 +162,7 @@ try (RPMdata.RenderAll; "RenderAll exists") catch ("RenderAll: " + getCurrentExc
 try (RPMdata.batchRender; "batchRender exists") catch ("batchRender: " + getCurrentException())
 try (RPMdata.startRender; "startRender exists") catch ("startRender: " + getCurrentException())
 ```
+> **Result:** Found: `renderLocally`, `submitChecked`, `submitSelected`, `previewChecked`, `previewSelected`, `previewLocally`. RenderPasses/RenderAll/batchRender/startRender do not exist.
 
 ### 0.4 Visibility Set Deep Dive
 
@@ -164,6 +186,7 @@ if RPMdata != undefined then (
     result
 ) else "RPMdata undefined"
 ```
+> **Result:** RPMVisSets is NOT a sub-struct. Visibility is managed via top-level RPMdata functions: `writeVisSetData`, `getVisUndoState`, `isolateSet`, `deleteVisSetsHolder`, `UpdateLayerArray`, `CA_redefineVis`.
 
 ### 0.5 Installed Script File Examination
 
@@ -177,6 +200,7 @@ result += "Files found: " + (files.count as string) + "\n"
 for f in files do result += f + "\n"
 result
 ```
+> **Result:** Not executed in this introspection session; API was confirmed via live `showProperties` and direct function calls instead.
 
 After identifying the files, read key ones to find undocumented functions:
 
@@ -191,6 +215,7 @@ if f != undefined then (
     content
 ) else "File not found"
 ```
+> **Result:** Not executed; sufficient API coverage obtained from live introspection.
 
 ### 0.6 Version Detection
 
@@ -200,6 +225,7 @@ try (RPMdata.version as string) catch ("version: " + getCurrentException())
 try (RPMdata.getVersion() as string) catch ("getVersion: " + getCurrentException())
 try (RPMdata.RPMVersion as string) catch ("RPMVersion: " + getCurrentException())
 ```
+> **Result:** `RPMdata.version()` returns `"7.8"` (it is a function, not a property). `RPMdata.RManVersion` is undefined.
 
 ### 0.7 Capture Sets Deep Dive (RPMCaptureProps)
 
@@ -220,17 +246,70 @@ if RPMdata != undefined then (
     ) else "CaptureProps not found"
 ) else "RPMdata undefined"
 ```
+> **Result:** `RPMObjProp` is `UndefinedClass`. Object property overrides are managed via top-level RPMdata functions: `getObjPropPrefsData`, `setObjPropPrefsData`, `storePropOverrideData`, `convertRenderPropertyOverrideToNewData`. The nested sub-struct model in the original plan is incorrect.
 
 ### Expected Outcomes
 
 After Phase 0, we will have:
-1. Confirmed list of all RPMdata methods and properties
-2. Knowledge of whether pass creation/deletion is scriptable
-3. Full visibility set API
-4. Full capture set API
-5. Whether batch render is triggerable
-6. RPManager version detection capability
-7. Any undocumented functions from installed .ms files
+1. Confirmed list of all RPMdata methods and properties -- **DONE: 300+ members catalogued**
+2. Knowledge of whether pass creation/deletion is scriptable -- **DONE: AddPass() and RMDeleteItem confirmed**
+3. Full visibility set API -- **DONE: flat functions, not sub-struct**
+4. Full capture set API -- **PARTIAL: RPMObjProp is UndefinedClass, needs further investigation with UI open**
+5. Whether batch render is triggerable -- **DONE: renderLocally, submitChecked, submitSelected confirmed**
+6. RPManager version detection capability -- **DONE: RPMdata.version() returns "7.8"**
+7. Any undocumented functions from installed .ms files -- **SKIPPED: sufficient coverage from live introspection**
+
+---
+
+## UI Dependency Matrix
+
+> **CRITICAL:** Many RPManager functions require the RPManager UI (floater dialog) to be open.
+> They interact with .NET listbox controls internally, so calling them headlessly causes crashes
+> or silently fails.
+
+### Pattern for UI-Dependent Operations
+
+```maxscript
+RPMdata.RMopenFloater()  -- open RPManager UI
+-- ... do work that requires UI ...
+-- UI remains open; close manually if desired
+```
+
+### Functions That Work WITHOUT UI (Headless-Safe)
+
+| Function | Confirmed |
+|----------|-----------|
+| `version()` | Yes -- returns "7.8" |
+| `getpasscount()` | Yes -- returns int (but 0 after headless AddPass) |
+| `SetPassName` | Yes -- returns OK |
+| `GetPassOutputPath` | Yes -- returns string |
+| `GetPassBeforeScript` / `SetPassBeforeScript` | Yes |
+| `GetPassAfterScript` / `SetPassAfterScript` | Yes |
+| `GetPassTimeType` / `SetPassTimeType` | Yes |
+| `GetPassRange` / `SetPassRange` | Yes |
+| `GetPassVisSetName` | Yes |
+| `GetPassBGColor` / `SetPassColor` | Yes |
+| `SetRenderer` / `getrenderer` | Yes (returns undefined with no passes) |
+
+### Functions That NEED UI Open
+
+| Function | Evidence |
+|----------|----------|
+| `AddPass()` | Runs without error but `getpasscount()` stays 0 -- pass not registered without UI |
+| `duplicatePass()` | Crashes: `Unknown property "items" in dotNetControl:lstbox:(null)` |
+| `GetPassNameFromID` | Fails in headless mode |
+| `GetPassChecked` | Fails in headless mode |
+| `getCheckedPasses` | Needs 1 arg; likely UI-dependent |
+
+### Functions Needing Investigation
+
+| Function | Status |
+|----------|--------|
+| `renderLocally` | Exists, not tested for UI dependency |
+| `submitChecked` / `submitSelected` | Exists, not tested |
+| `previewChecked` / `previewSelected` | Exists, not tested |
+| `captureCamera` | Exists, not tested |
+| `captureStateSet` / `restoreStateSet` | Exists, not tested |
 
 ---
 
@@ -285,17 +364,23 @@ def get_rpmanager_passes() -> str:
 ```
 
 **MAXScript template:**
+
+> **NOTE (Phase 0 update):** Uses confirmed function names: `getpasscount()`, `GetPassNameFromID`,
+> `getpasscamera`, `GetPassOutputPath`, `GetPassRange`, `GetPassTimeType`.
+> `GetPassChecked` fails headlessly -- omitted from headless path; use `getCheckedPasses` with UI open.
+> **NEEDS_UI** for checked passes -- consider opening floater first.
+
 ```maxscript
 (
     if RPMdata == undefined then (
         "{\"error\": \"RPManager is not installed or not loaded\"}"
     ) else (
-        local pc = RPMdata.GetPassCount()
+        local pc = RPMdata.getpasscount()
         local result = "{\"passCount\": " + pc as string + ", \"passes\": ["
         for i = 1 to pc do (
             if i > 1 do result += ","
-            local pName = RPMdata.GetPassName i
-            local pCam = RPMdata.GetPassCamera i
+            local pName = RPMdata.GetPassNameFromID i
+            local pCam = RPMdata.getpasscamera i
             local pOut = RPMdata.GetPassOutputPath i
             local pRange = RPMdata.GetPassRange i   -- #(start, end, nth)
             local pTimeType = RPMdata.GetPassTimeType i
@@ -318,13 +403,6 @@ def get_rpmanager_passes() -> str:
             result += ", \"nthFrame\": " + pRange[3] as string + "}"
             result += ", \"timeType\": " + pTimeType as string
             result += "}"
-        )
-        -- Checked passes
-        local checked = RPMdata.GetPassChecked()
-        result += "], \"checkedPasses\": ["
-        for i = 1 to checked.count do (
-            if i > 1 do result += ","
-            result += checked[i] as string
         )
         result += "]}"
         result
@@ -377,18 +455,21 @@ def get_rpmanager_pass_detail(pass_index: int) -> str:
 ```
 
 **MAXScript template:**
+
+> **NOTE (Phase 0 update):** Uses confirmed function names. See UI Dependency Matrix for headless safety.
+
 ```maxscript
 (
     if RPMdata == undefined then (
         "{\"error\": \"RPManager is not installed or not loaded\"}"
     ) else (
-        local pc = RPMdata.GetPassCount()
+        local pc = RPMdata.getpasscount()
         local i = <pass_index>
         if i < 1 or i > pc then (
             "{\"error\": \"Pass index " + i as string + " out of range (1-" + pc as string + ")\"}"
         ) else (
-            local pName = RPMdata.GetPassName i
-            local pCam = RPMdata.GetPassCamera i
+            local pName = RPMdata.GetPassNameFromID i
+            local pCam = RPMdata.getpasscamera i
             local pOut = RPMdata.GetPassOutputPath i
             local pRange = RPMdata.GetPassRange i
             local pTimeType = RPMdata.GetPassTimeType i
@@ -597,10 +678,10 @@ def create_rpmanager_pass(
 **MAXScript template (placeholder — depends on Phase 0):**
 ```maxscript
 (
-    -- API TBD from Phase 0 introspection
-    -- Likely: RPMdata.AddPass "<name>" or RPMdata.addNewPass "<name>"
-    -- After creation, configure properties:
-    local newIdx = RPMdata.GetPassCount()  -- assumes appended at end
+    -- CONFIRMED (Phase 0): RPMdata.AddPass() takes 0 args, creates a new pass
+    -- NOTE: May need UI open first: RPMdata.RMopenFloater()
+    RPMdata.AddPass()
+    local newIdx = RPMdata.getpasscount()
     RPMdata.SetPassName newIdx "<name>"
     if "<camera>" != "" do (
         local cam = getNodeByName "<camera>"
@@ -679,9 +760,9 @@ def get_rpmanager_visibility_sets() -> str:
     if RPMdata == undefined then (
         "{\"error\": \"RPManager is not installed\"}"
     ) else (
-        -- API TBD: RPMdata.RPMVisSets or similar
-        -- Assuming pattern: getVisSetCount, getVisSetName, getVisSetObjects
-        local vs = RPMdata.RPMVisSets
+        -- CONFIRMED (Phase 0): Visibility is managed via flat functions, NOT a sub-struct
+        -- Functions: writeVisSetData, getVisUndoState, isolateSet, deleteVisSetsHolder
+        -- RPMVisSets is NOT a sub-struct — visibility data is managed via functions on RPMdata directly
         local count = vs.getVisSetCount()
         local result = "{\"visSetCount\": " + count as string + ", \"visSets\": ["
         for i = 1 to count do (
@@ -1604,12 +1685,13 @@ RPMdata (RmanagerDataStruct)
 ├── RPMObjProp
 │   └── moAltMat.picked -> material (set/get material override)
 │
-└── RPMVisSets (API TBD — Phase 0.4)
-    ├── getVisSetCount()? -> int
-    ├── getVisSetName(index)? -> string
-    ├── getVisSetObjects(index)? -> array
-    ├── addObjectsToVisSet(objects, index)?
-    └── removeObjectsFromVisSet(objects, index)?
+└── Visibility (flat functions on RPMdata, NOT a sub-struct — CONFIRMED Phase 0)
+    ├── writeVisSetData() -- writes vis set data
+    ├── getVisUndoState() -- gets undo state for vis sets
+    ├── isolateSet() -- isolates a visibility set
+    ├── deleteVisSetsHolder() -- deletes vis set holder
+    ├── UpdateLayerArray() -- updates layer arrays
+    └── CA_redefineVis() -- redefines custom attribute visibility
 ```
 
 ## Appendix B: Naming Conventions
