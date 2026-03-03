@@ -942,12 +942,15 @@ def set_forest_pack_distribution_map(
     """
 ```
 
-**MAXScript approach:**
-- Property name is likely `fp.distmap` (needs verification in Phase 1)
+**MAXScript approach (confirmed property names):**
+- Distribution map: `fp.distmap` (texturemap) -- CONFIRMED
+- Distribution map channel: `fp.distmapchan` (integer) -- CONFIRMED
+- Distribution mode: `fp.distmode` (integer) -- CONFIRMED
+- Density map enabled: `fp.densityMap` (boolean) -- CONFIRMED
+- Threshold: `fp.threshold` (integer) -- CONFIRMED
 - If `map_file` provided: `fp.distmap = Bitmaptexture filename:"<path>"`
 - If `map_variable` provided: `fp.distmap = <variable>`
-- Set `fp.threshold` (integer) for density threshold
-- Optionally set density units
+- Optionally set density units via `fp.units_x`, `fp.units_y`
 
 ---
 
@@ -1087,11 +1090,14 @@ def set_forest_pack_transform(
     """
 ```
 
-**MAXScript approach:**
-- Known property names: `fp.applyScale`, `fp.scalelock`, `fp.scalexmin`, `fp.scalexmax`, `fp.scaleymin`, `fp.scaleymax`, `fp.scalezmin`, `fp.scalezmax`
-- Known: `fp.applyRotation`, `fp.xrotmin`, `fp.xrotmax`, `fp.yrotmin`, `fp.yrotmax`, `fp.zrotmin`, `fp.zrotmax`
-- Translation: `fp.applytranslation`, `fp.transxmin`, `fp.transxmax`, `fp.transymin`, `fp.transymax`, `fp.transzmin`, `fp.transzmax`, `fp.transmapx`, `fp.transmapy`, `fp.transmapz`, `fp.transmap`
-- Mirror: `fp.mirror` (boolean)
+**MAXScript approach (confirmed property names):**
+- Scale: `fp.applyscale`, `fp.scalelock` (integer), `fp.scalexmin`, `fp.scalexmax`, `fp.scaleymin`, `fp.scaleymax`, `fp.scalezmin`, `fp.scalezmax` (all integer)
+- Scale maps: `fp.scamapx`, `fp.scamapy`, `fp.scamapz` (boolean), `fp.scamap` (texturemap), `fp.scamapchan` (integer), `fp.scacolormap`, `fp.scaprobmap` (boolean), `fp.usescaprobcurve` (boolean), `fp.scaprobcurve` (maxObject)
+- Rotation: `fp.applyrotation`, `fp.xrotmin`, `fp.xrotmax`, `fp.yrotmin`, `fp.yrotmax`, `fp.zrotmin`, `fp.zrotmax` (all integer)
+- Rotation maps: `fp.rotmapx`, `fp.rotmapy`, `fp.rotmapz` (boolean), `fp.rotmap` (texturemap), `fp.rotmapchan` (integer), `fp.rotcolormap`, `fp.rotprobmap` (boolean), `fp.userotprobcurve` (boolean), `fp.rotprobcurve` (maxObject)
+- Translation: `fp.applytranslation` (boolean), `fp.transxmin`, `fp.transymin`, `fp.transzmin`, `fp.transxmax`, `fp.transymax`, `fp.transzmax` (all integer)
+- Translation maps: `fp.transmapx`, `fp.transmapy`, `fp.transmapz` (boolean), `fp.transmap` (texturemap), `fp.transmapchan` (integer), `fp.transcolormap`, `fp.transprobmap` (boolean)
+- Mirror: `fp.mirror` (boolean) -- NOT `fp.mirrorX` / `fp.useMirrorCustom`
 
 ---
 
@@ -1133,9 +1139,18 @@ def set_forest_pack_color_variation(
     """
 ```
 
-**MAXScript approach:**
-- Confirmed property names: `fp.tintmixmode` (integer), `fp.tintcolor1` (color), `fp.tintcolor2` (color), `fp.tintmin` (integer), `fp.tintmax` (integer), `fp.tintmode` (integer), `fp.tintmap` (texturemap), `fp.tintmapmode` (integer), `fp.tintmapchan` (integer)
-- Color correction: `fp.mathue` (float), `fp.matsaturation` (float), `fp.matbrightness` (float), `fp.matapply` (boolean), `fp.matapplycolor` (color)
+**MAXScript approach (confirmed property names):**
+- Tint mode: `fp.tintmode` (integer) -- NOT ~~`fp.usetint`~~
+- Tint mix mode: `fp.tintmixmode` (integer)
+- Tint color 1: `fp.tintcolor1` (color) -- CONFIRMED
+- Tint color 2: `fp.tintcolor2` (color) -- CONFIRMED
+- Tint strength min: `fp.tintmin` (integer) -- CONFIRMED
+- Tint strength max: `fp.tintmax` (integer) -- CONFIRMED
+- Tint texture: `fp.tintmap` (texturemap), `fp.tintmapmode` (integer), `fp.tintmapchan` (integer)
+- Hue shift: `fp.mathue` (float) -- NOT ~~`fp.hueshift`~~
+- Saturation: `fp.matsaturation` (float) -- NOT ~~`fp.saturation`~~
+- Brightness: `fp.matbrightness` (float) -- NOT ~~`fp.brightness`~~
+- Color correction enable: `fp.matapply` (boolean), `fp.matapplycolor` (color), `fp.matrangewidth` (float)
 - Color values converted to MAXScript `color R G B` format
 
 ---
@@ -1172,8 +1187,17 @@ def set_forest_pack_camera_clipping(
     """
 ```
 
-**MAXScript approach:**
-- Confirmed property names: `fp.camera` (node), `fp.camlimit` (boolean), `fp.camnear` (worldUnits), `fp.camfar` (worldUnits), `fp.cambho` (worldUnits = back offset), `fp.uselookat` (boolean), `fp.lookattarget` (node), `fp.camlookat` (boolean), `fp.camlod` (boolean), `fp.camloddist` (worldUnits), `fp.camwidth` (integer)
+**MAXScript approach (confirmed property names):**
+- Camera node: `fp.camera` (node) -- NOT ~~`fp.camobj`~~
+- Limit to camera: `fp.camlimit` (boolean) -- NOT ~~`fp.limitvisibility`~~
+- Camera width (expand FOV): `fp.camwidth` (integer) -- NOT ~~`fp.expand`~~
+- Near clip: `fp.camnear` (worldUnits)
+- Far clip: `fp.camfar` (worldUnits) -- NOT ~~`fp.farclipDist`~~
+- Back offset: `fp.cambho` (worldUnits) -- NOT ~~`fp.backoffset`~~
+- Look-at target: `fp.lookattarget` (node), `fp.uselookat` (boolean), `fp.camlookat` (boolean)
+- LOD by distance: `fp.camlod` (boolean), `fp.camloddist` (worldUnits), `fp.camlodlookat` (boolean)
+- Density curve: `fp.camdenscurve` (maxObject), `fp.camdensact` (boolean), `fp.camdensear`/`fp.camdensfar` (worldUnits)
+- Scale curve: `fp.camscacurve` (maxObject), `fp.camscaact` (boolean)
 
 ---
 
@@ -1214,8 +1238,14 @@ def set_forest_pack_animation(
     """
 ```
 
-**MAXScript approach:**
-- Confirmed property names: `fp.animation` (integer = mode), `fp.animsamples` (integer), `fp.animsoffset` (time), `fp.animstart` (time), `fp.animend` (time), `fp.animap` (texturemap), `fp.animapchan` (integer), `fp.animonlyrend` (boolean)
+**MAXScript approach (confirmed property names):**
+- Animation mode: `fp.animation` (integer) -- NOT ~~`fp.animmode`~~
+- Animation samples: `fp.animsamples` (integer) -- CONFIRMED
+- Time offset: `fp.animsoffset` (time) -- NOT ~~`fp.animoffset`~~
+- Start/end frame: `fp.animstart` (time), `fp.animend` (time) -- CONFIRMED
+- Animation map: `fp.animap` (texturemap) -- NOT ~~`fp.animmap`~~
+- Animation map channel: `fp.animapchan` (integer)
+- Render only: `fp.animonlyrend` (boolean)
 
 ---
 
@@ -1243,9 +1273,12 @@ def set_forest_pack_lod(
     """
 ```
 
-**MAXScript approach:**
-- LOD uses per-item distances via ForestLOD helper class (properties: `distlist`, `screensizelist`, `mode`, `distance`, `variation`)
+**MAXScript approach (confirmed property names):**
+- Camera LOD enabled: `fp.camlod` (boolean) -- NOT ~~`fp.lodoverridedist`~~
+- LOD distance: `fp.camloddist` (worldUnits)
+- LOD look-at: `fp.camlodlookat` (boolean) -- NOT ~~`fp.lodusenvrange`~~
 - Camera density/scale curves: `fp.camdenscurve` (maxObject), `fp.camdensact` (boolean), `fp.camscacurve` (maxObject), `fp.camscaact` (boolean), `fp.camdensear` (worldUnits), `fp.camdensfar` (worldUnits)
+- NOTE: LOD is configured via ForestLOD helper objects (19 props including mode, distance, variation, distlist, screensizelist) used in the geometry list, combined with camera-level LOD toggles on the Forest_Pro object
 
 ---
 
@@ -1277,15 +1310,29 @@ def set_forest_pack_surface_settings(
         name: The Forest Pack object name.
         direction: -100 (down) to 0 (normal) to 100 (up). Use 0 for normal-aligned, 100 for world-up.
         altitude_limited: Enable altitude range restriction.
-        altitude_top_cm: Maximum altitude in cm.
-        altitude_bottom_cm: Minimum altitude in cm.
+        altitude_top_cm: Maximum altitude in cm (property: altmax).
+        altitude_bottom_cm: Minimum altitude in cm (property: altmin).
         slope_limited: Enable slope angle restriction.
         slope_min_deg: Minimum slope angle (0 = horizontal).
         slope_max_deg: Maximum slope angle (90 = vertical).
-        uv_mode: Use UV mapping coordinates instead of XY plane.
-        scale_to_slope: Scale items proportionally to terrain slope.
+        uv_mode: Use UV mapping coordinates instead of XY plane (property: uvalign).
+        scale_to_slope: Scale items proportionally to terrain slope (property: scalelope).
     """
 ```
+
+**MAXScript approach (confirmed property names):**
+- Direction: `fp.direction` (integer) -- CONFIRMED
+- Altitude limited: `fp.altlimited` (boolean) -- CONFIRMED
+- Altitude max: `fp.altmax` (worldUnits) -- NOT ~~`fp.alttop`~~
+- Altitude min: `fp.altmin` (worldUnits) -- NOT ~~`fp.altbottom`~~
+- Altitude affects density: `fp.surfaltdens` (boolean), scale: `fp.surfaltscal` (boolean)
+- Slope limited: `fp.slopelimited` (boolean) -- CONFIRMED
+- Slope min: `fp.slopemin` (float) -- CONFIRMED
+- Slope max: `fp.slopemax` (float) -- CONFIRMED
+- Slope affects density: `fp.surfslodens` (boolean), scale: `fp.surfsloscal` (boolean)
+- UV mode: `fp.uvalign` (boolean), `fp.uvscalex` (boolean), `fp.uvscaley` (boolean), `fp.uvmultscalex` (float), `fp.uvmultscaley` (float)
+- Scale to slope: `fp.scalelope` (boolean)
+- Surface mode: `fp.surfmode` (integer), `fp.surfanim` (boolean), `fp.linkeditsurf` (boolean)
 
 ---
 
@@ -1325,10 +1372,17 @@ def set_forest_pack_path_distribution(
     """
 ```
 
-**MAXScript approach:**
-- Switch distribution mode: `fp.distmode` (integer) — set to path mode value
-- Path properties: `fp.distpathnodes` (node array), `fp.distpathmode` (integer), `fp.distpathspacing` (worldUnits), `fp.distpathoffset` (worldUnits), `fp.distpathrandpos` (worldUnits), `fp.distpathxfollow` (boolean), `fp.distpathzfollow` (boolean), `fp.distpathgeomid` (integer)
-- Add splines to area list as path type
+**MAXScript approach (confirmed property names):**
+- Switch distribution mode: `fp.distmode` (integer) -- set to path mode value
+- Path nodes: `fp.distpathnodes` (node array)
+- Path mode: `fp.distpathmode` (integer)
+- Path geometry ID: `fp.distpathgeomid` (integer)
+- Spacing: `fp.distpathspacing` (worldUnits) -- NOT ~~`fp.pathspacing`~~
+- Offset: `fp.distpathoffset` (worldUnits) -- NOT ~~`fp.pathoffset`~~
+- Random position: `fp.distpathrandpos` (worldUnits)
+- Follow X: `fp.distpathxfollow` (boolean) -- NOT ~~`fp.pathfollow`~~
+- Follow Z: `fp.distpathzfollow` (boolean)
+- Also available: Reference distribution (`fp.distrefnodes`, `fp.distrefmode`, `fp.distrefgetrot`, `fp.distrefgetscale`, `fp.distrefnumitems`, `fp.distrefrandpos`, `fp.distrefmatid`, `fp.distrefmatchname`, `fp.distrefmatchregex`) and PFlow distribution (`fp.distpflownodes`, `fp.distpflowgetrot`, `fp.distpflowgetscale`, `fp.distpflowallevents`, `fp.distpfloweventslist`)
 
 ---
 
@@ -1401,7 +1455,9 @@ result += "}"
 
 ### 4.2 Area list synchronization protocol
 
-This is the most error-prone aspect of Forest Pack scripting. The 7 area arrays MUST always be kept in sync:
+This is the most error-prone aspect of Forest Pack scripting. Phase 0 introspection confirmed **27 area arrays** (plus `pf_aractivelist`) with the `ar*` prefix. All synchronized arrays MUST always be kept in sync.
+
+**Core 7 arrays** (minimum required, used by existing `scatter_forest_pack`):
 
 | Array | Purpose | Per-element type |
 |-------|---------|-----------------|
@@ -1413,16 +1469,47 @@ This is the most error-prone aspect of Forest Pack scripting. The 7 area arrays 
 | `pf_aractivelist` | Active state | boolean |
 | `aridlist` | Unique integer ID | integer |
 
+**Additional area arrays** (confirmed via Phase 0 introspection -- all synchronized per-area):
+
+| Array | Purpose | Per-element type |
+|-------|---------|-----------------|
+| `arnodenamelist` | Node name cache | string |
+| `arresollist` | Resolution | integer |
+| `arslicelist` | Slice enabled | boolean |
+| `arslicetoplist` | Slice top height | worldUnits |
+| `arwidthlist` | Width | worldUnits |
+| `arforceopenlist` | Force open spline | boolean |
+| `armaplist` | Per-area density map | texturemap |
+| `arscalelist` | Per-area scale | float |
+| `arthresholdlist` | Per-area threshold | float |
+| `arsurfidlist` | Surface ID filter | string |
+| `arflafdenslist` | Falloff density | float |
+| `arflafscalist` | Falloff scale | float |
+| `arflinvlist` | Falloff invert | boolean |
+| `arselspeclist` | Species selection enabled | boolean |
+| `arspeclist` | Species selection list | string |
+| `arpaintlist` | Paint data | maxObject |
+| `arboundchecklist` | Boundary check mode | integer |
+| `arshapelist` | Shape mode | integer |
+| `arobscalelist` | Object scale | float |
+| `arlinkidlist` | Link ID | integer |
+| `arscalemin` | Per-area scale minimum | float |
+| `arscalemax` | Per-area scale maximum | float |
+| `arzoffset` | Per-area Z offset | worldUnits |
+
 **Rules:**
-1. All 7 arrays must have the same count at all times
-2. When adding: append to all 7, then set all 7 back
-3. When removing: delete from all 7 at same index, then set all 7 back
+1. All synchronized arrays must have the same count at all times
+2. When adding: append to ALL arrays (core 7 + any additional arrays that are populated), then set ALL back
+3. When removing: delete from ALL arrays at same index, then set ALL back
 4. `pf_aractivelist` must be `true` for each area that should produce results
 5. `aridlist` values must be unique integers (use max+1 for new entries)
+6. For new tools that only need basic areas, the core 7 arrays are sufficient -- Forest Pack initializes additional arrays with defaults
 
 ### 4.3 Geometry list synchronization protocol
 
-Source geometry arrays must also stay in sync:
+Source geometry arrays must also stay in sync. Phase 0 introspection confirmed **20 source geometry arrays**:
+
+**Core 6 arrays** (used by existing `scatter_forest_pack`):
 
 | Array | Purpose | Per-element type |
 |-------|---------|-----------------|
@@ -1430,43 +1517,87 @@ Source geometry arrays must also stay in sync:
 | `namelist` | Display name | string |
 | `problist` | Probability weight | float |
 | `geomlist` | Geometry type (2 = custom object) | integer |
-| `widthlist` | Source width | world units |
-| `heightlist` | Source height | world units |
+| `widthlist` | Source width | worldUnits |
+| `heightlist` | Source height | worldUnits |
+
+**Additional source geometry arrays** (confirmed via Phase 0 introspection):
+
+| Array | Purpose | Per-element type |
+|-------|---------|-----------------|
+| `matlist` | Material override | material |
+| `coloridlist` | Color ID | point3 |
+| `tempidlist` | Template ID | integer |
+| `tempnamelist` | Template name | string |
+| `scalelist` | Source scale | float |
+| `zoffsetlist` | Z offset | worldUnits |
+| `centerlist` | Center mode | integer |
+| `radiuslist` | Radius | integer |
+| `specidlist` | Species ID | integer |
+| `usemeshdimlist` | Use mesh dimensions | boolean |
+| `conamelist` | Custom object name | string |
+| `includechildlist` | Include children | boolean |
+| `keepgrouplist` | Keep group | boolean |
+| `nongeomlist` | Non-geometry flag | boolean |
 
 **Rules:**
 1. All arrays must have same count
 2. `geomlist` should be `2` for every custom object
 3. `problist` values are relative weights (Forest Pack normalizes them)
+4. `old_problist` (integer array) exists for legacy compatibility but `problist` (float array) should be used
 
 ### 4.4 Property name verification
 
-Many property names in this plan are **educated guesses** based on patterns seen in the existing code and UI labels. The exact names MUST be verified by running the introspection scripts from Section 2.
+> **Phase 0 introspection COMPLETED 2026-03-03.** All 341 property names are now confirmed. See `docs/research/forest_pack_introspection.md` for the full dump.
 
-**Known verified property names** (from working `scatter_forest_pack` tool):
+**All verified property names** (confirmed via live introspection):
+
+*From existing `scatter_forest_pack` tool (unchanged):*
 - `fp.surflist`, `fp.cobjlist`, `fp.namelist`, `fp.problist`, `fp.geomlist`
 - `fp.arnodelist`, `fp.arnamelist`, `fp.artypelist`, `fp.arincexclist`, `fp.arprojectlist`, `fp.pf_aractivelist`, `fp.aridlist`
 - `fp.widthlist`, `fp.heightlist`
 - `fp.maxdensity`, `fp.units_x`, `fp.units_y`
-- `fp.seed`, `fp.iconSize`, `fp.vmesh`, `fp.rmesh`, `fp.direction`
-- `fp.applyScale`, `fp.scalelock`, `fp.scalexmin`, `fp.scalexmax`, `fp.scaleymin`, `fp.scaleymax`, `fp.scalezmin`, `fp.scalezmax`
-- `fp.applyRotation`, `fp.zrotmin`, `fp.zrotmax`
+- `fp.seed`, `fp.iconsize`, `fp.vmesh`, `fp.rmesh`, `fp.direction`
+- `fp.applyscale`, `fp.scalelock`, `fp.scalexmin`, `fp.scalexmax`, `fp.scaleymin`, `fp.scaleymax`, `fp.scalezmin`, `fp.scalezmax`
+- `fp.applyrotation`, `fp.zrotmin`, `fp.zrotmax`
 
-**Unverified property names** (to be discovered in Phase 1):
-- Distribution map: `fp.distmap` (likely)
-- Distribution mode: `fp.maptype` or `fp.distmode`
-- Cluster: `fp.diversity`, `fp.clustsize`, `fp.clustrough`, `fp.clustblur`, `fp.clustnoise`
-- Collision: `fp.collradius`, `fp.collheight`
-- Camera: `fp.limitvisibility`, `fp.expand`, `fp.farclip`, `fp.farclipDist`, `fp.backoffset`
-- Tint: `fp.usetint`, `fp.tintcolor1`, `fp.tintcolor2`, `fp.tintmin`, `fp.tintmax`
-- Color correction: `fp.hueshift`, `fp.saturation`, `fp.brightness`
-- Animation: `fp.animmode`, `fp.animsamples`, `fp.animoffset`
-- Surface: `fp.altlimited`, `fp.alttop`, `fp.altbottom`, `fp.slopelimited`, `fp.slopemin`, `fp.slopemax`
-- Translation: `fp.applyTranslation`, `fp.transxmin`, `fp.transxmax`, etc.
-- Mirror: `fp.mirrorX`, `fp.useMirrorCustom`
-- Path mode: `fp.pathspacing`, `fp.pathfollow`, `fp.pathoffset`
-- Edge: `fp.edgemode`, `fp.falldensity`, `fp.fallscale`
-- LOD: `fp.lodoverridedist`, `fp.lodusenvrange`
-- Threads: `fp.cputhreads`
+*Newly confirmed -- corrections from original guesses are marked with ~~strikethrough~~:*
+- Distribution map: `fp.distmap` (texturemap) -- confirmed
+- Distribution mode: `fp.distmode` (integer) -- NOT ~~`fp.maptype`~~
+- Density map toggle: `fp.densityMap` (boolean)
+- Diversity: `fp.divers` (integer) -- NOT ~~`fp.diversity`~~
+- Diversity map: `fp.divtmap` (texturemap), `fp.divmapchan`, `fp.divmapnoise`
+- Cluster size: `fp.clusize` (worldUnits) -- NOT ~~`fp.clustsize`~~
+- Cluster roughness: `fp.clurough` (float) -- NOT ~~`fp.clustrough`~~
+- Cluster noise: `fp.clunoise` (float) -- NOT ~~`fp.clustnoise`~~
+- Cluster edge: `fp.cluedge` (float) -- ~~`fp.clustblur`~~ does NOT exist
+- Collision: `fp.collision` (boolean), `fp.radius` (integer), `fp.collheight` (integer) -- NOT ~~`fp.collradius`~~
+- Camera: `fp.camera` (node), `fp.camlimit` (boolean), `fp.camwidth` (integer), `fp.camnear` (worldUnits), `fp.camfar` (worldUnits), `fp.cambho` (worldUnits) -- NOT ~~`fp.limitvisibility`~~, ~~`fp.expand`~~, ~~`fp.farclip`~~, ~~`fp.farclipDist`~~, ~~`fp.backoffset`~~, ~~`fp.camobj`~~
+- Look-at: `fp.lookattarget` (node), `fp.uselookat` (boolean), `fp.camlookat` (boolean)
+- Camera LOD: `fp.camlod` (boolean), `fp.camloddist` (worldUnits), `fp.camlodlookat` (boolean)
+- Camera density/scale curves: `fp.camdenscurve`, `fp.camdensact`, `fp.camscacurve`, `fp.camscaact`, `fp.camdensear`, `fp.camdensfar`
+- Tint mode: `fp.tintmode` (integer) -- NOT ~~`fp.usetint`~~
+- Tint mix: `fp.tintmixmode` (integer)
+- Tint colors: `fp.tintcolor1` (color), `fp.tintcolor2` (color) -- confirmed
+- Tint range: `fp.tintmin` (integer), `fp.tintmax` (integer) -- confirmed
+- Tint map: `fp.tintmap` (texturemap), `fp.tintmapmode`, `fp.tintmapchan`
+- Color correction: `fp.mathue` (float), `fp.matsaturation` (float), `fp.matbrightness` (float) -- NOT ~~`fp.hueshift`~~, ~~`fp.saturation`~~, ~~`fp.brightness`~~
+- Color correction enable: `fp.matapply` (boolean), `fp.matapplycolor` (color), `fp.matrangewidth` (float)
+- Animation mode: `fp.animation` (integer) -- NOT ~~`fp.animmode`~~
+- Animation samples: `fp.animsamples` (integer) -- confirmed
+- Animation offset: `fp.animsoffset` (time) -- NOT ~~`fp.animoffset`~~
+- Animation map: `fp.animap` (texturemap) -- NOT ~~`fp.animmap`~~
+- Animation range: `fp.animstart` (time), `fp.animend` (time), `fp.animapchan` (integer), `fp.animonlyrend` (boolean)
+- Surface altitude: `fp.altlimited` (boolean), `fp.altmax` (worldUnits), `fp.altmin` (worldUnits) -- NOT ~~`fp.alttop`~~, ~~`fp.altbottom`~~
+- Surface slope: `fp.slopelimited` (boolean), `fp.slopemin` (float), `fp.slopemax` (float) -- confirmed
+- Surface extras: `fp.surfaltdens`, `fp.surfaltscal`, `fp.surfslodens`, `fp.surfsloscal`, `fp.surfanim`, `fp.surfmode`, `fp.scalelope`
+- Translation: `fp.applytranslation` (boolean), `fp.transxmin`-`fp.transzmax` (integer) -- confirmed (NOT ~~`fp.applyTranslation`~~ with capital T)
+- Translation maps: `fp.transmapx/y/z` (boolean), `fp.transmap` (texturemap), `fp.transmapchan`, `fp.transcolormap`, `fp.transprobmap`
+- Mirror: `fp.mirror` (boolean) -- NOT ~~`fp.mirrorX`~~, ~~`fp.useMirrorCustom`~~
+- Path distribution: `fp.distpathnodes` (node array), `fp.distpathmode`, `fp.distpathspacing` (worldUnits), `fp.distpathoffset` (worldUnits), `fp.distpathrandpos` (worldUnits), `fp.distpathxfollow`, `fp.distpathzfollow` -- NOT ~~`fp.pathspacing`~~, ~~`fp.pathfollow`~~, ~~`fp.pathoffset`~~
+- Edge/falloff: per-area arrays `fp.arboundchecklist`, `fp.arflafdenslist`, `fp.arflafscalist`, `fp.arflinvlist` -- NOT ~~`fp.edgemode`~~, ~~`fp.falldensity`~~, ~~`fp.fallscale`~~
+- LOD: `fp.camlod`, `fp.camloddist`, `fp.camlodlookat` -- NOT ~~`fp.lodoverridedist`~~, ~~`fp.lodusenvrange`~~
+- Threads: `fp.threads` (integer), `fp.autothreads` (boolean) -- NOT ~~`fp.cputhreads`~~
+- Global: `fp.globsize` (boolean), `fp.width` (worldUnits), `fp.height` (worldUnits), `fp.globscale` (float), `fp.consmat` (boolean), `fp.mode` (integer), `fp.consgeom` (boolean)
 
 ---
 

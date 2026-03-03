@@ -634,7 +634,10 @@ For `property == "time_type"`:
 
 ### 2.2 Tool: `create_rpmanager_pass`
 
-**Conditional on Phase 0 results.** Only implement if the API supports it.
+> **Phase 0 update:** `AddPass()` CONFIRMED (0 args). However, **NEEDS_UI** -- pass creation
+> requires the RPManager floater to be open. Without the UI, `AddPass()` runs but
+> `getpasscount()` stays 0 (the pass is not registered in the internal data structures).
+> The tool MUST open the UI before calling `AddPass()`.
 
 ```
 Tool name:    create_rpmanager_pass
@@ -645,7 +648,7 @@ Parameters:
     frame_start: int = 0          — start frame
     frame_end: int = 100          — end frame
 Returns:      JSON with new pass index and details
-Prerequisites: RPManager installed, creation API confirmed
+Prerequisites: RPManager installed, UI will be opened automatically
 ```
 
 **Python signature:**
@@ -660,8 +663,8 @@ def create_rpmanager_pass(
 ) -> str:
     """Create a new RPManager render pass.
 
-    NOTE: This tool is only available if RPManager exposes pass creation
-    via MAXScript. If not available, use RPManager's UI to create passes.
+    NOTE: This opens the RPManager UI temporarily because AddPass()
+    requires the floater dialog to be open for the pass to register.
 
     Args:
         name: Name for the new pass.
@@ -675,40 +678,24 @@ def create_rpmanager_pass(
     """
 ```
 
-**MAXScript template (placeholder — depends on Phase 0):**
+**MAXScript template:**
 ```maxscript
 (
-    -- CONFIRMED (Phase 0): RPMdata.AddPass() takes 0 args, creates a new pass
-    -- NOTE: May need UI open first: RPMdata.RMopenFloater()
+    -- MUST open UI for AddPass() to register the pass
+    RPMdata.RMopenFloater()
     RPMdata.AddPass()
-    local newIdx = RPMdata.getpasscount()
+    local newIdx = RPMdata.getpasscount()  -- now reflects the new pass
     RPMdata.SetPassName newIdx "<name>"
     if "<camera>" != "" do (
         local cam = getNodeByName "<camera>"
-        if cam != undefined do RPMdata.SetPassCamera newIdx cam
+        if cam != undefined do RPMdata.captureCamera()
     )
     if "<output_path>" != "" do
         RPMdata.SetPassOutputPath newIdx "<output_path>"
     RPMdata.SetPassRange newIdx <frame_start> <frame_end> 1
-    RPMdata.UpdateUI()
+    RPMdata.fRefresh()
     "{\"created\": true, \"index\": " + newIdx as string + ", \"name\": \"<name>\"}"
 )
-```
-
-**Fallback if creation API does not exist:**
-Document in the tool's docstring that pass creation must be done manually via
-RPManager UI, and this tool is not available. Register a stub tool that returns
-a helpful message:
-
-```python
-@mcp.tool()
-def create_rpmanager_pass() -> str:
-    """RPManager does not expose pass creation via MAXScript.
-    Create passes manually in the RPManager UI (RPMdata.RMopenFloater()),
-    then use set_rpmanager_pass_property to configure them."""
-    maxscript = '(RPMdata.RMopenFloater(); "Opened RPManager UI — create passes manually")'
-    response = client.send_command(maxscript)
-    return response.get("result", "")
 ```
 
 ### 2.3 Tool: `delete_rpmanager_pass`
@@ -1055,10 +1042,14 @@ def get_rpmanager_pass_scripts(pass_index: int) -> str:
 ```
 
 **MAXScript template:**
+
+> **NOTE (Phase 0 update):** Uses confirmed function names. GetPassBeforeScript/SetPassBeforeScript
+> and GetPassAfterScript/SetPassAfterScript are **headless-safe** (work without UI).
+
 ```maxscript
 (
     local i = <pass_index>
-    local pc = RPMdata.GetPassCount()
+    local pc = RPMdata.getpasscount()
     if i < 1 or i > pc then (
         "{\"error\": \"Pass index out of range\"}"
     ) else (
@@ -1076,7 +1067,7 @@ def get_rpmanager_pass_scripts(pass_index: int) -> str:
         safeAfter = substituteString safeAfter "\t" "\\t"
         local result = "{"
         result += "\"passIndex\": " + i as string
-        result += ", \"passName\": \"" + (RPMdata.GetPassName i) + "\""
+        result += ", \"passName\": \"" + (RPMdata.GetPassNameFromID i) + "\""
         result += ", \"beforeScript\": \"" + safeBefore + "\""
         result += ", \"afterScript\": \"" + safeAfter + "\""
         result += ", \"scriptsEnabled\": " + (if enabled then "true" else "false")
@@ -1135,7 +1126,7 @@ def set_rpmanager_pass_script(
     else
         RPMdata.SetPassAfterScript i "<escaped_script>"
     RPMdata.SetBeforeAfterScriptEnabled i <enabled_bool>
-    RPMdata.UpdateUI()
+    RPMdata.fRefresh()
     "Set " + "<script_type>" + " script on pass " + i as string + " (enabled: <enabled>)"
 )
 ```
@@ -1210,17 +1201,17 @@ for performance:
 (
     disableSceneRedraw()
     local results = "["
-    local pc = RPMdata.GetPassCount()
+    local pc = RPMdata.getpasscount()
 
     -- Update 1
     local i = <pass_index_1>
     if i >= 1 and i <= pc then (
-        -- apply each provided property
+        -- apply each provided property (confirmed function names)
         <if name>    RPMdata.SetPassName i "<name>"
-        <if camera>  (local cam = getNodeByName "<camera>"; if cam != undefined do RPMdata.SetPassCamera i cam)
         <if output>  RPMdata.SetPassOutputPath i "<output_path>"
         <if range>   RPMdata.SetPassRange i <start> <end> <nth>
         <if timetype> RPMdata.SetPassTimeType i <time_type>
+        -- Camera assignment: use captureCamera (exact setter TBD)
         results += "{\"passIndex\": " + i as string + ", \"status\": \"updated\"}"
     ) else (
         results += "{\"passIndex\": " + i as string + ", \"status\": \"out of range\"}"
@@ -1229,7 +1220,7 @@ for performance:
     -- Update 2 ... N (generated by Python loop)
 
     results += "]"
-    RPMdata.UpdateUI()
+    RPMdata.fRefresh()
     enableSceneRedraw()
     redrawViews()
     results
@@ -1326,10 +1317,10 @@ def get_rpmanager_pass_detail(pass_index: int) -> str: ...
 def set_rpmanager_pass_property(...) -> str: ...
 
 @mcp.tool()
-def create_rpmanager_pass(...) -> str: ...      # conditional
+def create_rpmanager_pass(...) -> str: ...      # confirmed: AddPass() + NEEDS_UI
 
 @mcp.tool()
-def delete_rpmanager_pass(...) -> str: ...      # conditional
+def delete_rpmanager_pass(...) -> str: ...      # confirmed: RMDeleteItem + NEEDS_UI
 
 
 # ---------------------------------------------------------------------------
@@ -1479,53 +1470,48 @@ with a helpful message.
 ### RPManager Installed But Not Initialized
 
 Some RPManager versions require the UI to be opened once before the API is
-fully initialized. If `RPMdata` exists but `GetPassCount()` fails:
+fully initialized. If `RPMdata` exists but `getpasscount()` fails:
+
+> **Phase 0 update:** Confirmed that many functions need UI open. Use `RPMdata.RMopenFloater()`
+> before UI-dependent operations. Note: there is no `RMcloseFloater()` -- the UI stays open.
 
 ```maxscript
 try (
-    RPMdata.GetPassCount()
+    RPMdata.getpasscount()
 ) catch (
-    -- Try initializing
-    try (RPMdata.RMopenFloater(); RPMdata.RMcloseFloater()) catch ()
+    -- Try initializing by opening the UI
+    try (RPMdata.RMopenFloater()) catch ()
     -- Retry
-    RPMdata.GetPassCount()
+    RPMdata.getpasscount()
 )
 ```
 
 ### Version Detection
 
+> **Phase 0 update:** Confirmed: `RPMdata.version()` is a function (not a property) returning `"7.8"`.
+> `RPMdata.RManVersion` is undefined. Use `RPMdata.version()` only.
+
 Include version info in the `inspect_rpmanager` tool output:
 
 ```maxscript
 local ver = "unknown"
-try (ver = RPMdata.version as string) catch ()
-try (ver = RPMdata.getVersion() as string) catch ()
-try (ver = RPMdata.RPMVersion as string) catch ()
+try (ver = RPMdata.version()) catch ()
 ```
 
 ### Conditional Tool Registration
 
-If Phase 0 reveals that pass creation/deletion is NOT supported via MAXScript,
-we have two options:
-
-**Option A (Preferred): Register stub tools** that return helpful messages
-directing the user to the RPManager UI. This keeps the tool namespace
-consistent and discoverable.
-
-**Option B: Skip registration entirely** and document the limitation in
-`get_rpmanager_passes` docstring.
-
-We prefer Option A because it provides better UX — the AI discovers the tool
-exists, calls it, and gets a clear explanation of the limitation with an
-actionable alternative (opens the RPManager UI).
+> **Phase 0 update:** Pass creation (`AddPass()`) and deletion (`RMDeleteItem`) are both
+> confirmed to exist. However, both require the RPManager UI to be open for proper operation.
+> No stub tools needed -- implement full tools with automatic UI opening via `RMopenFloater()`.
+> The `duplicatePass()` function also exists but crashes without UI (needs listbox control).
 
 ---
 
 ## Implementation Order
 
 ### Sprint 1: Foundation (Phase 0 + Phase 1)
-1. Run all Phase 0 introspection scripts in a live 3ds Max session
-2. Document actual API findings in a `docs/rpmanager_api_discovery.md` file
+1. ~~Run all Phase 0 introspection scripts in a live 3ds Max session~~ **DONE 2026-03-03**
+2. ~~Document actual API findings~~ **DONE: `docs/research/rpmanager_introspection.md`**
 3. Implement `_safe()`, `_safe_path()`, `_rpm_guard()` helpers
 4. Implement `get_rpmanager_passes`
 5. Implement `get_rpmanager_pass_detail`
@@ -1534,8 +1520,8 @@ actionable alternative (opens the RPManager UI).
 
 ### Sprint 2: Pass Modification (Phase 2)
 1. Implement `set_rpmanager_pass_property` with all property dispatches
-2. Implement `create_rpmanager_pass` (or stub if API missing)
-3. Implement `delete_rpmanager_pass` (or stub if API missing)
+2. Implement `create_rpmanager_pass` (API confirmed: `AddPass()` + `RMopenFloater()`)
+3. Implement `delete_rpmanager_pass` (API confirmed: `RMDeleteItem` + `RMopenFloater()`)
 4. Test T3-T6, T22
 
 ### Sprint 3: Visibility & Capture Sets (Phase 3 + Phase 4)
@@ -1570,16 +1556,13 @@ actionable alternative (opens the RPManager UI).
 - **Fallback:** If critical APIs are missing, implement read-only tools first
   and expand write tools incrementally as the API is confirmed.
 
-### Risk 2: Pass Creation/Deletion Not Exposed
-- **Impact:** Cannot programmatically create or delete passes
-- **Probability:** Medium-High (many plugin authors expose read/modify but not
-  create/delete for complex objects)
-- **Mitigation:** Implement stub tools (Option A from Graceful Degradation).
-  The AI can still read all passes, modify their properties, manage visibility
-  and capture sets, and set scripts — which covers 80% of pipeline automation
-  use cases.
-- **Alternative:** If create is not exposed but duplicate is, use duplicate +
-  rename as a workaround.
+### Risk 2: Pass Creation/Deletion Require UI ~~Not Exposed~~
+> **Phase 0 update:** RESOLVED. AddPass() and RMDeleteItem are confirmed.
+- **Impact:** Pass creation and deletion work but require RPManager UI to be open
+- **Probability:** Confirmed -- headless `AddPass()` runs but pass is not registered
+- **Mitigation:** Open RPManager floater automatically via `RPMdata.RMopenFloater()`
+  before calling `AddPass()` or `RMDeleteItem`. This adds UI flicker but is reliable.
+- **Alternative:** `duplicatePass()` exists but also needs UI (crashes without listbox).
 
 ### Risk 3: Version Compatibility
 - **Impact:** API may differ between RPManager versions
@@ -1589,10 +1572,12 @@ actionable alternative (opens the RPManager UI).
   specific RPManager version.
 
 ### Risk 4: RPMdata Initialization State
-- **Impact:** `RPMdata` may exist but not be fully functional until UI is opened
-- **Probability:** Low
-- **Mitigation:** Include initialization retry logic (open/close floater) as
-  described in Graceful Degradation. Test during Phase 0.
+> **Phase 0 update:** CONFIRMED. Many functions require UI to be open.
+- **Impact:** `RPMdata` exists but many functions silently fail or crash without the UI
+- **Probability:** Confirmed -- see UI Dependency Matrix above
+- **Mitigation:** Open RPManager floater (`RPMdata.RMopenFloater()`) before UI-dependent
+  operations. Property get/set functions (output path, scripts, frame range, etc.) work
+  headlessly; pass CRUD and checked-state queries need the UI.
 
 ### Risk 5: String Escaping in Pass Scripts
 - **Impact:** Complex MAXScript in before/after scripts may contain characters
@@ -1612,86 +1597,120 @@ actionable alternative (opens the RPManager UI).
   batch tools.
 
 ### Risk 7: Capture Set Material Override API Mismatch
-- **Impact:** The `captureCapSetMaterial` API may have different parameters
-  than documented in community sources
-- **Probability:** Medium
-- **Mitigation:** Phase 0.7 will confirm the exact API signature. Fall back
-  to `rpmdata.RPMObjProp.moAltMat.picked` if needed.
+> **Phase 0 update:** RPMObjProp is UndefinedClass. The sub-struct model is incorrect.
+- **Impact:** Cannot use `RPMCaptureProps` or `RPMObjProp` sub-struct API as originally planned
+- **Probability:** Confirmed -- both are UndefinedClass in headless mode
+- **Mitigation:** Use top-level RPMdata functions instead: `RPMpreRenderSwapMat`,
+  `RPMpostRenderSwapMat`, `setPostMaterial`, `getPreMaterial`, `storePropOverrideData`.
+  Further introspection WITH UI OPEN is needed to determine if the sub-structs initialize
+  when the floater is active.
 
 ---
 
 ## Tool Count Summary
 
-| Category | Tools | Conditional |
-|----------|-------|-------------|
-| Pass Reading | 2 | No |
-| Pass Modification | 3 | create/delete conditional |
-| Visibility Sets | 2 | No |
-| Capture Sets | 3 | No |
-| Material Overrides | 1 | No |
-| Pass Scripts | 2 | No |
-| Batch Operations | 1 | No |
-| Diagnostics | 1 | No |
-| **Total** | **15** | **2 conditional** |
+| Category | Tools | UI Required | Status |
+|----------|-------|-------------|--------|
+| Pass Reading | 2 | No (headless-safe) | CONFIRMED |
+| Pass Modification | 1 | No (headless-safe) | CONFIRMED |
+| Pass Creation | 1 | Yes (NEEDS_UI) | CONFIRMED |
+| Pass Deletion | 1 | Yes (NEEDS_UI) | CONFIRMED |
+| Visibility Sets | 2 | Needs investigation | API differs from plan |
+| Capture Sets | 3 | Needs investigation | RPMObjProp is UndefinedClass |
+| Material Overrides | 1 | Needs investigation | RPMObjProp is UndefinedClass |
+| Pass Scripts | 2 | No (headless-safe) | CONFIRMED |
+| Batch Operations | 1 | Partial | Property sets are headless-safe |
+| Diagnostics | 1 | No | CONFIRMED |
+| **Total** | **15** | **3+ need UI** | **10 confirmed, 5 need rework** |
 
 ---
 
-## Appendix A: RPMdata API Quick Reference (Known)
+## Appendix A: RPMdata API Quick Reference (Phase 0 Confirmed)
 
-Based on pre-research (to be validated/expanded in Phase 0):
+> Updated 2026-03-03 from live introspection of RPManager 7.8 on 3ds Max 2025.
+> See `docs/research/rpmanager_introspection.md` for full details.
+> Original pre-research below updated with confirmed signatures.
 
 ```
-RPMdata (RmanagerDataStruct)
-├── GetPassCount() -> int
-├── GetPassName(index) -> string
-├── SetPassName(index, name)
+RPMdata (RmanagerDataStruct) — flat struct, 300+ members, NOT nested sub-structs
+
+PASS CRUD (confirmed; NEEDS_UI for create/delete)
+├── AddPass()                           — 0 args, NEEDS_UI to register pass
+├── RMDeleteItem(index)                 — 1 arg, returns boolean, NEEDS_UI
+├── duplicatePass()                     — 0 args, NEEDS_UI (crashes without listbox)
+├── SetPassName(index, name)            — headless-safe
+├── GetPassNameFromID(index) -> string  — headless-safe (fails without passes)
+├── getpasscount() -> int               — headless-safe
+├── movePassUpDown(...)                 — exists, not tested
+├── invertPasses(...)                   — exists, not tested
+
+PASS PROPERTIES (all headless-safe, confirmed)
 ├── GetPassOutputPath(index) -> string
-├── SetPassOutputPath(index, path)
-├── GetPassRange(index) -> #(start, end, nthFrame)
-├── SetPassRange(index, start, end, nth)
-├── GetPassCamera(index) -> node|undefined
-├── SetPassCamera(index, camera)
-├── GetPassSelection() -> array
-├── SetPassSelection(array)
-├── GetPassChecked() -> array
-├── GetPassTimeType(index) -> int
-├── SetPassTimeType(index, value)
 ├── GetPassBeforeScript(index) -> string
 ├── SetPassBeforeScript(index, script)
 ├── GetPassAfterScript(index) -> string
 ├── SetPassAfterScript(index, script)
+├── GetPassTimeType(index) -> int
+├── SetPassTimeType(index, type)
+├── GetPassRange(index) -> array
+├── SetPassRange(index, start, end, nth?)
+├── GetPassVisSetName(index) -> string
+├── GetPassBGColor(index) -> color
+├── SetPassColor(index, color)
 ├── GetBeforeAfterScriptEnabled(index) -> bool
 ├── SetBeforeAfterScriptEnabled(index, bool)
-├── UpdateUI()
-├── RMopenFloater()
-├── getindexfromunique(uniqueID) -> int
-├── passthenumb -> int (unique ID of current pass)
-│
-├── RPMCaptureProps (RPMCaptureProps struct)
-│   ├── getCapSetCount() -> int
-│   ├── getCapSetName(index) -> string
-│   ├── setCapSetName(index, name)
-│   ├── getCapSetObjects(index) -> array
-│   ├── getCapSetProperties(index) -> array
-│   ├── isObjInSet(obj, setIndex) -> bool
-│   ├── addObjectsToSet(objects, setIndex)
-│   ├── removeObjectsFromSet(objects, setIndex)
-│   ├── clearMembers(setIndex)
-│   ├── getObjectsInCaptureSets() -> array
-│   ├── getMaterialArray() -> array
-│   ├── getPropertyArray() -> array
-│   └── captureCapSetMaterial(capsets, passes, mat)
-│
-├── RPMObjProp
-│   └── moAltMat.picked -> material (set/get material override)
-│
-└── Visibility (flat functions on RPMdata, NOT a sub-struct — CONFIRMED Phase 0)
-    ├── writeVisSetData() -- writes vis set data
-    ├── getVisUndoState() -- gets undo state for vis sets
-    ├── isolateSet() -- isolates a visibility set
-    ├── deleteVisSetsHolder() -- deletes vis set holder
-    ├── UpdateLayerArray() -- updates layer arrays
-    └── CA_redefineVis() -- redefines custom attribute visibility
+
+PASS SELECTION/CHECK (NEEDS_UI)
+├── GetPassSelection(1+)               — fails headlessly
+├── GetPassChecked(1)                   — fails headlessly
+├── getCheckedPasses(1)                 — needs 1 arg (not 0!)
+
+RENDERING (confirmed exist, UI dependency untested)
+├── renderLocally(...)
+├── submitChecked(...)
+├── submitSelected(...)
+├── previewChecked(...)
+├── previewSelected(...)
+├── previewLocally(...)
+
+RENDERERS
+├── SetRenderer(index, renderer)
+├── getrenderer(index) -> renderer|undefined
+├── copyRenderer(...), pasteRenderer(...), autoBuildRenderers(...)
+
+CAMERAS (confirmed exist)
+├── captureCamera(...)
+├── GetAllCameras(...)
+├── RMfindCamera(...)
+├── getpasscamera(index) -> node|undefined
+
+STATE (confirmed exist)
+├── captureStateSet(...), restoreStateSet(...), getallstatesets(...)
+├── captureBackground(...), captureExposure(...)
+
+VISIBILITY (flat functions, NOT sub-struct — CONFIRMED Phase 0)
+├── writeVisSetData(...)
+├── getVisUndoState(...)
+├── isolateSet(...)
+├── deleteVisSetsHolder(...)
+├── UpdateLayerArray(...)
+├── CA_redefineVis(...)
+
+MATERIALS (flat functions, NOT sub-struct)
+├── RPMpreRenderSwapMat(...), RPMpostRenderSwapMat(...)
+├── setPostMaterial(...), getPreMaterial(...), putMatToSlate(...)
+
+OBJECT PROPERTIES (flat functions; RPMObjProp is UndefinedClass)
+├── getObjPropPrefsData(...), setObjPropPrefsData(...)
+├── storePropOverrideData(...), getPerObjectPreviewData(...)
+
+UI
+├── RMopenFloater()                     — opens RPManager dialog
+├── fRefresh()                          — refreshes UI
+
+MISC
+├── version() -> "7.8"                  — headless-safe (function, not property)
+├── passthenumb -> int (current pass unique ID)
 ```
 
 ## Appendix B: Naming Conventions

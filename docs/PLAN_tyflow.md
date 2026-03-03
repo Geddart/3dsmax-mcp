@@ -971,10 +971,12 @@ properties, connections, and PhysX settings.
 }
 ```
 
-**Implementation Challenge:** tyFlow does not expose a `getEvents()` or
-`getOperators()` function in MAXScript. We may need to iterate by index or
-use the scene path `$Name.EventName.OperatorName` approach. This needs runtime
-research -- add to research phase:
+**Implementation Challenge (RESOLVED 2026-03-03):** tyFlow does not expose a
+`getEvents()` or `getOperators()` function in MAXScript. Use baseobject SubAnim
+traversal: tyFlow baseobject has 21 SubAnims (fixed params), then events at indices 21+.
+Each event SubAnim contains operators indexed sequentially.
+
+**Research script (kept for reference):**
 
 ```maxscript
 -- Test: how to enumerate events on a tyFlow
@@ -1004,8 +1006,9 @@ research -- add to research phase:
 )
 ```
 
-**If enumeration is not possible**, this tool will need the user to provide event
-names, or we track created events in the creation tool's response.
+**Confirmed approach:** Enumerate events via SubAnim traversal on baseobject.
+Events appear at SubAnim indices 21+ (after the 20 fixed parameter SubAnims).
+Each event's SubAnims are its operators. Names via `getSubAnimName`.
 
 ---
 
@@ -1026,18 +1029,25 @@ names, or we track created events in the creation tool's response.
 
 ```maxscript
 (
-    local opRef = ${tyflow_name}.{event_name}.{operator_name}
-    if opRef == undefined then (
-        "{{\\"error\\":\\"Operator not found\\"}}"
+    local tfObj = getNodeByName "{safe_tyflow_name}"
+    if tfObj == undefined then (
+        "{{\\"error\\":\\"tyFlow not found\\"}}"
     ) else (
-        {property_assignment_lines}
-        "{{\\"success\\":true,\\"operator\\":\\"{operator_name}\\"}}"
+        local opRef = tfObj.baseobject[#'{safe_event_name}'][#'{safe_operator_name}']
+        if opRef == undefined then (
+            "{{\\"error\\":\\"Operator not found\\"}}"
+        ) else (
+            {property_assignment_lines}
+            "{{\\"success\\":true,\\"operator\\":\\"{operator_name}\\"}}"
+        )
     )
 )
 ```
 
-**Key Detail:** The scene path approach `$Name.Event.Operator.property` works after
-the tyFlow has been created and named. This avoids needing to store references.
+**Key Detail:** Operators are accessed via baseobject SubAnims:
+`$flowName.baseobject[#EventName][#OperatorName]`. Operators with spaces in
+their name require quoting: `[#'PhysX Shape']`. The direct scene path
+`$Name.Event.Operator.property` also works for simple names without spaces.
 
 **Return JSON:**
 
@@ -1100,15 +1110,17 @@ the tyFlow has been created and named. This avoids needing to store references.
 
 ```maxscript
 (
-    local opRef = ${tyflow_name}.{from_event}.{operator_name}
-    local targetEv = -- need to find event reference
+    local tfObj = getNodeByName "{safe_tyflow_name}"
+    local opRef = tfObj.baseobject[#'{safe_from_event}'][#'{safe_operator_name}']
+    local targetEv = tfObj.baseobject[#'{safe_to_event}']
     opRef.connect targetEv
     "{{\\"success\\":true}}"
 )
 ```
 
-**Challenge:** Getting an event reference from a name requires iteration or scene
-path access. Research needed (see Section 2 enumeration script).
+**Note:** Event references are obtained via `baseobject[#EventName]` SubAnim access.
+Operator references via `baseobject[#EventName][#OperatorName]`. Names with spaces
+require quoting: `[#'PhysX Shape']`.
 
 ---
 
@@ -1128,11 +1140,13 @@ path access. Research needed (see Section 2 enumeration script).
 
 ```maxscript
 (
+    local tfObj = getNodeByName "{safe_tyflow_name}"
     if operator_name provided:
-        local opRef = ${tyflow_name}.{event_name}.{operator_name}
+        local opRef = tfObj.baseobject[#'{safe_event_name}'][#'{safe_operator_name}']
         opRef.remove()
     else:
-        -- find event ref and call .remove()
+        local evRef = tfObj.baseobject[#'{safe_event_name}']
+        evRef.remove()
 )
 ```
 
@@ -1208,7 +1222,8 @@ def set_tyflow_shape(tyflow_name, event_name, operator_name, shapes, distributio
         # ... etc
 
     maxscript = f"""(
-        local shapeOp = ${tyflow_name}.{event_name}.{operator_name}
+        local tfObj = getNodeByName "{safe_tyflow_name}"
+        local shapeOp = tfObj.baseobject[#'{safe_event_name}'][#'{safe_operator_name}']
         if shapeOp == undefined then (
             "{{\\"error\\":\\"Shape operator not found\\"}}"
         ) else (
@@ -1236,7 +1251,7 @@ def set_tyflow_shape(tyflow_name, event_name, operator_name, shapes, distributio
     "success": true,
     "shapeCount": 1,
     "shapes": [
-        {"type": "3d", "shape": "sphere", "id": 2, "frequency": 100.0, "scale": 100.0}
+        {"type": "3d", "shape": "sphere", "id": 4, "frequency": 100.0, "scale": 100.0}
     ]
 }
 ```
@@ -1322,7 +1337,8 @@ Only emit property-setting lines for non-None parameters. This allows partial up
 
 ```maxscript
 (
-    local physxCollOp = ${tyflow_name}.{event_name}.{operator_name}
+    local tfObj = getNodeByName "{safe_tyflow_name}"
+    local physxCollOp = tfObj.baseobject[#'{safe_event_name}'][#'{safe_operator_name}']
     if physxCollOp == undefined then (
         "{{\\"error\\":\\"PhysX Collision operator not found\\"}}"
     ) else (
@@ -1511,7 +1527,7 @@ convenience that constructs the events/operators dict and delegates.
 
     local shapeOp = ev1.addOperator "Shape" -1
     shapeOp.shape_type_tab = #(1)
-    shapeOp.type_3d_ID_tab = #(SPHERE_ID)  -- use confirmed ID
+    shapeOp.type_3d_ID_tab = #(4)  -- 4 = Sphere (confirmed)
     shapeOp.frequency_tab = #(100.0)
     shapeOp.scaleVal_tab = #(10.0)         -- Small drops
     shapeOp.scaleVariation_tab = #(20.0)
@@ -1554,7 +1570,7 @@ convenience that constructs the events/operators dict and delegates.
 
     local shapeOp = ev1.addOperator "Shape" -1
     shapeOp.shape_type_tab = #(1)
-    shapeOp.type_3d_ID_tab = #(SPHERE_ID)
+    shapeOp.type_3d_ID_tab = #(4)           -- 4 = Sphere (confirmed)
     shapeOp.frequency_tab = #(100.0)
     shapeOp.scaleVal_tab = #(30.0)
     shapeOp.scaleVariation_tab = #(50.0)
@@ -1610,7 +1626,7 @@ convenience that constructs the events/operators dict and delegates.
 
     local shapeOp = ev2.addOperator "Shape" -1
     shapeOp.shape_type_tab = #(1)
-    shapeOp.type_3d_ID_tab = #(BOX_ID)    -- use confirmed box ID
+    shapeOp.type_3d_ID_tab = #(6)    -- 6 = Cube/Box (confirmed)
     shapeOp.frequency_tab = #(100.0)
     shapeOp.scaleVal_tab = #(50.0)
     shapeOp.scaleVariation_tab = #(60.0)
@@ -1727,7 +1743,7 @@ Test that defining multiple shapes in the `_tab` arrays works:
     local shapeOp = ev1.addOperator "Shape" -1
     -- 3 shapes: sphere, box, cylinder
     shapeOp.shape_type_tab = #(1, 1, 1)
-    shapeOp.type_3d_ID_tab = #(SPHERE_ID, BOX_ID, CYLINDER_ID)
+    shapeOp.type_3d_ID_tab = #(4, 6, 3)
     shapeOp.frequency_tab = #(50.0, 30.0, 20.0)
     shapeOp.scaleVal_tab = #(100.0, 80.0, 120.0)
     shapeOp.scaleVariation_tab = #(0.0, 0.0, 0.0)
@@ -1783,7 +1799,7 @@ or pad?):
     local errored = false
     try (
         shapeOp.shape_type_tab = #(1, 1)
-        shapeOp.type_3d_ID_tab = #(SPHERE_ID, BOX_ID)
+        shapeOp.type_3d_ID_tab = #(4, 6)
         shapeOp.frequency_tab = #(100.0)    -- only 1 entry!
     ) catch (
         errored = true
@@ -1993,7 +2009,7 @@ After implementing the tool, test the full pipeline:
 
     local shapeOp = ev1.addOperator "Shape" -1
     shapeOp.shape_type_tab = #(1)
-    shapeOp.type_3d_ID_tab = #(SPHERE_ID)
+    shapeOp.type_3d_ID_tab = #(4)
     shapeOp.frequency_tab = #(100.0)
     shapeOp.scaleVal_tab = #(50.0)
 
@@ -2053,7 +2069,7 @@ After implementing the tool, test the full pipeline:
 
     local shapeOp = ev1.addOperator "Shape" -1
     shapeOp.shape_type_tab = #(1)
-    shapeOp.type_3d_ID_tab = #(SPHERE_ID)
+    shapeOp.type_3d_ID_tab = #(4)
     shapeOp.frequency_tab = #(100.0)
     shapeOp.scaleVal_tab = #(30.0)
 
@@ -2318,23 +2334,31 @@ For each preset in Section 5, run a simplified test:
 
 ## 7. Implementation Order
 
-### Phase 0: Research & Shape ID Mapping (BLOCKING)
+### Phase 0: Research & Shape ID Mapping -- COMPLETED 2026-03-03
 
-**Duration:** 1 session
+**Duration:** 1 session (completed)
 
 **Tasks:**
-1. Run all scripts from Section 2 inside 3ds Max.
-2. Run all scripts from Section 3 (Shape ID investigation).
-3. Record results in a new file: `docs/tyflow_research_results.md`.
-4. Confirm the Shape 3D type ID mapping.
-5. Confirm event/operator enumeration approach.
-6. Confirm scene path access works.
-7. Run edge case tests E3, E4, E5 to verify naming assumptions.
-8. Update `SHAPE_3D_IDS` and `SHAPE_2D_IDS` dicts with confirmed values.
+1. ~~Run all scripts from Section 2 inside 3ds Max.~~ DONE
+2. ~~Run all scripts from Section 3 (Shape ID investigation).~~ DONE
+3. ~~Record results in a new file.~~ DONE -- `docs/research/tyflow_introspection.md`
+4. ~~Confirm the Shape 3D type ID mapping.~~ DONE -- Triangle=0, Cone=1, Quad=2, Cylinder=3, Sphere=4, Pyramid=5 (default), Cube=6, Octahedron=7, GeoSphere=8-10, Icosahedron=11
+5. ~~Confirm event/operator enumeration approach.~~ DONE -- via baseobject SubAnims
+6. ~~Confirm scene path access works.~~ DONE -- `$flowName.baseobject[#EventName][#OperatorName]`
+7. ~~Run edge case tests E3, E4, E5 to verify naming assumptions.~~ DONE -- operators with spaces need `#'Quoted Name'`
+8. ~~Update `SHAPE_3D_IDS` and `SHAPE_2D_IDS` dicts with confirmed values.~~ DONE
 
 **Deliverable:** Confirmed property reference and shape ID mapping.
 
 **Exit Criteria:** All research scripts run successfully, shape mapping documented.
+
+> **Key findings from Phase 0:**
+> - 51 operators confirmed working out of 99 tested names
+> - addOperator requires 2 args: `ev.addOperator "Name" positionIndex`
+> - quickType_submit causes access violation CRASH -- do NOT use
+> - 2D and 3D shape IDs produce identical geometry; distinction is in shapeMode property
+> - Events created via `tf.addEvent()` returning `tyEvent`
+> - Particle data: 14 single-particle functions + 14 bulk functions + volume interface
 
 ---
 
@@ -2476,17 +2500,18 @@ Phase 0 (Research)
 
 ## 8. Known Risks & Mitigations
 
-### Risk 1: Shape `_tab` Array ID Mapping Is Wrong
+### Risk 1: Shape `_tab` Array ID Mapping Is Wrong -- RESOLVED
 
-**Severity:** HIGH (already caused a user-facing bug)
+**Severity:** HIGH (already caused a user-facing bug) -- **RESOLVED 2026-03-03**
 
 **Description:** The `type_3d_ID_tab` integer-to-shape mapping is not documented
-by tyFlow. Our assumed mapping (0=Sphere) may be incorrect.
+by tyFlow. Our assumed mapping (0=Sphere) was INCORRECT. Default is 5=Pyramid.
 
-**Mitigation:**
-- Phase 0 exhaustively tests all IDs 0-30 with visual and vertex-count verification.
+**Resolution:**
+- Phase 0 exhaustively tested IDs 0-25 with vertex-count fingerprinting.
+- Confirmed mapping: Triangle=0, Cone=1, Quad=2, Cylinder=3, Sphere=4, Pyramid=5, Cube=6, Octahedron=7, GeoSphere(low/med/high)=8/9/10, Icosahedron=11.
 - The `set_tyflow_shape` tool uses string names ("sphere", "box") and translates
-  internally, so the mapping can be corrected in one place.
+  internally, so the mapping is corrected in one place.
 - If the mapping changes between tyFlow versions, we add version detection.
 
 ### Risk 2: Variable Naming Conflicts
@@ -2546,19 +2571,17 @@ If both are enabled, particles may fall twice as fast or behave unpredictably.
 - `create_tyflow_preset` enforces this separation.
 - `set_tyflow_physx` docstring warns about dual gravity.
 
-### Risk 4: Event/Operator Enumeration Not Available
+### Risk 4: Event/Operator Enumeration Not Available -- RESOLVED
 
-**Severity:** MEDIUM
+**Severity:** MEDIUM -- **RESOLVED 2026-03-03**
 
-**Description:** tyFlow may not expose MAXScript functions to enumerate events
-and operators on an existing flow (e.g., `getEvent(index)`, `numEvents()`).
+**Description:** tyFlow does not expose `getEvent(index)` or `numEvents()`.
 
-**Mitigation:**
-- Research Phase tests for enumeration functions.
-- If not available, `get_tyflow_info` uses the scene path hierarchy (`$Name.*)
-  via `refs.dependsOn` or subAnim traversal.
-- Worst case, `get_tyflow_info` requires the user to pass event/operator names
-  (less useful but still functional).
+**Resolution:**
+- SubAnim traversal works: baseobject has 21 fixed SubAnims (params), then events at indices 21+.
+- Each event SubAnim contains operators indexed sequentially.
+- `getSubAnimName` returns event/operator names.
+- Access pattern: `tfObj.baseobject[#EventName][#OperatorName]` (quote names with spaces).
 - The `create_tyflow` tool returns full structure in its JSON response, so the
   AI has the information it just created.
 
@@ -2656,7 +2679,7 @@ non-reference entries should be... undefined? null? This is undocumented.
 
 ```
 src/tools/tyflow.py          -- All tyFlow MCP tools (main implementation)
-docs/tyflow_research_results.md  -- Results from Phase 0 research (created during Phase 0)
+docs/research/tyflow_introspection.md  -- Results from Phase 0 research (COMPLETED 2026-03-03)
 ```
 
 ### Modified Files
@@ -2691,8 +2714,8 @@ from __future__ import annotations
 from ..server import mcp, client
 
 # --- Constants ---
-SHAPE_3D_IDS = { ... }   # Filled after Phase 0 research
-SHAPE_2D_IDS = { ... }   # Filled after Phase 0 research
+SHAPE_3D_IDS = { "triangle": 0, "cone": 1, "quad": 2, "plane": 2, "cylinder": 3, "sphere": 4, "pyramid": 5, "box": 6, "cube": 6, "octahedron": 7, "geosphere_low": 8, "geosphere": 9, "geosphere_high": 10, "icosahedron": 11 }
+SHAPE_2D_IDS = {}  # Same IDs as 3D; distinction is shapeMode property
 SAFE_VAR_NAMES = { ... }  # Operator type -> safe MAXScript variable name
 
 # --- Helpers ---

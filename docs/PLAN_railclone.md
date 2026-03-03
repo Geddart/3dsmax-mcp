@@ -899,9 +899,9 @@ rc.banode[1] = sp
 **Test 2: Library Loading**
 ```maxscript
 rc = RailClone_Pro name:"TestRC_Style"
-result = rc.railclone.loadLibraryItemByPath "\RailClone Library\Architecture\Exterior\Fences\Metal Fence 1"
--- Verify: result == 0
--- Verify: rc.paname.count > 0 (parameters exposed)
+result = rc.railclone.loadLibraryItemByPath "\\RailClone Library\\Architecture\\Exterior\\Fences\\Metal Fence 1"
+-- Verify: result == 1 (success, confirmed by introspection)
+-- Verify: rc.paname.count >= 0 (depends on style; some have no exposed params)
 ```
 
 **Test 3: Parameter Modification**
@@ -1073,52 +1073,222 @@ Test the full pipeline: Python tool call -> MAXScript generation -> TCP send -> 
 
 ## 12. Reference: Confirmed API Surface
 
+> Updated 2026-03-03 with live introspection results from 3ds Max 2025.
+
 ### Object Creation
 ```maxscript
 rc = RailClone_Pro name:"MyName"
 ```
 
-### Properties (Instance-Level)
+### Core Properties
+| Property | Type | Description |
+|----------|------|-------------|
+| `spline` | node | Spline reference |
+| `maxtime` | integer | Max time |
+| `seed` | integer | Random seed |
+| `iconsize` | float | Icon display size |
+| `style` | string | Style string (remains empty after library load) |
+| `maxpath` | integer | Max path count |
+| `gscale` | float | Global scale |
+| `curvesteps` | integer | Curve interpolation steps |
+| `simpleoffset` | boolean | Simple offset mode |
+| `freeobject` | boolean | Free object mode |
+| `stylelink` | node | Style link to another RC object |
+| `stylelinkmat` | boolean | Link materials from style link |
+
+### Base Object Arrays (ba*)
 | Property | Type | Description |
 |----------|------|-------------|
 | `banode[i]` | node ref array | Base objects (splines). Index 1 = primary path |
-| `style` | string | Current library style path |
+| `baid` | string array | Base object unique IDs |
+| `batype` | integer array | Base object types |
+| `baname` | string array | Base object display names |
+| `bafull` | boolean array | Full spline flag |
+| `bastart` | float array | Start position on spline |
+| `balength` | float array | Length on spline |
+| `badesc` | string array | Base object descriptions |
+
+### Exposed Parameter Arrays (pa*) -- 19 arrays
+| Property | Type | Description |
+|----------|------|-------------|
 | `paid` | string array | Parameter unique IDs |
 | `paname` | string array | Parameter display names |
-| `patype` | int array | Parameter types (0=int, 1=float, 2=percent, 3=worldUnits) |
+| `patype` | integer array | Type enum: 0=int, 1=float, 3=worldUnits |
 | `padesc` | string array | Parameter descriptions |
-| `paintval` | int array | Integer parameter values |
-| `pafloatval` | float array | Float/percent parameter values |
+| `palimit` | boolean array | Whether min/max constraints are active |
+| `paintval` | integer array | Integer parameter values |
+| `paintmin` | integer array | Integer min constraint |
+| `paintmax` | integer array | Integer max constraint |
+| `pafloatval` | float array | Float parameter values |
+| `pafloatmin` | float array | Float min constraint |
+| `pafloatmax` | float array | Float max constraint |
 | `paunitval` | worldUnits array | World unit parameter values |
+| `paunitmin` | worldUnits array | World unit min constraint |
+| `paunitmax` | worldUnits array | World unit max constraint |
+| `paboolval` | boolean array | Boolean parameter values |
+| `pastrval` | string array | String parameter values |
+| `paselector` | string array | Selector binding |
+| `pamodified` | boolean array | Whether parameter changed from default |
+| `paretain` | integer array | Retain setting |
+
+### Display/Render Properties
+| Property | Type | Description |
+|----------|------|-------------|
+| `autoupdate` | boolean | Auto-update on change |
+| `disabled` | boolean | Disable the RailClone object |
+| `vmesh` | integer | Viewport mesh density |
+| `adaptfaces` | integer | Adaptive face count |
+| `cloudens` | integer | Cloud density |
+| `rmesh` | integer | Render mesh density |
+| `rendermode` | boolean | Render mode toggle |
+| `maxseg` | integer | Max segments |
+| `maxfaces` | float | Max face count |
+| `proxymode` | integer | Proxy mode (0=off, 1=embedded, 2=external) |
+| `proxyfile` | filename | External proxy file path |
 
 ### Methods ($.railclone.*)
 | Method | Description |
 |--------|-------------|
-| `loadLibraryItemByPath(path)` | Load library style; returns 0=success, 1=error |
+| `loadLibraryItemByPath(path)` | Load library style; returns 1=success (integer) |
 | `setStyleDesc(text)` | Set style description |
-| `getStyleDesc()` | Get style description |
-
-### Methods ($.*)
-| Method | Description |
-|--------|-------------|
-| `setProxyMode(mode, file)` | Set proxy cache (0=off, 1=embedded, 2=external) |
+| `getStyleDesc()` | Get style description (returns string) |
+| `segmentsUpdate(n1, n2)` | Update segments in range |
+| `resetCreatedVersion()` | Reset created version flag |
+| `setCreatedVersion(version)` | Set created version |
+| `upgradeFromVersion(version)` | Upgrade from older version |
+| `setNodesCache(state)` | Set nodes cache state |
+| `setProxyMode(mode, proxyfile)` | Set proxy cache (0=off, 1=embedded, 2=external) |
 
 ### Static Methods (RailClone_Pro.global.*)
 | Method | Description |
 |--------|-------------|
-| `Instantiate(mode, layerName, autoDelete, separatedMeshes, forceInstances)` | Convert to instances |
+| `RegisterEngine()` | Register the RailClone engine |
+| `version()` | Get RailClone version (returns integer) |
+| `SetEngineFeatures(features)` | Set engine feature flags |
+| `Instantiate(mode, layerName, autoDelete, separatedMeshes, forceInstances, disableAtEnd)` | Convert to instances |
 | `InstantiateDelete()` | Remove instances |
 | `InstantiateEnable()` | Enable display for instances |
-| `exportData(filename, fieldlist, format)` | Export data channels |
+| `exportData(filename, fieldlist, format)` | Export data channels (format: 0=Standard, 1=Unity) |
 
-### Static Methods (RailClone_Pro.*)
+### Scatalog Interface ($.scatalog.*)
 | Method | Description |
 |--------|-------------|
-| `openLister()` | Open RailClone Lister UI |
+| `openBrowser()` | Open library browser |
+| `closeBrowser()` | Close library browser |
+| `refresh()` | Refresh library browser |
+| `getMacroCount()` | Get macro count |
+| `evalMacro()` | Evaluate macro |
+| `getMacro()` | Get macro |
+| `setMacro()` | Set macro |
+| `getSelItemName()` | Get selected item name |
+| `getSelItemProp()` | Get selected item property |
+| `getSelItemCustomProp()` | Get selected item custom property |
+
+### Additional Classes (discovered via introspection)
+| Class | Type | Description |
+|-------|------|-------------|
+| `RailClone_Pro` | GeometryClass | Main RailClone object (166 properties) |
+| `RailClone_Tools` | UtilityPlugin | RailClone Tools utility |
+| `RailClone_Exporter` | ExporterPlugin | Export .rcproxy files |
+| `RailClone_Importer` | ImporterPlugin | Import .rcproxy files |
+| `RailClone_Color` | textureMap | Per-segment color/material randomization (17 properties) |
+| `RC_Slice` | modifier | Slice modifier for RailClone geometry (28 properties) |
+| `RC_Spline` | modifier | Spline marker modifier (34 properties) |
 
 ---
 
-## 13. Sources
+## 13. Reference: Complete Introspected Property List
+
+> **Source:** Live introspection 2026-03-03, 3ds Max 2025, RailClone Pro
+> **Full details:** `docs/research/railclone_introspection.md`
+
+### Segment Arrays (s*) -- 37 arrays (read-only, populated by style graph)
+
+These arrays expose the internal segment configuration. While readable, they are populated by the style editor's node graph and cannot be used to construct styles programmatically.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `sid` | string array | Segment unique IDs |
+| `sname` | string array | Segment display names |
+| `sflags` | integer array | Segment flags |
+| `sobjref` | maxObject array | Segment geometry references |
+| `sobjoffset` | matrix3 array | Segment object offsets |
+| `sobjnodetm` | matrix3 array | Segment node transforms |
+| `sobjnode` | node array | Segment source nodes |
+| `sobjmtl` | material array | Segment materials |
+| `spos` | point3 array | Segment positions |
+| `srot` | point3 array | Segment rotations |
+| `ssca` | point3 array | Segment scales |
+| `sxalign` | integer array | X alignment mode |
+| `syalign` | integer array | Y alignment mode |
+| `szalign` | integer array | Z alignment mode |
+| `spadin` | worldUnits array | Padding in (left) |
+| `spadout` | worldUnits array | Padding out (right) |
+| `spadtop` | worldUnits array | Padding top |
+| `spadbottom` | worldUnits array | Padding bottom |
+| `sfixedsize` | point3 array | Fixed size override |
+| `ssizescale` | boolean array | Size scale flag |
+| `sinstance` | boolean array | Instance flag |
+| `sbend` | boolean array | Bend deformation |
+| `sslice` | boolean array | Slice at boundaries |
+| `snesting` | boolean array | Nesting flag |
+| `szdeform` | integer array | Z-axis deform mode |
+| `ssurfconform` | boolean array | Surface conform flag |
+| `ssurfnormal` | boolean array | Surface normal flag |
+| `sslopefix` | boolean array | Slope fix flag |
+| `sflattop` | worldUnits array | Flat top distance |
+| `sflatbottom` | worldUnits array | Flat bottom distance |
+| `srandtrans` | boolean array | Random translation enabled |
+| `srandrot` | boolean array | Random rotation enabled |
+| `srandscale` | boolean array | Random scale enabled |
+| `srandmat` | boolean array | Random material enabled |
+| `srt1`, `srt2` | point3 array | Random translation range |
+| `srr1`, `srr2` | point3 array | Random rotation range |
+| `srs1`, `srs2` | point3 array | Random scale range |
+| `smaterial` | integer array | Material ID assignment |
+| `smatrange` | integer array | Material range |
+| `smapping` | boolean array | Mapping enabled |
+| `smapreal` | boolean array | Real-world mapping |
+| `smapchans` | string array | Mapping channels |
+| `smapsize` | point3 array | Map size |
+| `smapoff` | point3 array | Map offset |
+| `smaprotx` | float array | Map rotation X |
+| `smaproty` | float array | Map rotation Y |
+| `smaprotz` | float array | Map rotation Z |
+
+### RailClone_Color Properties (textureMap)
+| Property | Type | Description |
+|----------|------|-------------|
+| `mapbase` | texturemap | Base texture map |
+| `mapidmode` | integer | Map ID mode |
+| `colorbase` | color | Base color |
+| `maplist` | texturemap array | Texture map list for randomization |
+| `maponlist` | boolean array | Map enable list |
+| `colorlist` | color array | Color list for randomization |
+| `problist` | float array | Probability weights |
+| `tintmixmode` | integer | Tint mixing mode |
+| `tintvariation` | float | Tint variation amount |
+| `override` | boolean | Override flag |
+| `tintcolor1`, `tintcolor2` | color | Tint color range |
+| `tintmin`, `tintmax` | integer | Tint value range |
+| `tintmode` | integer | Tint mode |
+| `tintmap` | texturemap | Tint texture map |
+| `tintmapmode` | integer | Tint map mode |
+
+### RC_Slice Properties (modifier, 28 properties)
+Slice positioning for start, end, X/Y evenly, X/Y corners, top, bottom. Key properties:
+`start`, `stasize`, `end`, `endsize`, `xde`, `xdepos`, `xdesize`, `xev`, `xevpos`, `xevsize`, `xcr`, `xcrpos`, `xcrsize`, `adjusty`, `top`, `topsize`, `bottom`, `botsize`, `yde`, `ydepos`, `ydesize`, `yev`, `yevpos`, `yevsize`, `adjustx`, `output`, `operateon`, `exname`
+
+### RC_Spline Properties (modifier, 34 properties)
+Spline marker control for custom insertion points. Key properties:
+`mktype`, `mkdesc`, `mkuserid`, `mkspline`, `mkallsplines`, `mkpercent`, `mkdist`, `mkreference`, `mkrefid`, `mkuserdata0-8`, `mkuserlabel0-8`, `mkusertype0-8`, `mkshowgidzmos`, `bkgizmosize`, `bkspline`, `bkpercent`, `bkangle`, `bkshowgidzmos`
+
+### V1 Legacy Properties
+Retained for backward compatibility: `v1yoffset`, `v1zoffset`, `v1gscale`, `v1mirror`, `v1flipa`, `v1flipb`, `v1flatstepped`, `v1beveloffset`, `v1filletrad`, `v1distance`, `v1distadjust`
+
+---
+
+## 14. Sources
 
 Research was conducted across the following resources:
 
