@@ -214,13 +214,27 @@ MAXScript has no `stringJoin`. Use manual concatenation loops.
 
 ### Redshift class names
 - `RS_Bump_Map` (with underscores), NOT `RS_BumpMap` — the latter silently fails.
-- `RS_Normal_Map` — dedicated normal map node; use `.tex0_filename` directly (no separate RS_Bitmap needed).
+- `RS_Normal_Map` — dedicated normal map node; use `.tex0_filename` directly (no separate RS_Bitmap needed). Has NO `.input` property.
 - `RS_Bitmap` — Redshift native bitmap; set `.tex0_filename` and `.tex0_colorSpace` ("sRGB"/"Raw").
+- `RS_Displacement` — displacement node; wire child bitmap via `setProperty dispNode #texMap_map bmpNode`.
+- `Redshift_Mesh_Parameters` — modifier for per-object tessellation/displacement settings. Class name uses full `Redshift_` prefix, NOT `RS_`.
 - `CompositeTexturemap name:"X"` — the `name:` param collides with an array property; use `CompositeTexturemap(); .name = "X"` instead, or avoid for Redshift (use RS_Mix).
+
+### Redshift texture map wiring
+- **Cannot use direct property assignment** for RS material texture map slots: `mat.base_color_map = RS_Bitmap()` fails with "Unable to convert RS_Bitmap to Point4".
+- **Must use `setProperty` with symbol access**: `setProperty mat #base_color_map texNode`.
+- After wiring a `_map` slot, enable the companion property: `try (setProperty mat #base_color_mapenable true) catch()`.
+- RS material slot names: `base_color_map` (sRGB), `refl_roughness_map` (Raw), `metalness_map` (Raw), `bump_input` (RS_Normal_Map or RS_Bump_Map), `displacement_input` (RS_Displacement).
+- For displacement: create RS_Bitmap → wire to RS_Displacement via `setProperty dispNode #texMap_map bmpNode` → wire RS_Displacement to `setProperty mat #displacement_input dispNode`.
+- RS texture displacement (displacementMode=2) is more efficient than normal maps for surface detail — set globally in RS render settings or per-object via `Redshift_Mesh_Parameters` modifier.
 
 ### Redshift rendering
 - Use `redshift.renderView` interface for IPR, or standard `render()` for production frames.
 - `render_scene` tool uses the standard render pipeline which works with Redshift.
+
+### Redshift MCP tool bugs (as of 2026-03-03)
+- `create_redshift_material`, `connect_redshift_texture`, `get_redshift_material_info` all return a dict instead of a string from the MAXScript side — causes pydantic validation error on output. The MAXScript may or may not execute.
+- **Workaround**: Use `execute_maxscript` with `setProperty mat #slot_name tex` pattern directly until the tools are fixed.
 
 ### .NET strings
 - Convert .NET string to MAXScript string with `str as string` before using `.count` etc.
@@ -237,6 +251,20 @@ MAXScript has no `stringJoin`. Use manual concatenation loops.
 - Setting `shape_type_tab = #(1)` automatically flips `shapeMode` to 3D mode.
 - Shape IDs: Triangle=0, Cone=1, Quad=2, Cylinder=3, Sphere=4, Pyramid=5, Cube=6, Octahedron=7.
 - Operator variables: use `_Op` suffix to avoid MAXScript name conflicts.
+
+### tyFlow SubAnim access
+- SubAnim names replace spaces with underscores: `#PhysX_Shape` NOT `#'PhysX Shape'`.
+- `baseobject[#EventName][#Operator_Name]` is the correct access pattern.
+- `#'quoted names'` do NOT work for SubAnim access on tyFlow operators.
+
+### tyFlow Inferno (Zenith) — tyFlow 2.0+
+- Export operator name is `Export Inferno` (NOT `Inferno Export`).
+- Volume API: always pair `updateVolumes()` / `releaseVolumes()` to avoid GPU memory leaks.
+- Temperature properties come in 4 variants: `Normalized`, `Celcius`, `Fahrenheit`, `Kelvin`.
+- Note: tyFlow uses `Celcius` (misspelled), NOT `Celsius`.
+- 15 confirmed Inferno operators: Birth Inferno, Inferno Emitter, Inferno Bounds, Inferno Display, Inferno Collider, Inferno Color, Inferno Spawn, Inferno Properties, Inferno Recall, Export Inferno, Inferno Force, Inferno Temperature, Inferno Density, Inferno Vorticity, Inferno Scale.
+- Inferno operators work in regular events (`addEvent()`), no special event type needed.
+- PhysX SDF mode: new `sdfCellRatio` and `sdfMinCellSize` properties on PhysX Shape.
 
 ### Forest Pack + Redshift rendering
 - Materials on the Forest Pack object itself are VIEWPORT-ONLY — Redshift ignores them at render time.
@@ -326,7 +354,61 @@ Not a thing:
 
 ---
 
-## 14) Safety for Destructive Operations
+## 14) RPManager Script & Visibility Tools
+
+### Key bugs & workarounds (RPManager v7.8)
+- **`fRefresh()` crashes** when `lstbox` is undefined (UI not open) — always use `try(RPMdata.rmrefresh())catch()` instead
+- **`MouseDownSelection.ListView`** returns undefined until user has clicked the pass list — wrap in try/catch, fall back to state-variable-only restore
+- **Setter functions** (`SetPassOutputPath`, `SetPassBeforeScript`, etc.) silently fail without UI — always call `RPMdata.RMopenFloater()` first
+- **Vis set creation via `RMLSetMaker.oker.pressed()`** assigns name but does NOT store layer data — BROKEN, cannot fix without decrypting RPManager source
+- **`RMrestore()` does NOT apply vis set layer states** — it restores render settings but not layer visibility
+- **RPManager .mse encryption** is custom (polyalphabetic cipher in RPMdlx.dlx), NOT standard Max `encryptScript` — cannot be decrypted with QuickBMS
+
+### Recommended tools
+- **`set_rpmanager_visibility`** — uses before/after scripts for layer control (bypasses broken vis set API). Pass `layers_on` list.
+- **`configure_rpmanager_pass`** — one-stop setup: layers + output path + frame range via before/after scripts
+- **`render_rpmanager_pass`** — full cycle: restore pass → before script → render → after script
+- **`set_rpmanager_pass_script`** — auto-wraps scripts in `( ... )` for safe `execute()` (RPManager uses `execute()` internally)
+- **`restore_rpmanager_pass`** — switches active pass with fallback (tries ListView, falls back to state vars + RMrestore)
+
+### Before/after script pattern for layer visibility
+Before/after scripts are the ONLY reliable way to control per-pass layer visibility:
+```maxscript
+-- Before: save state, set layers
+global _rpm_layer_state = #()
+for li = 0 to LayerManager.count-1 do (
+  local l = LayerManager.getLayer li
+  append _rpm_layer_state #(l.name, l.on)
+)
+local onLayers = #("LayerA", "LayerB")
+for li = 0 to LayerManager.count-1 do (
+  local l = LayerManager.getLayer li
+  l.on = (findItem onLayers l.name) > 0
+)
+
+-- After: restore
+for entry in _rpm_layer_state do (
+  local l = LayerManager.getLayerFromName entry[1]
+  if l != undefined do l.on = entry[2]
+)
+```
+
+---
+
+## 15) Modal Dialogs Lock You Out
+
+**CRITICAL:** Any MAXScript that triggers a modal dialog (confirmation, file browser, error popup) will block the TCP listener indefinitely. Max stops responding to MCP commands until the user manually dismisses the dialog.
+
+- **Never trigger "overwrite?" confirmations** — check `doesFileExist` before saving, use unique names for RPManager vis sets, etc.
+- **Never call functions that open file browsers** (`getOpenFileName`, `getSaveFileName`) — pass paths directly
+- **RPManager `RMLSetMaker` dialog:** Do NOT use — `oker.pressed()` doesn't store layer data, and duplicate names cause a blocking modal. Use before/after scripts instead.
+- **Avoid `messageBox`**, `queryBox`, `yesNoCancelBox` in any script you execute
+- **If locked out:** user must click through the dialog in Max, then retry the MCP command
+- **`quiet:true`** flags exist on many Max functions — always use them (e.g. `loadMaxFile ... quiet:true`, `resetMaxFile #noPrompt`)
+
+---
+
+## 16) Safety for Destructive Operations
 
 - Prefer **Hold/Fetch** for critical operations:
   - `holdMaxFile()`
@@ -339,7 +421,7 @@ For batch ops:
 
 ---
 
-## 15) Data Channel Modifier (DC)
+## 17) Data Channel Modifier (DC)
 
 Use tools:
 - Build full graph → `add_data_channel`
@@ -360,7 +442,7 @@ Common DC pitfalls:
 
 ---
 
-## 16) Wire Parameters
+## 18) Wire Parameters
 
 Use tools:
 - Discover params → `list_wireable_params`
