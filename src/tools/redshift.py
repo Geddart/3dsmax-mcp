@@ -227,7 +227,7 @@ def create_redshift_material(
     lines.append('json')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +284,7 @@ def get_redshift_material_info(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +326,7 @@ def set_redshift_material_properties(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +417,7 @@ def connect_redshift_texture(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -475,4 +475,4 @@ def list_redshift_materials(
     ]
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")

@@ -204,7 +204,7 @@ def create_tyflow(
     lines.append('json')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +300,7 @@ def get_tyflow_info(
         json
     )
 )"""
-    return client.send_command(maxscript)
+    return client.send_command(maxscript).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +355,7 @@ def modify_tyflow_operator(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +408,7 @@ def add_tyflow_event(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +464,7 @@ def connect_tyflow_events(
         )
     )
 )"""
-    return client.send_command(maxscript)
+    return client.send_command(maxscript).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +525,7 @@ def remove_tyflow_element(
         )
     )
 )"""
-    return client.send_command(maxscript)
+    return client.send_command(maxscript).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -586,7 +586,7 @@ def set_tyflow_shape(
         )
     )
 )"""
-    return client.send_command(maxscript)
+    return client.send_command(maxscript).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +670,7 @@ def set_tyflow_physx(
         "{{\\\"success\\\":true,\\\"name\\\":\\\"" + tfObj.name + "\\\",\\\"propertiesSet\\\":[{props_json}]}}"
     )
 )"""
-    return client.send_command(maxscript)
+    return client.send_command(maxscript).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +746,7 @@ def add_tyflow_collision(
         )
     )
 )"""
-    return client.send_command(maxscript)
+    return client.send_command(maxscript).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -869,7 +869,7 @@ def get_tyflow_particles(
         json
     )
 )"""
-    return client.send_command(maxscript)
+    return client.send_command(maxscript).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -904,7 +904,7 @@ def get_tyflow_particle_count(
         "{{\\\"name\\\":\\\"" + tfObj.name + "\\\",\\\"particleCount\\\":" + (n as string) + ",\\\"frame\\\":" + ((currentTime.frame as integer) as string) + "}}"
     )
 )"""
-    return client.send_command(maxscript)
+    return client.send_command(maxscript).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -934,7 +934,7 @@ def reset_tyflow_simulation(
         "{{\\\"success\\\":true,\\\"name\\\":\\\"" + tfObj.name + "\\\"}}"
     )
 )"""
-    return client.send_command(maxscript)
+    return client.send_command(maxscript).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1166,7 +1166,7 @@ def create_tyflow_preset(
                  f'\\\"shape\\\":\\\"{shape_name}\\\",\\\"shapeId\\\":{shape_id}}}"')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1264,7 +1264,7 @@ def get_tyflow_volume_data(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1314,7 +1314,7 @@ def convert_tyflow_temperature(
         )
     )
 )"""
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1553,7 +1553,7 @@ def create_tyflow_inferno(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1657,7 +1657,7 @@ def set_tyflow_inferno_display(
         )
     )
 )"""
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1736,7 +1736,7 @@ def export_tyflow_inferno_vdb(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1798,4 +1798,4 @@ def set_tyflow_global_event(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms)
+    return client.send_command(ms).get("result", "")
