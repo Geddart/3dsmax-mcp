@@ -265,6 +265,11 @@ MAXScript has no `stringJoin`. Use manual concatenation loops.
 - 15 confirmed Inferno operators: Birth Inferno, Inferno Emitter, Inferno Bounds, Inferno Display, Inferno Collider, Inferno Color, Inferno Spawn, Inferno Properties, Inferno Recall, Export Inferno, Inferno Force, Inferno Temperature, Inferno Density, Inferno Vorticity, Inferno Scale.
 - Inferno operators work in regular events (`addEvent()`), no special event type needed.
 - PhysX SDF mode: new `sdfCellRatio` and `sdfMinCellSize` properties on PhysX Shape.
+- Inferno is a forward-only GPU sim — timeline scrubbing does NOT update the volume display.
+- To preview Inferno animations: sim each frame with `updateParticles` + capture with `gw.getViewportDib()`.
+- `playAnimation()` blocks the TCP listener — avoid calling it via MAXScript.
+- `createPreview` does NOT trigger `updateParticles` — Inferno won't animate in previews.
+- Inferno Recall operator with RAM cache: compression mode 0 may suppress display. Needs further testing.
 
 ### Forest Pack + Redshift rendering
 - Materials on the Forest Pack object itself are VIEWPORT-ONLY — Redshift ignores them at render time.

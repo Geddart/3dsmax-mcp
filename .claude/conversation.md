@@ -243,3 +243,17 @@ Birth Inferno, Inferno Emitter, Inferno Bounds, Inferno Display, Inferno Collide
 - MCP server restart needed to register new tools
 - Consider adding Inferno presets to `create_tyflow_preset`
 - Test `modify_tyflow_operator` with Inferno operators after server restart
+
+### Session 2026-03-22 (Part 2) — Live Testing & Explosion Scene
+
+1. Fixed `send_command()` return type bug in tyflow.py (19 calls) and redshift.py (5 calls) — tools must return `.get("result", "")` not the raw dict
+2. Built explosion scene: fractured wall (Voronoi 80 pieces) + PhysX debris + Inferno fire
+3. Discovered Inferno timeline scrubbing limitation and solved with sim+capture workflow
+
+### Future MCP tool ideas (from Inferno workflow lessons)
+- **`capture_tyflow_preview`** — sim + viewport capture in one loop: steps through frames, calls `updateParticles` on specified tyFlows, captures `gw.getViewportDib()` per frame, outputs image sequence. Works for any tyFlow sim, not just Inferno.
+- **`create_tyflow_inferno` improvements** — set `updateOnTimeChange = true` by default on Birth Inferno; investigate adding Inferno Recall with uncompressed RAM cache by default
+- **Inferno Recall investigation** — compressed mode (VQVDB) may need RTX 2000+ GPU; uncompressed mode (0) suppressed display in our tests; `recallMode` values undocumented. Needs more testing with different GPU/driver combos.
+- **`playAnimation()` alternative** — can't use via MCP (blocks TCP listener). The sim+capture loop is the only reliable approach.
+- **`createPreview` limitation** — does NOT call `updateParticles`, so Inferno stays static. Document this and warn users.
+- **RV integration** — launching RV with `-network -networkPort 45125` works; sequence notation is `filename_####.ext`

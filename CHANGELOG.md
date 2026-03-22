@@ -7,23 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-22
+
 ### Added
-- Redshift material tools: `create_redshift_material`, `get_redshift_material_info`, `set_redshift_material_properties`, `connect_redshift_texture`, `list_redshift_materials`
-- 10 built-in presets (chrome, gold, copper, glass, plastic, rubber, ceramic, skin, sss_wax, emissive)
+- **tyFlow 2.0 (Zenith) Inferno tools** — 6 new tools for GPU smoke/fire simulation:
+  - `create_tyflow_inferno` — one-call fire/smoke setup with 4 presets (fire, smoke, explosion_smoke, campfire)
+  - `get_tyflow_volume_data` — sample density/fuel/temperature/color/velocity from Inferno fluid grids
+  - `convert_tyflow_temperature` — celsius/fahrenheit/kelvin conversion via tyFlow API
+  - `set_tyflow_inferno_display` — configure viewport ray marching, AO, shadows, glow
+  - `export_tyflow_inferno_vdb` — configure VDB export channels, paths, and frame ranges
+  - `set_tyflow_global_event` — mark events as global (tyFlow 2.0 feature)
+- **57 plugin tools** for tyFlow, RPManager, RailClone, and Forest Pack with plugin config system (`plugins.toml`)
+- 13 core tyFlow particle tools (create, inspect, modify, fracture, PhysX, presets)
+- 15 RPManager tools (pass management, visibility, capture sets, scripts, rendering)
+- 13 RailClone tools (library styles, fences, walls, railings, arrays, parameters)
+- 16 Forest Pack tools (scatter, surfaces, sources, transforms, LOD, clustering, animation)
+- Redshift material tools with 10 built-in presets
 - Redshift API quick reference (`docs/redshift_api_reference.md`)
-- Redshift introspection research files (`docs/research/rs_*.md`)
-- Implementation plans for Redshift, tyFlow, RPManager, RailClone, and Forest Pack Pro extensions (`docs/PLAN_*.md`)
-- This CHANGELOG file
+- Implementation plans for all 5 plugins (`docs/PLAN_*.md`)
+- tyFlow 2.0 introspection results: 15 confirmed Inferno operators, full property maps (`docs/research/tyflow2_introspection.md`)
+- Plugin enable/disable via `plugins.toml` or `3DSMAX_MCP_PLUGINS` env var
 
 ### Fixed
-- `material_ops.py`: RS_BumpMap → RS_Bump_Map (class didn't exist, caused silent failures)
-- `material_ops.py`: Use RS_Bitmap instead of Bitmaptexture for Redshift textures (gains native color space control)
-- `material_ops.py`: Use RS_Normal_Map with `tex0_filename` directly (not via RS_Bitmap to tex0 which expects a Bitmap)
-- `material_ops.py`: Displacement now wires through RS_Displacement node instead of raw bitmap to slot
-- `material_ops.py`: Skip AO compositing for Redshift (GI handles it; CompositeTexturemap name: param is bugged)
-- `material_ops.py`: Added normal/bump/displacement slots to Redshift renderer config
-- `render.py`: Changed `vfb:true` to `vfb:false` — prevents standard Max VFB from popping up during render
-- `redshift.py`: RS_Displacement auto-creates child RS_Bitmap when file_path is provided
+- `_sa_name()`: SubAnim access now uses underscores (`#PhysX_Shape`) instead of broken quoting (`#'PhysX Shape'`)
+- All tyflow and redshift tools: extract `.get("result", "")` from `send_command()` dict (was returning raw dict, causing pydantic validation errors)
+- `material_ops.py`: RS_BumpMap → RS_Bump_Map, RS_Bitmap for textures, RS_Normal_Map direct filename
+- `render.py`: `vfb:false` prevents VFB popup during render
+- RPManager: `fRefresh()` crash fix, `RMopenFloater()` guards, before/after script approach for layer visibility
+- E2E bugs: reserved word collisions, JSON escaping, constructor conflicts, read-only property handling
 
 ## [0.2.0] - 2025-03-01
 

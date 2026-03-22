@@ -128,6 +128,7 @@ def get_rpmanager_passes() -> str:
         '        local json = "{\\"passCount\\": " + pc as string + ", \\"passes\\": ["\n'
         '        for i = 1 to pc do (\n'
         '            if i > 1 do json += ","\n'
+        '            local pName = try (RPMdata.GetPassName i) catch("")\n'
         '            local pOut = try (RPMdata.GetPassOutputPath i) catch("")\n'
         '            local pTimeType = try (RPMdata.GetPassTimeType i) catch(0)\n'
         '            local pRange = try (RPMdata.GetPassRange i) catch(#(0,100,1))\n'
@@ -140,6 +141,7 @@ def get_rpmanager_passes() -> str:
         '            )\n'
         '            local safeOut = substituteString (substituteString (pOut as string) "\\\\" "/") "\\"" "\\\\\\""\n'
         '            json += "{\\"index\\": " + i as string\n'
+        '            json += ", \\"name\\": \\"" + pName + "\\""\n'
         '            json += ", \\"outputPath\\": \\"" + safeOut + "\\""\n'
         '            if camName != "" then\n'
         '                json += ", \\"camera\\": \\"" + camName + "\\""\n'
@@ -263,7 +265,7 @@ def set_rpmanager_pass_property(
         inner = (
             f'local oldVal = try (RPMdata.GetPassOutputPath idx; "ok") catch("?")\n'
             f'            RPMdata.SetPassName idx "{safe_val}"\n'
-            f'            RPMdata.fRefresh()\n'
+            f'            try(RPMdata.rmrefresh())catch()\n'
             f'            "{{\\\"set\\\":\\\"name\\\", \\\"index\\\":" + idx as string + ", \\\"value\\\":\\\"{safe_val}\\\"}}"'
         )
     elif prop == "output":
@@ -272,7 +274,7 @@ def set_rpmanager_pass_property(
             f'local oldVal = try (RPMdata.GetPassOutputPath idx) catch("")\n'
             f'            local safeOld = substituteString (substituteString (oldVal as string) "\\\\" "/") "\\"" "\\\\\\""\n'
             f'            RPMdata.SetPassOutputPath idx "{safe_path}"\n'
-            f'            RPMdata.fRefresh()\n'
+            f'            try(RPMdata.rmrefresh())catch()\n'
             f'            local json = "{{\\\"set\\\":\\\"output\\\", \\\"index\\\":" + idx as string\n'
             f'            json += ", \\\"old\\\":\\\"" + safeOld + "\\\""\n'
             f'            json += ", \\\"new\\\":\\\"{safe_path}\\\"}}"\n'
@@ -286,14 +288,14 @@ def set_rpmanager_pass_property(
         inner = (
             f'local oldVal = try (RPMdata.GetPassTimeType idx) catch(0)\n'
             f'            RPMdata.SetPassTimeType idx {tt_int}\n'
-            f'            RPMdata.fRefresh()\n'
+            f'            try(RPMdata.rmrefresh())catch()\n'
             f'            "{{\\\"set\\\":\\\"time_type\\\", \\\"index\\\":" + idx as string + ", \\\"old\\\":" + (oldVal as integer) as string + ", \\\"new\\\":{tt_int}}}"'
         )
     elif prop == "range":
         inner = (
             f'local oldRange = try (RPMdata.GetPassRange idx) catch(#(0,100,1))\n'
-            f'            RPMdata.SetPassRange idx {frame_start} {frame_end} {nth_frame}\n'
-            f'            RPMdata.fRefresh()\n'
+            f'            RPMdata.SetPassRange idx #({frame_start}, {frame_end}, {nth_frame})\n'
+            f'            try(RPMdata.rmrefresh())catch()\n'
             f'            local oldS = try (oldRange[1] as integer) catch(0)\n'
             f'            local oldE = try (oldRange[2] as integer) catch(100)\n'
             f'            local oldN = try (oldRange[3] as integer) catch(1)\n'
@@ -307,7 +309,7 @@ def set_rpmanager_pass_property(
         inner = (
             f'local oldBG = try (RPMdata.GetPassBGColor idx) catch(color 0 0 0)\n'
             f'            RPMdata.SetPassColor idx (color {r} {g} {b})\n'
-            f'            RPMdata.fRefresh()\n'
+            f'            try(RPMdata.rmrefresh())catch()\n'
             f'            "{{\\\"set\\\":\\\"color\\\", \\\"index\\\":" + idx as string + ", \\\"new\\\":{{\\\"r\\\":{r}, \\\"g\\\":{g}, \\\"b\\\":{b}}}}}"'
         )
     else:
@@ -316,6 +318,8 @@ def set_rpmanager_pass_property(
             'Use: name, output, time_type, range, color"}'
         )
 
+    # Ensure RPManager UI is open (required for setter functions)
+    inner = 'RPMdata.RMopenFloater()\n            ' + inner
     ms = _index_guard(inner).replace("{IDX}", str(pass_index))
     response = client.send_command(ms)
     return response.get("result", response)
@@ -354,7 +358,7 @@ def create_rpmanager_pass(name: str | None = None) -> str:
         'RPMdata.RMopenFloater()\n'
         '        local oldCount = RPMdata.getpasscount()\n'
         '        RPMdata.AddPass()\n'
-        '        RPMdata.fRefresh()\n'
+        '        try(RPMdata.rmrefresh())catch()\n'
         '        local newIdx = RPMdata.getpasscount()\n'
         '        if newIdx <= oldCount then (\n'
         '            "{\\"error\\": \\"AddPass did not create a new pass. '
@@ -362,7 +366,7 @@ def create_rpmanager_pass(name: str | None = None) -> str:
         '        ) else ('
         + name_line +
         '\n'
-        '            RPMdata.fRefresh()\n'
+        '            try(RPMdata.rmrefresh())catch()\n'
         '            local json = "{\\"created\\": true, \\"index\\": " + newIdx as string\n'
         '            json += ", \\"passCount\\": " + newIdx as string\n'
         + (f'            json += ", \\"name\\": \\"{safe}\\""\n' if safe else '')
@@ -395,7 +399,7 @@ def delete_rpmanager_pass(pass_index: int) -> str:
     inner = (
         'RPMdata.RMopenFloater()\n'
         '            local ok = RPMdata.RMDeleteItem idx\n'
-        '            RPMdata.fRefresh()\n'
+        '            try(RPMdata.rmrefresh())catch()\n'
         '            local newCount = RPMdata.getpasscount()\n'
         '            if ok then (\n'
         '                "{\\"deleted\\": true, \\"index\\": " + idx as string '
@@ -406,6 +410,74 @@ def delete_rpmanager_pass(pass_index: int) -> str:
         '            )'
     )
     ms = _index_guard(inner).replace("{IDX}", str(pass_index))
+    response = client.send_command(ms)
+    return response.get("result", response)
+
+
+# ---------------------------------------------------------------------------
+# Tool 6b: restore_rpmanager_pass
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def restore_rpmanager_pass(pass_index: int) -> str:
+    """Switch the active RPManager pass and restore its render settings.
+
+    Opens the RPManager UI, attempts to select the target pass in the
+    .NET ListView (discovered dynamically via hwnd search), sets internal
+    RPMdata state variables, and calls RMrestore().  Falls back to
+    state-variable-only restore if the ListView cannot be found.
+
+    Returns the pass's current layer visibility and vis set name.
+
+    Args:
+        pass_index: 1-based index of the pass to restore.
+
+    Returns:
+        JSON with index, visSetName, layersOn, and lvFound (whether ListView was used).
+    """
+    idx = int(pass_index)
+    lv_idx = idx - 1
+
+    inner = (
+        # Ensure UI is open so ListView exists
+        'RPMdata.RMopenFloater()\n'
+        # Try to find the ListView dynamically via hwnd search
+        f'            local lvFound = false\n'
+        f'            try (\n'
+        f'                local lv = RPMdata.MouseDownSelection.ListView\n'
+        f'                if lv != undefined and lv.Items.Count > 0 do (\n'
+        f'                    for i = 0 to lv.Items.Count-1 do lv.Items.Item[i].Selected = false\n'
+        f'                    if {lv_idx} < lv.Items.Count do (\n'
+        f'                        lv.Items.Item[{lv_idx}].Selected = true\n'
+        f'                        lv.Items.Item[{lv_idx}].Focused = true\n'
+        f'                        lvFound = true\n'
+        f'                    )\n'
+        f'                )\n'
+        f'            ) catch ()\n'
+        # Set internal state vars (always — works even without ListView)
+        f'            RPMdata.lastRestored = idx\n'
+        f'            RPMdata.selectionTemp = #(idx)\n'
+        f'            RPMdata.lastLstBoxId = #(idx)\n'
+        f'            RPMdata.RMrestore()\n'
+        # Collect current state
+        f'            local vsName = try (RPMdata.GetPassVisSetName idx) catch("")\n'
+        f'            local json = "{{\\\"index\\\":" + idx as string\n'
+        f'            json += ", \\\"lvFound\\\":" + (lvFound as string)\n'
+        f'            json += ", \\\"visSetName\\\":\\\"" + (vsName as string) + "\\\""\n'
+        f'            json += ", \\\"layersOn\\\": ["\n'
+        f'            local first = true\n'
+        f'            for li = 0 to LayerManager.count-1 do (\n'
+        f'                local l = LayerManager.getLayer li\n'
+        f'                if l.on do (\n'
+        f'                    if not first do json += ","\n'
+        f'                    first = false\n'
+        f'                    json += "\\\"" + l.name + "\\\""\n'
+        f'                )\n'
+        f'            )\n'
+        f'            json += "]}}"\n'
+        f'            json'
+    )
+    ms = _index_guard(inner).replace("{IDX}", str(idx))
     response = client.send_command(ms)
     return response.get("result", response)
 
@@ -442,30 +514,99 @@ def get_rpmanager_visibility_sets(pass_index: int) -> str:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def set_rpmanager_visibility(pass_index: int, vis_set_name: str) -> str:
-    """Set the visibility set for a render pass.
+def set_rpmanager_visibility(
+    pass_index: int,
+    layers_on: list[str],
+    restore_layers: list[str] | None = None,
+) -> str:
+    """Set layer visibility for a render pass using before/after scripts.
 
-    Assigns a named visibility set to control which objects are visible
-    when this pass renders.
+    This is the reliable way to control per-pass layer visibility in
+    RPManager.  It generates before/after scripts that:
+    - BEFORE render: turn ON only the specified layers (all others OFF)
+    - AFTER render: restore layers to their previous state
+
+    This approach bypasses RPManager's buggy vis set creation API
+    (RMLSetMaker dialog) and works headlessly.
 
     Args:
         pass_index: 1-based index of the pass.
-        vis_set_name: Name of the visibility set to assign.
+        layers_on: List of layer names to turn ON for this pass.
+            All layers not in this list will be turned OFF.
+            Example: ["BG_AI_Projection", "Lights"]
+        restore_layers: Optional list of layer names to restore to ON
+            after rendering.  If None, the after script will restore
+            whatever state existed before the before script ran.
 
     Returns:
-        JSON with confirmation.
+        JSON with index, layersOn, and the generated scripts.
     """
-    safe_vs = _safe_name(vis_set_name)
-    inner = (
-        f'local oldVS = try (RPMdata.GetPassVisSetName idx) catch("")\n'
-        f'            try (RPMdata.writeVisSetData idx "{safe_vs}") catch(\n'
-        f'                try (RPMdata.SetPassVisSetName idx "{safe_vs}") catch()\n'
-        f'            )\n'
-        f'            RPMdata.fRefresh()\n'
-        f'            local newVS = try (RPMdata.GetPassVisSetName idx) catch("")\n'
-        f'            "{{\\\"index\\\":" + idx as string + ", \\\"old\\\":\\\"" + (oldVS as string) + "\\\", \\\"new\\\":\\\"" + (newVS as string) + "\\\"}}"'
+    idx = int(pass_index)
+
+    # Build before script: save state, then set layers
+    layers_on_ms = ", ".join(f'"{_safe_name(l)}"' for l in layers_on)
+    before_script = (
+        "(\n"
+        "global _rpm_layer_state = #()\n"
+        "for li = 0 to LayerManager.count-1 do (\n"
+        "  local l = LayerManager.getLayer li\n"
+        "  append _rpm_layer_state #(l.name, l.on)\n"
+        ")\n"
+        f"local onLayers = #({layers_on_ms})\n"
+        "for li = 0 to LayerManager.count-1 do (\n"
+        "  local l = LayerManager.getLayer li\n"
+        "  l.on = (findItem onLayers l.name) > 0\n"
+        ")\n"
+        ")"
     )
-    ms = _index_guard(inner).replace("{IDX}", str(pass_index))
+
+    # Build after script: restore saved state
+    if restore_layers is not None:
+        restore_ms = ", ".join(f'"{_safe_name(l)}"' for l in restore_layers)
+        after_script = (
+            "(\n"
+            f"local restoreLayers = #({restore_ms})\n"
+            "for li = 0 to LayerManager.count-1 do (\n"
+            "  local l = LayerManager.getLayer li\n"
+            "  l.on = (findItem restoreLayers l.name) > 0\n"
+            ")\n"
+            ")"
+        )
+    else:
+        after_script = (
+            "(\n"
+            "if _rpm_layer_state != undefined do (\n"
+            "  for entry in _rpm_layer_state do (\n"
+            "    local l = LayerManager.getLayerFromName entry[1]\n"
+            "    if l != undefined do l.on = entry[2]\n"
+            "  )\n"
+            ")\n"
+            ")"
+        )
+
+    safe_before = _safe_script(before_script)
+    safe_after = _safe_script(after_script)
+
+    inner = (
+        f'RPMdata.RMopenFloater()\n'
+        f'            RPMdata.SetPassBeforeScript idx "{safe_before}"\n'
+        f'            RPMdata.SetPassAfterScript idx "{safe_after}"\n'
+        f'            try(RPMdata.rmrefresh())catch()\n'
+        # Verify and report
+        f'            local json = "{{\\\"index\\\":" + idx as string\n'
+        f'            json += ", \\\"method\\\":\\\"before_after_scripts\\\""\n'
+        f'            json += ", \\\"layersOn\\\": ["\n'
+        f'            local first = true\n'
+        + "".join(
+            f'            if not first do json += ","\n'
+            f'            first = false\n'
+            f'            json += "\\\"' + _safe_name(l) + '\\\""\n'
+            for l in layers_on
+        )
+        + f'            json += "]}}"\n'
+        f'            json'
+    )
+    ms = _index_guard(inner).replace("{IDX}", str(idx))
     response = client.send_command(ms)
     return response.get("result", response)
 
@@ -633,7 +774,7 @@ def set_rpmanager_material_override(
             f'            ) else (\n'
             f'                try (\n'
             f'                    RPMdata.setPostMaterial idx mat\n'
-            f'                    RPMdata.fRefresh()\n'
+            f'                    try(RPMdata.rmrefresh())catch()\n'
             f'                    "{{\\\"set\\\": true, \\\"index\\\":" + idx as string + ", \\\"material\\\":\\\"{safe_mat}\\\"}}"\n'
             f'                ) catch (\n'
             f'                    "{{\\\"error\\\":\\\"Failed to set material override: " + (getCurrentException()) + "\\\"}}"\n'
@@ -644,7 +785,7 @@ def set_rpmanager_material_override(
         inner = (
             'try (\n'
             '                RPMdata.setPostMaterial idx undefined\n'
-            '                RPMdata.fRefresh()\n'
+            '                try(RPMdata.rmrefresh())catch()\n'
             '                "{\\"cleared\\": true, \\"index\\":" + idx as string + "}"\n'
             '            ) catch (\n'
             '                "{\\"error\\":\\"Failed to clear material override: " + (getCurrentException()) + "\\"}" \n'
@@ -722,6 +863,13 @@ def set_rpmanager_pass_script(
     if st not in ("before", "after"):
         return '{"error": "script_type must be \\"before\\" or \\"after\\""}'
 
+    # Auto-wrap in () — RPManager executes scripts via execute(), which
+    # requires top-level code in a block.  Without this, `local` declarations
+    # cause a modal "Before Script Failure" dialog that locks the TCP listener.
+    script = script.strip()
+    if not (script.startswith("(") and script.endswith(")")):
+        script = "(\n" + script + "\n)"
+
     safe_script = _safe_script(script)
 
     if st == "before":
@@ -732,9 +880,10 @@ def set_rpmanager_pass_script(
         fn_get = "GetPassAfterScript"
 
     inner = (
-        f'local oldScript = try (RPMdata.{fn_get} idx) catch("")\n'
+        f'RPMdata.RMopenFloater()\n'
+        f'            local oldScript = try (RPMdata.{fn_get} idx) catch("")\n'
         f'            RPMdata.{fn_set} idx "{safe_script}"\n'
-        f'            RPMdata.fRefresh()\n'
+        f'            try(RPMdata.rmrefresh())catch()\n'
         f'            "{{\\\"set\\\":\\\"{st}\\\", \\\"index\\\":" + idx as string + ", \\\"success\\\": true}}"'
     )
     ms = _index_guard(inner).replace("{IDX}", str(pass_index))
@@ -794,7 +943,7 @@ def batch_update_rpmanager_passes(
             parts = [p.strip() for p in str(prop_val).split(",")]
             if len(parts) == 3:
                 set_lines.append(
-                    f'RPMdata.SetPassRange passIdx {parts[0]} {parts[1]} {parts[2]}'
+                    f'RPMdata.SetPassRange passIdx #({parts[0]}, {parts[1]}, {parts[2]})'
                 )
         elif pn == "color":
             parts = [p.strip() for p in str(prop_val).split(",")]
@@ -803,12 +952,18 @@ def batch_update_rpmanager_passes(
                     f'RPMdata.SetPassColor passIdx (color {parts[0]} {parts[1]} {parts[2]})'
                 )
         elif pn == "before_script":
-            safe_s = _safe_script(str(prop_val))
+            s = str(prop_val).strip()
+            if not (s.startswith("(") and s.endswith(")")):
+                s = "(\n" + s + "\n)"
+            safe_s = _safe_script(s)
             set_lines.append(
                 f'RPMdata.SetPassBeforeScript passIdx "{safe_s}"'
             )
         elif pn == "after_script":
-            safe_s = _safe_script(str(prop_val))
+            s = str(prop_val).strip()
+            if not (s.startswith("(") and s.endswith(")")):
+                s = "(\n" + s + "\n)"
+            safe_s = _safe_script(s)
             set_lines.append(
                 f'RPMdata.SetPassAfterScript passIdx "{safe_s}"'
             )
@@ -821,7 +976,8 @@ def batch_update_rpmanager_passes(
     set_block = "\n                ".join(set_lines)
 
     maxscript = _rpm_guard(
-        f'local pc = RPMdata.getpasscount()\n'
+        f'RPMdata.RMopenFloater()\n'
+        f'        local pc = RPMdata.getpasscount()\n'
         f'        local indices = {idx_arr}\n'
         f'        local json = "{{\\\"updated\\\": ["\n'
         f'        local first = true\n'
@@ -843,9 +999,197 @@ def batch_update_rpmanager_passes(
         f'                json += "{{\\\"index\\\":" + passIdx as string + ", \\\"error\\\":\\\"out of range\\\"}}"\n'
         f'            )\n'
         f'        )\n'
-        f'        RPMdata.fRefresh()\n'
+        f'        try(RPMdata.rmrefresh())catch()\n'
         f'        json += "]}}" \n'
         f'        json'
     )
     response = client.send_command(maxscript)
+    return response.get("result", response)
+
+
+# ---------------------------------------------------------------------------
+# Tool 16: configure_rpmanager_pass
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def configure_rpmanager_pass(
+    pass_index: int,
+    layers_on: list[str],
+    output_path: str | None = None,
+    restore_layers: list[str] | None = None,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
+) -> str:
+    """One-stop pass setup: layers, output path, frame range, and scripts.
+
+    Generates before/after scripts for layer visibility control and
+    optionally sets the output path and frame range.  This is the
+    recommended way to fully configure a render pass.
+
+    Args:
+        pass_index: 1-based index of the pass.
+        layers_on: Layer names to turn ON (all others OFF during render).
+        output_path: Optional render output file path.
+        restore_layers: Optional layer names to restore after render.
+            If None, restores pre-render state automatically.
+        frame_start: Optional start frame.
+        frame_end: Optional end frame.
+
+    Returns:
+        JSON with configuration summary.
+    """
+    idx = int(pass_index)
+
+    # Build before script
+    layers_on_ms = ", ".join(f'"{_safe_name(l)}"' for l in layers_on)
+    before_script = (
+        "(\n"
+        "global _rpm_layer_state = #()\n"
+        "for li = 0 to LayerManager.count-1 do (\n"
+        "  local l = LayerManager.getLayer li\n"
+        "  append _rpm_layer_state #(l.name, l.on)\n"
+        ")\n"
+        f"local onLayers = #({layers_on_ms})\n"
+        "for li = 0 to LayerManager.count-1 do (\n"
+        "  local l = LayerManager.getLayer li\n"
+        "  l.on = (findItem onLayers l.name) > 0\n"
+        ")\n"
+        ")"
+    )
+
+    # Build after script
+    if restore_layers is not None:
+        restore_ms = ", ".join(f'"{_safe_name(l)}"' for l in restore_layers)
+        after_script = (
+            "(\n"
+            f"local restoreLayers = #({restore_ms})\n"
+            "for li = 0 to LayerManager.count-1 do (\n"
+            "  local l = LayerManager.getLayer li\n"
+            "  l.on = (findItem restoreLayers l.name) > 0\n"
+            ")\n"
+            ")"
+        )
+    else:
+        after_script = (
+            "(\n"
+            "if _rpm_layer_state != undefined do (\n"
+            "  for entry in _rpm_layer_state do (\n"
+            "    local l = LayerManager.getLayerFromName entry[1]\n"
+            "    if l != undefined do l.on = entry[2]\n"
+            "  )\n"
+            ")\n"
+            ")"
+        )
+
+    safe_before = _safe_script(before_script)
+    safe_after = _safe_script(after_script)
+
+    # Build the MAXScript — set scripts, output, and range
+    set_lines = [
+        'RPMdata.RMopenFloater()',
+        f'RPMdata.SetPassBeforeScript idx "{safe_before}"',
+        f'RPMdata.SetPassAfterScript idx "{safe_after}"',
+    ]
+
+    json_extras = ""
+
+    if output_path is not None:
+        safe_path = output_path.replace("\\", "/").replace('"', '\\"')
+        set_lines.append(f'RPMdata.SetPassOutputPath idx "{safe_path}"')
+        json_extras += f', \\\"outputPath\\\":\\\"{safe_path}\\\"'
+
+    if frame_start is not None and frame_end is not None:
+        set_lines.append(
+            f'RPMdata.SetPassRange idx #({frame_start}, {frame_end}, 1)'
+        )
+        json_extras += f', \\\"frameRange\\\":{{\\\"start\\\":{frame_start}, \\\"end\\\":{frame_end}}}'
+
+    set_lines.append('try(RPMdata.rmrefresh())catch()')
+
+    set_block = "\n            ".join(set_lines)
+
+    inner = (
+        f'{set_block}\n'
+        f'            local json = "{{\\\"configured\\\": true, \\\"index\\\":" + idx as string\n'
+        f'            json += ", \\\"layerCount\\\":{len(layers_on)}"\n'
+        f'            json += "{json_extras}"\n'
+        f'            json += "}}"\n'
+        f'            json'
+    )
+    ms = _index_guard(inner).replace("{IDX}", str(idx))
+    response = client.send_command(ms)
+    return response.get("result", response)
+
+
+# ---------------------------------------------------------------------------
+# Tool 17: render_rpmanager_pass
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def render_rpmanager_pass(
+    pass_index: int,
+    frame: int | None = None,
+    output_path: str | None = None,
+) -> str:
+    """Execute a render pass: run before script, render, run after script.
+
+    This executes the full RPManager render cycle for a single pass:
+    1. Restores the pass (camera, render settings)
+    2. Executes the before script (layer visibility, etc.)
+    3. Renders the frame
+    4. Executes the after script (restore layers)
+
+    WARNING: This starts a render! Only call when the user explicitly
+    requests rendering.
+
+    Args:
+        pass_index: 1-based index of the pass to render.
+        frame: Frame number to render.  If None, renders current frame.
+        output_path: Optional override output path.  If None, uses the
+            pass's configured output path.
+
+    Returns:
+        JSON with render result.
+    """
+    idx = int(pass_index)
+
+    frame_line = ""
+    if frame is not None:
+        frame_line = f'sliderTime = {frame}\n            '
+
+    output_line = ""
+    if output_path is not None:
+        safe_path = output_path.replace("\\", "/").replace('"', '\\"')
+        output_line = f'rendOutputFilename = "{safe_path}"\n            '
+
+    inner = (
+        # Step 1: Restore pass (camera, render settings)
+        f'RPMdata.RMopenFloater()\n'
+        f'            RPMdata.lastRestored = idx\n'
+        f'            RPMdata.selectionTemp = #(idx)\n'
+        f'            RPMdata.lastLstBoxId = #(idx)\n'
+        f'            RPMdata.RMrestore()\n'
+        # Step 2: Execute before script
+        f'            local beforeSrc = try (RPMdata.GetPassBeforeScript idx) catch("")\n'
+        f'            if beforeSrc != "" do try (execute beforeSrc) catch ()\n'
+        # Step 3: Set frame and output
+        f'            {frame_line}{output_line}'
+        # Step 4: Render
+        f'            local renderOK = false\n'
+        f'            try (\n'
+        f'                max quick render\n'
+        f'                renderOK = true\n'
+        f'            ) catch ()\n'
+        # Step 5: Execute after script
+        f'            local afterSrc = try (RPMdata.GetPassAfterScript idx) catch("")\n'
+        f'            if afterSrc != "" do try (execute afterSrc) catch ()\n'
+        # Result
+        f'            local json = "{{\\\"rendered\\\": " + (renderOK as string)\n'
+        f'            json += ", \\\"index\\\":" + idx as string\n'
+        + (f'            json += ", \\\"frame\\\":{frame}"\n' if frame is not None else '')
+        + f'            json += "}}"\n'
+        f'            json'
+    )
+    ms = _index_guard(inner).replace("{IDX}", str(idx))
+    response = client.send_command(ms, timeout=300)
     return response.get("result", response)
