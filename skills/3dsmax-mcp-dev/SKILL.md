@@ -213,6 +213,8 @@ MAXScript has no `stringJoin`. Use manual concatenation loops.
 - This applies to all Standard Primitives (Box, Sphere, Cylinder, etc.).
 
 ### Redshift class names
+- `RS_Material` is the correct class for Redshift standard materials — NOT `Redshift_Material` (undefined).
+- `rsPhysicalLight` color property is `.color` (plain), NOT `.LightColor` — the latter throws "Unknown property". Use `.colorMode = 1` to enable custom color.
 - `RS_Bump_Map` (with underscores), NOT `RS_BumpMap` — the latter silently fails.
 - `RS_Normal_Map` — dedicated normal map node; use `.tex0_filename` directly (no separate RS_Bitmap needed). Has NO `.input` property.
 - `RS_Bitmap` — Redshift native bitmap; set `.tex0_filename` and `.tex0_colorSpace` ("sRGB"/"Raw").
@@ -270,6 +272,11 @@ MAXScript has no `stringJoin`. Use manual concatenation loops.
 - `playAnimation()` blocks the TCP listener — avoid calling it via MAXScript.
 - `createPreview` does NOT trigger `updateParticles` — Inferno won't animate in previews.
 - Inferno Recall operator with RAM cache: compression mode 0 may suppress display. Needs further testing.
+
+### Physical_Material emission properties
+- `emission_weight` does NOT exist — use `emission` (float, default 1.0) for emission strength.
+- `emission_color` does NOT exist — use `emit_color` (color) for emission color.
+- Other emit properties: `emit_luminance`, `emit_kelvin`, `emit_color_map`, `emit_color_map_on`.
 
 ### Forest Pack + Redshift rendering
 - Materials on the Forest Pack object itself are VIEWPORT-ONLY — Redshift ignores them at render time.
