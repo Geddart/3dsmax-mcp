@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-26
+
+### Added
+- **Multi-instance MCP support** — control up to 3 simultaneous 3ds Max instances
+  - 3 slot system (ports 8765, 8766, 8767) with automatic slot assignment
+  - `list_max_instances` tool — discover running 3ds Max instances
+  - `set_active_instance` tool — switch which instance receives commands
+  - `execute_maxscript` now accepts optional `slot` parameter for parallel agent control
+  - `MaxClientManager` proxy class — routes commands transparently, zero changes to existing tools
+- **MAXScript Manager UI** — `mcp_manager.ms` rollout dialog showing PID, slot, port, status
+- **Toolbar buttons** — MCP1/MCP2/MCP3 toggle buttons replace old Start/Stop
+- **Smart autostart** — tries slots 1-3 in order, picks first free port
+- `export_tyflow_cache` tool — export tyFlow particles to tyCache files
+
+### Fixed
+- Chained .NET method calls crash MAXScript parser (two-step PID capture)
+- Removed `dotNet.setLifetimeControl #dotnet` which caused .NET GC to collect TcpListener
+- Orphaned timer guard in onTick prevents stale timers from killing active server
+- Defensive cleanup in `stop()` — sets timer/listener to undefined after stopping
+
 ## [0.3.0] - 2026-03-22
 
 ### Added

@@ -135,9 +135,11 @@ class MaxClientManager:
         command: str,
         cmd_type: str = "maxscript",
         timeout: Optional[float] = None,
+        slot: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Route to the active slot's MaxClient."""
-        return self._get_client(self._active_slot).send_command(
+        """Route to a specific slot or the active slot's MaxClient."""
+        target = slot if slot is not None else self._active_slot
+        return self._get_client(target).send_command(
             command, cmd_type=cmd_type, timeout=timeout
         )
 
