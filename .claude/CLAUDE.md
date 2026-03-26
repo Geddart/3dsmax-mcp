@@ -29,3 +29,16 @@ This is for teaching Claude how to use 3dsmax.
 - MAXScript results are returned as JSON strings built with manual concatenation
 - Viewport capture: `gw.getViewportDib()` → save to temp → `Read` tool to view
 - Do not start RENDER unless user specifically asks for it
+
+## tyFlow Rendering Constraints
+- Per-particle vertex color or UVW mapping overrides BREAK GPU instancing — each becomes a unique mesh
+- Only particle transforms (pos/rot/scale) are lightweight instance data
+- For massive instancing with per-instance color: use OSL shader reading world position (preserves instancing)
+- `meshSplitElements_tab = #(true)` on Shape operator splits reference mesh elements into separate particles
+- `displayMaterial = true` on Display operator required for materials to render
+- Introspection gaps: Color, Material Static, Material Dynamic, Custom Properties operators need `showProperties` dumps
+
+## Plugin Renderer Compatibility
+- ForestColor texmap NOT supported by Redshift or other GPU renderers (iToo confirmed)
+- Forest Pack tintmap with Redshift: untested, likely breaks instancing
+- Redshift RS_Color_User_Data: can read per-instance attributes — whether tyFlow exposes these is unverified

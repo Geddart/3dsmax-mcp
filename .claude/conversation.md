@@ -257,3 +257,104 @@ Birth Inferno, Inferno Emitter, Inferno Bounds, Inferno Display, Inferno Collide
 - **`playAnimation()` alternative** — can't use via MCP (blocks TCP listener). The sim+capture loop is the only reliable approach.
 - **`createPreview` limitation** — does NOT call `updateParticles`, so Inferno stays static. Document this and warn users.
 - **RV integration** — launching RV with `-network -networkPort 45125` works; sequence notation is `filename_####.ext`
+
+---
+
+## Session 2026-03-22 (Part 3) — OLED Pixel Screen Project
+
+### What happened
+1. Designed physical OLED pixel screen (plan: `C:\Users\sasch\.claude\plans\valiant-marinating-reddy.md`)
+2. Researched tyFlow, Forest Pack, RailClone for millions of instances with per-pixel color
+3. Found: per-particle vertex color/UVW breaks GPU instancing in ALL systems
+4. Breakthrough: OSL shader reading world position preserves instancing (color computed per-fragment)
+5. Implemented 5 switchable subpixel patterns in OSL (RGB Stripe, Samsung Diamond PenTile, QD-OLED Gen4, LG WOLED WRGB, Shift S-Stripe)
+
+### Technical findings
+- **Redshift defaults to Arnold** after fresh Max start — must explicitly set `renderers.current = Redshift_Renderer()`
+- **tyFlow needs Mesh operator** for Redshift rendering — Display operator alone insufficient
+- **Standard Max OSLMap** not supported by Redshift — use `RS_OSL_Map`
+- **RS_OSL_Map file mode** (oslSource=0) doesn't load shader code — use text mode (oslSource=1)
+- **`(int)` cast broken** in Redshift's OSL — use float comparisons instead
+- **OSL P + tyFlow Mesh operator**: world position grid math gives wrong spatial distribution (most pixels show magenta). Root cause unclear. Binary threshold test confirms P IS world space, but grid color assignment fails.
+- **Individual objects + per-object materials**: works perfectly for visual validation
+
+### Current scene state
+- 9 ChamferBox objects with individual emissive RS materials (correct 3×3 colors)
+- Dark substrate plane, Physical camera, Redshift renderer
+- Visual pipeline confirmed working
+
+### Next steps
+- Solve per-pixel color via tyFlow at scale (debug OSL P issue or use vertex color approach)
+- Scale up: 3×3 → 32×18 → larger
+- Add subpixel patterns, bloom, fresnel, video playback
+
+---
+
+## Session 2026-03-24 — OLED Stack Materials + Full Resolution
+
+### Key fixes
+1. **Material IDs**: tyFlow ignores Material modifier — must bake face matIDs via `collapseStack` or set directly on Editable Poly
+2. **Merged stack**: 8 separate boxes → one Editable Poly (`OLED_Stack_Ref`) with face matIDs 1-8 (150 faces each)
+3. **Corrupted RS_OSL_Map**: old `g_oslMap` crashed on `.oslCode` writes. Created fresh `RS_OSL_Map name:"OLED_Simple"` — works perfectly
+4. **Refractions disabled**: `RefractionsEnable: false` in Redshift render settings was silently off
+5. **tyCache material mismatch**: cached mesh had matID ordering (Cathode=1) different from tyFlow material (ETL=1). Created `OLED_Cache_Multi` with reordered slots matching cache
+6. **MCP listener crashes**: access violation in `listener.Pending()` — added `dotNet.setLifetimeControl listener #dotnet`
+
+### Current state (v016)
+- Scene: `O:\30_Shots\010_Oled_Zoom\30_3dsmax\010_Oled_Zoom_v016.max`
+- Full resolution: 3229×1925 = 6.2M particles
+- tyCache at `O:\30_Shots\010_Oled_Zoom\25_Assets\OLED_Screen_tyCache__tyPart_00000.tyc` (118MB)
+- Frustum culling ON with `OLED_Cam_Sascha`
+- Camera zoom: Z=46844 (f0) → Z=11 (f100)
+- Per-frame texture swap callback: `#preRenderFrame` → `__TEXPATH__` substitution
+- Area light dimmed: 10 → 2
+- Overnight sequence render: frames 1-100 from OLED_Cam_Sascha
+
+### Materials
+- `OLED_Stack_Multi` — for live tyFlow (ETL=1, ..., Cathode=8)
+- `OLED_Cache_Multi` — for tyCache (Cathode=1, ETL=2, ..., Substrate=8) — same sub-materials, reordered
+- `OLED_Simple` RS_OSL_Map — single-output position-based shader sampling bitmap sequence
+
+### Memories saved
+- `feedback_backup_before_destructive.md` — always clone+hide before attach/collapse
+
+### Next steps
+- Overnight render 1-100
+- Hero pixel at origin (delete center tyFlow particle — unresolved)
+- Off-pixel emission animation
+- beeOLED Cerium chemistry detail on hero pixel
+
+---
+
+## Session 2026-03-26 — Multi-Instance MCP Support
+
+### What happened
+Implemented multi-instance support: 3 slots (ports 8765-8767) so Claude can control multiple 3ds Max instances from a single MCP server.
+
+### MAXScript changes
+- `mcp_server.ms` v2.0 — slot/pid members on MCPServerStruct, `MCP_StartSlot`/`MCP_StopServer`/`MCP_GetStatus` global functions, orphaned timer guard in onTick
+- `mcp_toolbar.ms` — replaced MCP Start/Stop with MCP1/MCP2/MCP3 toggle buttons + MCP Mgr button
+- `mcp_manager.ms` — **new** rollout dialog showing PID, slot, port, status with auto-refresh
+- `mcp_autostart.ms` — tries slots 1-3 in order, picks first free port
+
+### Python changes
+- `max_client.py` — added `MaxClientManager` proxy class (same `send_command()` API, routes to active slot)
+- `server.py` — replaced `MaxClient()` with `MaxClientManager()` (one-line change)
+- `tools/instances.py` — **new** file with `list_max_instances` and `set_active_instance` tools
+
+### Key bugs found and fixed
+1. **Chained .NET calls crash MAXScript parser** — `(dotNetClass "X").GetCurrentProcess().Id` truncated by execute(). Fix: two-step with local variable
+2. **`dotNet.setLifetimeControl #dotnet` causes .NET GC to collect TcpListener** — Pending() fails with "Unknown property". Fix: removed #dotnet, use default MAXScript lifetime control
+3. **Orphaned timers from script reload** — old timer fires, calls old onTick, kills new server. Fix: guard checking `MCP_Server.timer != sender`, orphaned timers self-stop
+4. **Script reload orphans listener** — old listener holds port. Fix: cleanup block at top of mcp_server.ms stops existing server before redefining globals
+
+### Deployment
+- `install_mcp_scripts.bat` on Desktop — copies scripts to `C:\Program Files\Autodesk\3ds Max 2025\scripts\` (run as admin)
+- Deleted old macroscript files: `MCP Server-MCP_Start.mcr`, `MCP Server-MCP_Stop.mcr`
+
+### Workflow
+1. Start Max A → autostart grabs slot 1 (MCP1 lights up)
+2. Start Max B → slot 1 in use → grabs slot 2 (MCP2 lights up)
+3. Claude calls `list_max_instances` to see what's running
+4. Claude calls `set_active_instance(2)` to control Max B
+5. All 140+ existing tools route transparently via proxy pattern

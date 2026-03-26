@@ -1,18 +1,33 @@
 /*
-	3ds Max MCP Server - TCP Socket v1.0
+	3ds Max MCP Server - TCP Socket v2.0
 	Non-blocking TCP command server for Model Context Protocol bridge
+	Supports multi-instance via slot system (ports 8765-8767)
 
 	Usage:
+		-- Slot-based (recommended):
+		MCP_StartSlot 1    -- start on port 8765
+		MCP_StartSlot 2    -- start on port 8766
+		MCP_StopServer()   -- stop current server
+
+		-- Direct (backward compat):
 		MCP_Server = MCPServerStruct()
 		MCP_Server.start()
 		MCP_Server.stop()
 
-	Protocol: JSON over TCP on port 8765
+	Protocol: JSON over TCP
 	- Client connects, sends JSON + newline
 	- Server executes, returns JSON + newline, closes connection
 */
 
-global MCP_Server
+-- Stop any existing server before redefining globals
+if MCP_Server != undefined and MCP_Server.isRunning then
+(
+	try (MCP_Server.stop()) catch ()
+)
+
+global MCP_Server = undefined
+global MCP_ActiveSlot = 0
+global MCP_BasePort = 8765
 
 struct MCPServerStruct
 (
@@ -20,6 +35,8 @@ struct MCPServerStruct
 	listener = undefined,
 	isRunning = false,
 	port = 8765,
+	slot = 0,
+	pid = 0,
 	safeMode = true,
 
 	-- Escape a string for safe JSON embedding
@@ -215,19 +232,32 @@ struct MCPServerStruct
 	fn onTick sender args =
 	(
 		if MCP_Server == undefined or not MCP_Server.isRunning then return()
+		if MCP_Server.listener == undefined then return()
+
+		-- Guard: only process if this tick came from the current server's timer.
+		-- Orphaned timers from failed reloads will self-stop here.
+		if MCP_Server.timer != sender then
+		(
+			try (sender.Stop(); dotNet.removeAllEventHandlers sender) catch ()
+			format "MCP: Killed orphaned timer\n"
+			return()
+		)
 
 		try
 		(
 			-- Check if there's a pending connection (non-blocking)
-			if MCP_Server.listener.Pending() then
+			local hasPending = MCP_Server.listener.Pending()
+			if hasPending then
 			(
-				client = MCP_Server.listener.AcceptTcpClient()
+				local client = MCP_Server.listener.AcceptTcpClient()
 				MCP_Server.handleClient client
 			)
 		)
 		catch
 		(
-			format "MCP: Tick error: %\n" (getCurrentException())
+			-- Listener is invalid — stop server to prevent error flood
+			format "MCP: Listener error, stopping server: %\n" (getCurrentException())
+			try (MCP_Server.stop()) catch ()
 		)
 	),
 
@@ -238,6 +268,10 @@ struct MCPServerStruct
 		(
 			try
 			(
+				-- Capture PID (two-step to avoid parser issue with chained calls)
+				local proc = (dotNetClass "System.Diagnostics.Process").GetCurrentProcess()
+				pid = proc.Id
+
 				-- Create TCP listener
 				ipAddress = (dotNetClass "System.Net.IPAddress").Parse "127.0.0.1"
 				listener = dotNetObject "System.Net.Sockets.TcpListener" ipAddress port
@@ -246,22 +280,22 @@ struct MCPServerStruct
 				-- Create timer to poll for connections
 				timer = dotNetObject "System.Windows.Forms.Timer"
 				timer.Interval = 50  -- 50ms polling
-				dotNet.setLifetimeControl timer #dotnet
 
 				dotNet.addEventHandler timer "Tick" onTick
 				timer.Start()
 				isRunning = true
 
-				format "MCP Server started (TCP on port %)\n" port
+				local slotStr = if slot > 0 then (" slot " + slot as string) else ""
+				format "MCP Server started (TCP on port %%,  PID %)\n" port slotStr pid
 			)
 			catch
 			(
-				format "MCP: Failed to start: %\n" (getCurrentException())
+				format "MCP: Failed to start on port %: %\n" port (getCurrentException())
 			)
 		)
 		else
 		(
-			format "MCP Server already running\n"
+			format "MCP Server already running on port %\n" port
 		)
 	),
 
@@ -274,10 +308,16 @@ struct MCPServerStruct
 			try (dotNet.removeAllEventHandlers timer) catch ()
 			try (listener.Stop()) catch ()
 			isRunning = false
-			format "MCP Server stopped\n"
+			timer = undefined
+			listener = undefined
+			local slotStr = if slot > 0 then (" slot " + slot as string) else ""
+			format "MCP Server stopped (port %%)\n" port slotStr
 		)
 		else
 		(
+			-- Defensive cleanup: stop timer/listener even if isRunning was false
+			try (if timer != undefined do (timer.Stop(); dotNet.removeAllEventHandlers timer; timer = undefined)) catch ()
+			try (if listener != undefined do (listener.Stop(); listener = undefined)) catch ()
 			format "MCP Server is not running\n"
 		)
 	),
@@ -290,10 +330,44 @@ struct MCPServerStruct
 	)
 )
 
--- Auto-create and start
-if MCP_Server != undefined and MCP_Server.isRunning then
+-- ============================================================
+-- Slot management functions
+-- ============================================================
+
+fn MCP_StartSlot slotNum =
 (
-	MCP_Server.stop()
+	if slotNum < 1 or slotNum > 3 then
+	(
+		format "MCP: Invalid slot % (must be 1-3)\n" slotNum
+		return false
+	)
+
+	-- Stop existing server if running
+	if MCP_Server != undefined and MCP_Server.isRunning then
+		MCP_Server.stop()
+
+	-- Create new server on slot's port
+	MCP_Server = MCPServerStruct()
+	MCP_Server.slot = slotNum
+	MCP_Server.port = MCP_BasePort + slotNum - 1
+	MCP_Server.start()
+	MCP_ActiveSlot = if MCP_Server.isRunning then slotNum else 0
+	MCP_Server.isRunning
 )
-MCP_Server = MCPServerStruct()
-MCP_Server.start()
+
+fn MCP_StopServer =
+(
+	if MCP_Server != undefined and MCP_Server.isRunning then
+		MCP_Server.stop()
+	MCP_ActiveSlot = 0
+	true
+)
+
+fn MCP_GetStatus =
+(
+	local running = MCP_Server != undefined and MCP_Server.isRunning
+	local p = if running then MCP_Server.port else 0
+	local s = if running then MCP_Server.slot else 0
+	local pid = if running then MCP_Server.pid else 0
+	#(s, p, running, pid)
+)

@@ -14,6 +14,8 @@ Key constraints:
 - Inferno operators require tyFlow 2.0+ (Zenith). Tools fail gracefully on older versions.
 - Volume API: always pair ``updateVolumes()`` / ``releaseVolumes()`` to avoid GPU memory leaks.
 - Export operator is ``Export Inferno`` (not ``Inferno Export``).
+- tyCache export: call ``opRef.exportTyCache()`` on an Export Particles operator.
+  Also available: ``exportPRT()``, ``exportAlembic_Mesh()``, ``exportAlembic_PC()``.
 """
 
 from __future__ import annotations
@@ -1794,6 +1796,77 @@ def set_tyflow_global_event(
         lines.append(f'      try (globalOp.excludeEventNames = "{_safe_name(exclude_events)}") catch ()')
     lines.append(f'      "{{\\"success\\":true,\\"event\\":\\"{event_name}\\",\\"global\\":{_ms_value(enabled)}}}"')
     lines.append(f'    )')
+    lines.append('  )')
+    lines.append(')')
+
+    ms = "(\n    " + "\n    ".join(lines) + "\n)"
+    return client.send_command(ms).get("result", "")
+
+
+# ---------------------------------------------------------------------------
+# Tool 20: export_tyflow_cache
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def export_tyflow_cache(
+    tyflow_name: str,
+    event_name: str = "Event_001",
+    operator_name: str = "Export Particles",
+    output_path: str | None = None,
+    create_tycache_object: bool = True,
+    only_if_not_created: bool = True,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
+) -> str:
+    """Export a tyFlow particle system to tyCache files.
+
+    Calls ``exportTyCache()`` on an Export Particles operator, which is
+    equivalent to clicking the "Generate tyCache files" button in the UI.
+    Optionally configures the output path, frame range, and whether a
+    tyCache scene object is created automatically.
+
+    The export runs synchronously and may take a long time for large
+    particle counts.
+
+    Args:
+        tyflow_name: Name of the tyFlow object.
+        event_name: Name of the event containing the Export Particles operator.
+        operator_name: Name of the export operator (default "Export Particles").
+        output_path: tyCache output path (without extension). None = keep current.
+        create_tycache_object: Create a tyCache object in the scene after export.
+        only_if_not_created: Only create tyCache object if one doesn't already exist.
+        frame_start: Export start frame (None = don't change).
+        frame_end: Export end frame (None = don't change).
+    """
+    safe = _safe_name(tyflow_name)
+    sa_evt = _sa_name(event_name)
+    sa_op = _sa_name(operator_name)
+
+    lines: list[str] = []
+    lines.append(f'local tfObj = getNodeByName "{safe}"')
+    lines.append('if tfObj == undefined then (')
+    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe}\\\\\\" not found\\"}}"')
+    lines.append(') else (')
+    lines.append(f'  local opRef = undefined')
+    lines.append(f'  try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()')
+    lines.append('  if opRef == undefined then (')
+    lines.append(f'    "{{\\"error\\":\\"Operator \\\\\\"{operator_name}\\\\\\" not found in event \\\\\\"{event_name}\\\\\\"\\"}}"')
+    lines.append('  ) else (')
+    # Configure export settings
+    lines.append(f'    try (opRef.exportMode = 2) catch ()  -- tyCache mode')
+    if output_path is not None:
+        safe_path = _safe_name(output_path)
+        lines.append(f'    try (opRef.tyCacheFilename = "{safe_path}") catch ()')
+    lines.append(f'    try (opRef.tycacheCreateObject = {_ms_value(create_tycache_object)}) catch ()')
+    lines.append(f'    try (opRef.tycacheCreateObjectIfNotCreated = {_ms_value(only_if_not_created)}) catch ()')
+    if frame_start is not None:
+        lines.append(f'    try (opRef.frameStart = {int(frame_start)}) catch ()')
+    if frame_end is not None:
+        lines.append(f'    try (opRef.frameEnd = {int(frame_end)}) catch ()')
+    # Trigger the export
+    lines.append(f'    local exportResult = opRef.exportTyCache()')
+    lines.append(f'    local cachePath = try (opRef.tyCacheFilename) catch ("")')
+    lines.append(f'    "{{\\"success\\":true,\\"tyflow\\":\\"{safe}\\",\\"cachePath\\":\\"" + (substituteString cachePath "\\\\" "/") + "\\"}}"')
     lines.append('  )')
     lines.append(')')
 

@@ -5,12 +5,12 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
-from .max_client import MaxClient
+from .max_client import MaxClientManager
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 mcp = FastMCP("3dsmax-mcp")
-client = MaxClient()
+client = MaxClientManager()
 
 # --- Core tools (always loaded) ---
 from .tools import (  # noqa: E402, F401
@@ -18,7 +18,7 @@ from .tools import (  # noqa: E402, F401
     transform, hierarchy, modifiers, selection, clone, scene_manage,
     visibility, inspect, build, grid, floor_plan, scene_query, effects,
     material_ops, state_sets, data_channel, wire_params, controllers,
-    scattering,
+    scattering, instances,
 )
 
 # --- Plugin tools (loaded based on plugins.toml or env var) ---

@@ -509,3 +509,18 @@ Noise controller property names:
 - If you get `ConnectionRefusedError`, the MAXScript listener isn’t running.
 - Confirm comms/temp directory exists to validate bridge readiness.
 - Restart MCP server after Python tool edits.
+
+---
+
+## 19) tyFlow + tyCache Rendering Pitfalls
+
+- **Material modifier ignored by tyFlow**: tyFlow reads base mesh face matIDs, NOT Material modifier. Must `collapseStack` or set face matIDs directly via `polyop.setFaceMatID`.
+- **tyCache matID ordering**: tyCache exports with its own Multi/Sub ordering (from `OLED_Instances_Mat` or auto-generated). This may NOT match the tyFlow object's material. Always verify slot ordering and create a matching Multi/Sub for the tyCache.
+- **RS_OSL_Map corruption**: `oslCode` assignment can crash with access violation if the map is in a bad state. Create a fresh `RS_OSL_Map` instead of modifying the corrupted one.
+- **RS_OSL_Map multi-output**: Shaders with multiple outputs (e.g. `output color Out` + `output float Weight`) need `MultiOutputChannelTexmapToTexmap` wrapper. Single-output shaders can be assigned directly to material slots.
+- **RefractionsEnable**: Redshift global refraction toggle (`renderers.current.RefractionsEnable`) can silently be `false`. Always verify when transparency doesn't render.
+- **MCP listener access violation**: `dotNet.setLifetimeControl listener #dotnet` prevents .NET GC from invalidating the TCP listener during heavy operations.
+- **Always backup before destructive mesh ops**: `polyop.attach`, `collapseStack`, `convertTo` are irreversible. Clone + hide originals first.
+- **tyCache renderable flag**: resets to `false` after Max restart. Must set `tc.renderable = true` explicitly.
+- **tyCache renderMode**: 0=Triangle mesh (combined, slow), 1=Render instances (fast, GPU instancing). Use 1 for production.
+- **tyCache export trigger**: `objectsAutoRenderExport = true` + render a frame to trigger. `reset_simulation()` alone does NOT export.
