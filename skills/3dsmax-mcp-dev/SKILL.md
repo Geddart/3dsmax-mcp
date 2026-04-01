@@ -1,533 +1,415 @@
 ---
 name: 3dsmax-mcp-dev
-description: Practical rules, tool choices, and common failure modes when developing 3dsmax-mcp tools (Python MCP + MAXScript bridge). Use this when adding new tools, writing bridge MAXScript, or debugging TCP/JSON issues.
+description: Rules, tool choices, and workflow patterns for AI agents working with 3ds Max via MCP. Covers the native C++ bridge, plugin introspection, scene organization, material workflows, and MAXScript pitfalls.
 ---
 
-# 3dsmax-mcp Development Guide (Clean Version)
-
-This guide is the **single source of truth** for building and debugging 3dsmax-mcp tools.
-
----
-
-## 1) Hard Rules
-
-### Materials
-- **Never use `execute_maxscript` for material work.**
-- Always use:
-  - `assign_material`
-  - `set_material_property`
-  - `set_material_properties`
-  - `set_sub_material` (Multi/Sub slot management)
-
-Only use `execute_maxscript` for material-adjacent tasks that have **no dedicated tool**, such as:
-- file I/O
-- creating texture map objects (e.g. `OSLMap`, `Bitmaptexture`, `ai_bump2d`)
-- assigning sub-materials inside a Multi/Sub when no tool covers it
-
-### Rendering and viewport
-- **Do not render unless user explicitly asks for it.**
-- **Avoid screenshots by default.** Only capture when:
-  - The user explicitly asks to see the scene
-  - Visual verification is truly necessary (e.g. debugging a visual issue you can't diagnose otherwise)
-- When capturing: prefer `capture_viewport` or `capture_model`. Only use `capture_screen enabled:true` for full UI/fullscreen needs.
-
----
-
-## 2) Always Inspect Before You Change Anything
-
-Never guess:
-- property names
-- class names
-- enum values
-- parameter types
-
-Use these first:
-- `inspect_object` → quick overview (class, transform, modifiers, material, mesh stats)
-- `inspect_properties target="baseobject"|"material"|"modifier"` → full typed properties
-- `inspect_modifier_properties` → modifier params specifically
-- `get_object_properties` → detailed object state (transform/material/modifiers)
-
-Fallback inspection commands (MAXScript) when needed:
-- `showInterfaces obj`
-- `showMethods obj`
-- `getPropNames obj`
-- `classOf obj`, `superClassOf obj`
-- `showProperties obj.modifiers[i]`
-- `showProperties obj.material`
-
----
-
-## 3) Tool Selection Cheat Sheet
-
-### Understand an object
-- Overview → `inspect_object`
-- Typed properties → `inspect_properties`
-- Modifier params → `inspect_modifier_properties`
-- Full object details → `get_object_properties`
-
-### Find things in the scene
-- List/filter objects → `get_scene_info`
-- List assigned materials → `get_materials`
-- Enumerate scene-wide class instances → `find_class_instances` (use `superclass`)
-- Instancing status → `get_instances`
-- Find objects by property → `find_objects_by_property`
-- Dependencies graph → `get_dependencies`
-- Fog/volume/lens effects → `get_effects`
-- State Sets / cameras → `get_state_sets`, `get_camera_sequence`
-
-### Materials
-- Create + assign → `assign_material`
-- Set one property → `set_material_property`
-- Set many properties → `set_material_properties`
-- Fast slot discovery (low-token, default map-only + bitmap class hints) → `get_material_slots`
-- Multi/Sub slots → `set_sub_material`
-- Inspect material → `inspect_properties target="material"`
-
-### Texture maps
-- Auto PBR from folder → `create_material_from_textures`
-- Create map → `create_texture_map` (stored as global var)
-- Set map params → `set_texture_map_properties`
-- Write OSL + create map → `write_osl_shader`
-- Wire map into material slot → `set_material_property value="{global_var_name}"`
-
-### Modify scene objects
-- Set object prop → `set_object_property`
-- Add/remove modifier → `add_modifier` / `remove_modifier`
-- Enable/disable modifier → `set_modifier_state`
-- Scene-wide modifier edits → `batch_modify`
-- Collapse stack → `collapse_modifier_stack`
-- De-instance modifier → `make_modifier_unique`
-- Transform → `transform_object`
-- Effects → `toggle_effect` / `delete_effect`
-
-### Organize
-- Parent/unparent → `set_parent`
-- Show/hide/freeze → `set_visibility`
-- Select → `select_objects`
-- Clone/instance → `clone_objects`
-- Batch rename → `batch_rename_objects`
-
-### Build geometry
-- Primitives → `create_object`
-- Structures → `build_structure`
-- Grid placement → `place_grid_array` / `place_on_grid`
-- Circular placement → `place_circle`
-- Floor plans → `build_floor_plan`
-
-### See the scene
-- Viewport only (safe default) → `capture_viewport` or `capture_model`
-- Full UI panels / fullscreen → `capture_screen enabled:true`
-- Render → `render_scene`
-- Identify visually → `isolate_and_capture_selected`
-
----
-
-### Animation controllers
-- Assign controller → `assign_controller`
-- Inspect controller → `inspect_controller`
-- Add target/variable → `add_controller_target`
-- Update script/props → `set_controller_props`
-
----
-
-## 4) When `execute_maxscript` Is Allowed
-
-Use it only when no dedicated tool exists, such as:
-- animation keyframing
-- custom scripted operations
-- render settings / environment setup
-- specialized Max features not covered by tools
-
----
-
-## 5) Architecture (Bridge + Protocol)
-
-- MCP server: **Python (FastMCP)**
-- 3ds Max side: **MAXScript TCP listener**
-- Address: `127.0.0.1:8765`
-- Protocol: **JSON + newline delimiter**, one request/response per connection
-- Listener design: `.NET TcpListener` + timer polling (50ms) to stay non-blocking
-
----
-
-## 6) Adding a New Tool (Python)
-
-1. Create: `src/tools/<name>.py`
-2. Import: `from ..server import mcp, client`
-3. Decorate: `@mcp.tool()`
-4. Build MAXScript string
-5. Send it: `client.send_command(maxscript)`
-6. Return: `response.get("result", "")` (or sensible default)
-
-If the operation can run long (e.g., render), set timeout:
-- `client.send_command(maxscript, timeout=300)`
-
-After editing tool files, **restart the MCP server** to load changes.
-
----
-
-## 7) MAXScript Pitfalls (High-Frequency Errors)
-
-### Constructors
-- **Do not use parentheses** after class name when passing keyword params:
-  - ✅ `ai_standard_surface name:"Mat1" metalness:1.0`
-  - ❌ `ai_standard_surface() name:"Mat1" metalness:1.0`
-
-### Case-insensitivity
-- MAXScript is case-insensitive. `R` and `r` are the same variable.
-- Use descriptive unique names (`ringRadius`, `tubeRadius`, etc.).
-
-### Scope
-- `execute()` runs in global scope.
-- **No `local` at top level**; use locals only inside functions/blocks.
-
-### View types
-- Use `#view_persp_user` (not `#view_persp`)
-- Examples: `#view_left`, `#view_front`, `#view_top`, `#view_iso_user`, `#view_persp_user`
-
-### No built-in join
-MAXScript has no `stringJoin`. Use manual concatenation loops.
-
-### Reserved names / keywords
-- Avoid global identifiers like: `output`, `result`, `bmp`, `foliage`, `floor`, `osl`, `OSLMap`
-- `by` is a reserved keyword (cannot be a var or parameter name)
-
-### Noise modifier naming
-- `Noise` is the **texture map**, not the modifier.
-- Modifier class is `Noisemodifier`.
-
-### Temp path mismatch
-- `(getDir #temp)` is Max’s temp, not OS temp.
-- Use `.NET Path.GetTempPath()` to match Python temp.
-
-### String escaping + JSON
-- Always escape user strings before embedding in MAXScript (use your project’s safe-name helper).
-- Build JSON manually; always escape strings using `escapeJsonString()` from `mcp_server.ms`.
-
-### Python f-strings + braces
-- Double MAXScript braces in Python f-strings: `{{` and `}}`, or use raw strings.
-
-### Sphere/primitive UV mapping
-- `Sphere()` creates with `mapcoords = false` by default — textures render BLACK with no error.
-- Always set `s.mapcoords = true` on any primitive that will receive texture maps.
-- This applies to all Standard Primitives (Box, Sphere, Cylinder, etc.).
-
-### Redshift class names
-- `RS_Material` is the correct class for Redshift standard materials — NOT `Redshift_Material` (undefined).
-- `rsPhysicalLight` color property is `.color` (plain), NOT `.LightColor` — the latter throws "Unknown property". Use `.colorMode = 1` to enable custom color.
-- `RS_Bump_Map` (with underscores), NOT `RS_BumpMap` — the latter silently fails.
-- `RS_Normal_Map` — dedicated normal map node; use `.tex0_filename` directly (no separate RS_Bitmap needed). Has NO `.input` property.
-- `RS_Bitmap` — Redshift native bitmap; set `.tex0_filename` and `.tex0_colorSpace` ("sRGB"/"Raw").
-- `RS_Displacement` — displacement node; wire child bitmap via `setProperty dispNode #texMap_map bmpNode`.
-- `Redshift_Mesh_Parameters` — modifier for per-object tessellation/displacement settings. Class name uses full `Redshift_` prefix, NOT `RS_`.
-- `CompositeTexturemap name:"X"` — the `name:` param collides with an array property; use `CompositeTexturemap(); .name = "X"` instead, or avoid for Redshift (use RS_Mix).
-
-### Redshift texture map wiring
-- **Cannot use direct property assignment** for RS material texture map slots: `mat.base_color_map = RS_Bitmap()` fails with "Unable to convert RS_Bitmap to Point4".
-- **Must use `setProperty` with symbol access**: `setProperty mat #base_color_map texNode`.
-- After wiring a `_map` slot, enable the companion property: `try (setProperty mat #base_color_mapenable true) catch()`.
-- RS material slot names: `base_color_map` (sRGB), `refl_roughness_map` (Raw), `metalness_map` (Raw), `bump_input` (RS_Normal_Map or RS_Bump_Map), `displacement_input` (RS_Displacement).
-- For displacement: create RS_Bitmap → wire to RS_Displacement via `setProperty dispNode #texMap_map bmpNode` → wire RS_Displacement to `setProperty mat #displacement_input dispNode`.
-- RS texture displacement (displacementMode=2) is more efficient than normal maps for surface detail — set globally in RS render settings or per-object via `Redshift_Mesh_Parameters` modifier.
-
-### Redshift rendering
-- Use `redshift.renderView` interface for IPR, or standard `render()` for production frames.
-- `render_scene` tool uses the standard render pipeline which works with Redshift.
-
-### Redshift MCP tool bugs (as of 2026-03-03)
-- `create_redshift_material`, `connect_redshift_texture`, `get_redshift_material_info` all return a dict instead of a string from the MAXScript side — causes pydantic validation error on output. The MAXScript may or may not execute.
-- **Workaround**: Use `execute_maxscript` with `setProperty mat #slot_name tex` pattern directly until the tools are fixed.
-
-### .NET strings
-- Convert .NET string to MAXScript string with `str as string` before using `.count` etc.
-
-### SubAnim keys
-- `numKeys` isn’t available on SubAnim; access controller keys via the actual controller object.
-
-### RailClone_Pro constructor
-- `RailClone_Pro name:"X"` — `name:` collides with an internal array property. Use `RailClone_Pro(); rc.name = "X"` instead.
-
-### tyFlow Shape operator
-- Single-item properties like `shapeMode` are READ-ONLY from MAXScript.
-- Only `_tab` arrays (`shape_type_tab`, `type_3d_ID_tab`, etc.) are writable.
-- Setting `shape_type_tab = #(1)` automatically flips `shapeMode` to 3D mode.
-- Shape IDs: Triangle=0, Cone=1, Quad=2, Cylinder=3, Sphere=4, Pyramid=5, Cube=6, Octahedron=7.
-- Operator variables: use `_Op` suffix to avoid MAXScript name conflicts.
-
-### tyFlow SubAnim access
-- SubAnim names replace spaces with underscores: `#PhysX_Shape` NOT `#'PhysX Shape'`.
-- `baseobject[#EventName][#Operator_Name]` is the correct access pattern.
-- `#'quoted names'` do NOT work for SubAnim access on tyFlow operators.
-
-### tyFlow Inferno (Zenith) — tyFlow 2.0+
-- Export operator name is `Export Inferno` (NOT `Inferno Export`).
-- Volume API: always pair `updateVolumes()` / `releaseVolumes()` to avoid GPU memory leaks.
-- Temperature properties come in 4 variants: `Normalized`, `Celcius`, `Fahrenheit`, `Kelvin`.
-- Note: tyFlow uses `Celcius` (misspelled), NOT `Celsius`.
-- 15 confirmed Inferno operators: Birth Inferno, Inferno Emitter, Inferno Bounds, Inferno Display, Inferno Collider, Inferno Color, Inferno Spawn, Inferno Properties, Inferno Recall, Export Inferno, Inferno Force, Inferno Temperature, Inferno Density, Inferno Vorticity, Inferno Scale.
-- Inferno operators work in regular events (`addEvent()`), no special event type needed.
-- PhysX SDF mode: new `sdfCellRatio` and `sdfMinCellSize` properties on PhysX Shape.
-- Inferno is a forward-only GPU sim — timeline scrubbing does NOT update the volume display.
-- To preview Inferno animations: sim each frame with `updateParticles` + capture with `gw.getViewportDib()`.
-- `playAnimation()` blocks the TCP listener — avoid calling it via MAXScript.
-- `createPreview` does NOT trigger `updateParticles` — Inferno won't animate in previews.
-- Inferno Recall operator with RAM cache: compression mode 0 may suppress display. Needs further testing.
-
-### Physical_Material emission properties
-- `emission_weight` does NOT exist — use `emission` (float, default 1.0) for emission strength.
-- `emission_color` does NOT exist — use `emit_color` (color) for emission color.
-- Other emit properties: `emit_luminance`, `emit_kelvin`, `emit_color_map`, `emit_color_map_on`.
-
-### Forest Pack + Redshift rendering
-- Materials on the Forest Pack object itself are VIEWPORT-ONLY — Redshift ignores them at render time.
-- Assign RS materials to the **source geometry** nodes, or populate `fp.matlist` (per-source override array).
-- `fp.rmesh = 0` (Automatic mode) is the correct setting for Redshift — enables native instancing.
-- Do NOT wrap FP source geometry in RedshiftProxy; Forest Pack handles the instancing bridge internally.
-- Correct FP scale properties: `scalexmin`, `scalexmax` (NOT `scalemin`/`scalemax`).
-- `divers` NOT `diversity`, `clusize` NOT `clustsize`, `animation` NOT `animmode`.
-- `at` is a MAXScript reserved word — never use as a variable name (use `atype` etc.).
-
-### RPManager UI dependency
-- `RPMdata.AddPass()` requires the RPManager UI to have been opened at least once in the current session.
-- Headless-safe functions: `version()`, `getpasscount()`, `GetPassOutputPath`, `GetPassBeforeScript`, `SetPassBeforeScript`, `GetPassAfterScript`, `SetPassAfterScript`, `GetPassTimeType`, `SetPassTimeType`, `GetPassRange`, `SetPassRange`, `GetPassVisSetName`, `GetPassBGColor`, `SetPassColor`.
-
----
-
-## 8) Viewport Capture Rules
-
-- OSL maps show correctly in viewport only in **High Quality** mode.
-  - Switch via: `actionMan.executeAction -844228238 "40"`
-- Use `completeredraw()` before capturing.
-- **Always frame before capture**:
-  - select target → `max zoomext sel` → capture
-- Avoid `viewport.setTM` for camera placement; it’s unreliable.
-
----
-
-## 9) Scattering Policy
-
-- If user says “scatter”, default to procedural tools (not manual loop placement).
-- Prefer **tyFlow** over Particle Flow.
-- Built-in Scatter limitations:
-  - Max 2025+ `ScatterGeometry` exists but some arrays are UI-only and not settable via MAXScript.
-  - Legacy Scatter compound object not creatable via MAXScript in Max 2026.
-
-Fallback when tools fail:
-- Convert distribution surface to mesh (`snapshotAsMesh`)
-- Sample faces, use `meshOp.getFaceCenter`
-- Orient using global `getFaceNormal mesh faceIdx`
-- Instance placement as last resort
-
----
-
-## 10) Scene Organization Rules
-
-- Prefer **Dummy-based hierarchies** for clean outliner.
-- Don’t create a Dummy on first build of a single object; organize only when you’ll reuse/group.
-
-Dummy workflow order:
-1. Create all objects
-2. Compute combined bounding box
-3. Create Dummy
-4. Set Dummy box size to bbox
-5. Position Dummy at bbox center XY
-6. Set pivot to minimum Z
-7. Parent objects into Dummy
-
----
-
-## 11) Instancing & Cloning Notes
-
-- `instance` doesn’t work reliably on group heads.
-- Use `maxOps.cloneNodes ... cloneType:#instance newNodes:&cloneArr`
-- Instancing a Dummy alone does **not** bring children. To instance hierarchies:
-  - clone full descendant list, or
-  - group/attach depending on the situation
-
----
-
-## 12) Splines (Key Properties)
-
-Renderable spline params:
-- `render_displayRenderMesh`
-- `render_displayRenderSettings`
-- `render_thickness`
-
-Not a thing:
-- `render_viewport` (doesn’t exist on SplineShape)
-
----
-
-## 13) Booleans
-
-- Use **`BooleanMod`** (modern), not ProBoolean.
-- Add operands via `bm.BooleanModifier.AppendOperand ...`
-- Make cutters thick enough: operand B must fully intersect operand A.
-
----
-
-## 14) RPManager Script & Visibility Tools
-
-### Key bugs & workarounds (RPManager v7.8)
-- **`fRefresh()` crashes** when `lstbox` is undefined (UI not open) — always use `try(RPMdata.rmrefresh())catch()` instead
-- **`MouseDownSelection.ListView`** returns undefined until user has clicked the pass list — wrap in try/catch, fall back to state-variable-only restore
-- **Setter functions** (`SetPassOutputPath`, `SetPassBeforeScript`, etc.) silently fail without UI — always call `RPMdata.RMopenFloater()` first
-- **Vis set creation via `RMLSetMaker.oker.pressed()`** assigns name but does NOT store layer data — BROKEN, cannot fix without decrypting RPManager source
-- **`RMrestore()` does NOT apply vis set layer states** — it restores render settings but not layer visibility
-- **RPManager .mse encryption** is custom (polyalphabetic cipher in RPMdlx.dlx), NOT standard Max `encryptScript` — cannot be decrypted with QuickBMS
-
-### Recommended tools
-- **`set_rpmanager_visibility`** — uses before/after scripts for layer control (bypasses broken vis set API). Pass `layers_on` list.
-- **`configure_rpmanager_pass`** — one-stop setup: layers + output path + frame range via before/after scripts
-- **`render_rpmanager_pass`** — full cycle: restore pass → before script → render → after script
-- **`set_rpmanager_pass_script`** — auto-wraps scripts in `( ... )` for safe `execute()` (RPManager uses `execute()` internally)
-- **`restore_rpmanager_pass`** — switches active pass with fallback (tries ListView, falls back to state vars + RMrestore)
-
-### Before/after script pattern for layer visibility
-Before/after scripts are the ONLY reliable way to control per-pass layer visibility:
-```maxscript
--- Before: save state, set layers
-global _rpm_layer_state = #()
-for li = 0 to LayerManager.count-1 do (
-  local l = LayerManager.getLayer li
-  append _rpm_layer_state #(l.name, l.on)
-)
-local onLayers = #("LayerA", "LayerB")
-for li = 0 to LayerManager.count-1 do (
-  local l = LayerManager.getLayer li
-  l.on = (findItem onLayers l.name) > 0
-)
-
--- After: restore
-for entry in _rpm_layer_state do (
-  local l = LayerManager.getLayerFromName entry[1]
-  if l != undefined do l.on = entry[2]
-)
+# 3dsmax-mcp Skill Guide
+
+Principles:
+- Prefer dedicated tools over raw MAXScript
+- Prefer SDK introspection over MAXScript reflection
+- Prefer verified workflows over optimistic success strings
+- Do NOT render unless asked — but `capture_multi_view` (quad view) is encouraged after building or modifying scenes so the user can see the result
+
+## 1. Deep SDK Introspection (Use First)
+
+When encountering an unfamiliar class, plugin, or object — **use C++ SDK introspection first**. These read the DLL class registry directly. Faster and more complete than MAXScript's `showClass`/`getPropNames`.
+
+**Tool hierarchy:**
+1. **`introspect_class`** — Full API of any class: ParamBlock2 params (names, types, defaults, ranges), FPInterface functions/properties. Works on any class.
+2. **`introspect_instance`** — Same but on a live object with current values + modifier stack + material params. Add `include_subanims:true` for animation tree.
+3. **`discover_plugin_classes`** — Enumerate ALL classes from DLL directory. Filter by superclass or name pattern.
+
+**Always prefer these over MAXScript reflection:**
+- `introspect_class` > `inspect_plugin_class` (gets defaults, ranges, function signatures)
+- `introspect_instance` > `inspect_properties` for plugin objects (catches params `getPropNames` misses)
+- `discover_plugin_classes` > `list_plugin_classes` (scans every loaded DLL)
+
+**Unknown plugin workflow:**
+```
+1. discover_plugin_classes pattern:"*Forest*"     → find classes
+2. introspect_class class_name:"Forest_Pro"        → get full API
+3. introspect_instance name:"ForestPack001"        → read live values
+4. Proceed with edits — you now know every param, type, range, value
 ```
 
+**Material/shader introspection:**
+- `introspect_instance` reads the entire material tree in one call — every param, every texmap slot, all sub-materials with current values
+- Use for renderer conversion workflows: read source material tree → map params → write to new material
+
+**Deep SDK learning tools:**
+
+These tools let you understand how 3ds Max works at the deepest level — class relationships, real-world usage patterns, reference graphs, and live events.
+
+1. **`learn_scene_patterns`** — Analyze the current scene in one call. Returns frequency-sorted data on:
+   - Which geometry/material/modifier/texmap classes are used and how often
+   - Common modifier stacks (e.g. "TurboSmooth | Skin | Skin Wrap" = character deform pipeline)
+   - Material-to-geometry associations (e.g. "Shell Material → PolyMeshObject" = export pipeline)
+   - Texture-to-material connections (e.g. "Bitmap → Physical Material")
+   - **Use first** when opening an unfamiliar scene — instantly understand the entire production setup
+
+2. **`walk_references`** — Walk the SDK reference graph from any object. Shows how materials, modifiers, controllers, and textures connect through Max's reference system.
+   - Use to understand shader networks: "this Shell Material references Standard Surface + Physical Material"
+   - Use to debug why changing one object affects another
+   - `max_depth` controls detail (default 4, max 8)
+
+3. **`map_class_relationships`** — Scan DLL directory to find which classes accept which reference types via ParamBlock2 params.
+   - Shows "Physical Material accepts texturemaps in these slots: base_color_map, bump_map, ..."
+   - Shows "Forest_Pro accepts nodes + texturemaps"
+   - Filter by superclass or name pattern
+   - **Use before wiring** — know which slots exist without guessing
+
+4. **`watch_scene`** — Live event streaming from 3ds Max. Registers native SDK callbacks for:
+   - node created/deleted, selection changes, modifier added
+   - material assigned, file open, undo/redo, render start/end
+   - Actions: `start`, `stop`, `get` (poll events), `clear`, `status`
+   - Use `since=<timestamp>` for incremental polling
+   - **Use during iterative work** — track what the user does between your calls
+
+**Learning workflow for new scenes:**
+```
+1. learn_scene_patterns                           → understand the whole scene
+2. walk_references name:"MainCharacter"           → map one object's dependencies
+3. introspect_instance name:"MainCharacter"       → get live param values
+4. map_class_relationships superclass:"material"  → learn what plugs into what
+5. Now you understand the scene deeply — proceed with edits
+```
+
+## 2. Plugin & Tool Development (SDK Learning)
+
+When the user is developing a tool, plugin, or automating a workflow and you need to understand SDK classes, parameters, or how things connect — **use native introspection, not documentation or guesswork.**
+
+**Learning an unknown class or API:**
+```
+1. discover_plugin_classes pattern:"*ClassName*"   → find it in the DLL registry
+2. introspect_class class_name:"ClassName"          → get ALL params, types, defaults, ranges, functions
+3. map_class_relationships pattern:"ClassName"      → see what it accepts (nodes, materials, texmaps)
+```
+NOTE: Arnold materials (ai_standard_surface, etc.) are scripted plugins — `discover_plugin_classes` and `introspect_class` won't find them. Create via MAXScript: `ai_standard_surface()`. Use `inspect_plugin_class` for MAXScript reflection instead.
+
+**Understanding how a live object works:**
+```
+1. introspect_instance name:"ObjectName"            → every param with current value
+2. walk_references name:"ObjectName"                → full dependency graph (materials → textures → controllers)
+3. introspect_instance name:"ObjectName" include_subanims:true → animation/controller tree
+```
+
+**Testing changes and verifying results:**
+```
+1. get_scene_delta capture:true                     → capture baseline
+2. (make changes — create objects, assign materials, add modifiers)
+3. get_scene_delta                                  → see exactly what changed (added/removed/modified with before/after values)
+```
+
+**Reverse-engineering a production scene:**
+```
+1. learn_scene_patterns                             → modifier stacks, material combos, class frequencies
+2. walk_references name:"KeyObject"                 → map its dependency tree
+3. map_class_relationships superclass:"material"    → learn all material slot wiring possibilities
+```
+
+**Watching user actions in real-time:**
+```
+1. watch_scene action:"start"                       → enable event tracking
+2. (user works in Max — creates, selects, modifies)
+3. watch_scene action:"get"                         → see every action with full detail
+```
+
+**Rules:**
+- NEVER guess parameter names — use `introspect_class` to get the exact names, types, and ranges
+- NEVER assume slot connections — use `map_class_relationships` to see what plugs into what
+- NEVER skip verification — use `get_scene_delta` after mutations to confirm what actually changed
+- When writing MAXScript that targets a specific class, introspect it first to get correct property names
+- When building a C++ native handler, use `introspect_class` to understand the ParamBlock2 layout before writing SetValue calls
+
+## 3. Default Workflow
+
+1. **Context** — `get_bridge_status`, `get_session_context`, `inspect_active_target`
+2. **Inspect** — `introspect_instance` (preferred) or `inspect_object` + `get_material_slots`
+3. **Mutate** — use a dedicated tool (never `execute_maxscript` if a tool exists)
+4. **Verify** — `get_scene_delta`, verified tool, or re-inspect
+
+**Verified workflow tools** (action + readback in one call):
+- `create_object_verified`, `assign_material_verified`, `set_material_verified`
+- `add_modifier_verified`, `transform_object_verified`, `set_modifier_state_verified`
+- `set_object_property_verified`
+
+## 4. Scene Organization (Pure C++ SDK)
+
+**Layers** — `manage_layers`:
+- Actions: `list`, `create`, `delete`, `set_current`, `set_properties`, `add_objects`, `select_objects`
+- Properties: hidden, frozen, renderable, color, boxMode, castShadows, rcvShadows, xRayMtl, backCull, rename, parent
+
+**Groups** — `manage_groups`:
+- Actions: `list`, `create`, `ungroup`, `open`, `close`, `attach`, `detach`
+
+**Named Selection Sets** — `manage_selection_sets`:
+- Actions: `list`, `create`, `delete`, `select`, `replace`
+
+## 5. Tool Reference
+
+### Scene reads
+`get_scene_info` `get_selection` `get_scene_snapshot` `get_selection_snapshot` `get_scene_delta` `get_hierarchy`
+
+### Objects
+`get_object_properties` `set_object_property` `create_object` `delete_objects` `transform_object` `select_objects` `set_visibility` `clone_objects` `set_parent` `batch_rename_objects`
+
+### Modifiers
+`add_modifier` `remove_modifier` `set_modifier_state` `collapse_modifier_stack` `make_modifier_unique` `batch_modify`
+
+### Materials
+- Create + assign: `assign_material`
+- Edit: `set_material_property`, `set_material_properties`
+- Inspect: `get_material_slots`, `get_materials`
+- Multi/Sub: `set_sub_material`
+- Textures: `create_texture_map`, `set_texture_map_properties`, `create_material_from_textures`
+- Shell + ORM: `create_shell_material`, `replace_material`, `batch_replace_materials`
+- OSL: `write_osl_shader`
+
+### Known Issues — Material Pipeline
+- `create_material_from_textures` has no ORM packed texture support (OcclusionRoughnessMetallic)
+- No UberBitmap (OSLMap) awareness — uses Bitmaptexture/ai_image instead of OSL UberBitmap2.osl
+- No MultiOutputChannelTexmapToTexmap knowledge — cannot split R/G/B channels from a single map
+- No Shell Material support — cannot wrap glTF + Arnold in dual-pipeline structure
+- Arnold wiring uses ai_image instead of UberBitmap — misses channel splitting for packed maps
+- AO compositing uses ai_layer_rgba instead of ai_multiply — inconsistent with standard Arnold workflows
+- No concept of render vs export material slots (Shell originalMaterial / bakedMaterial)
+
+### Viewport
+- Fast: `capture_viewport`, `capture_model`
+- Multi-angle grid: `capture_multi_view` (front/right/back/top stitched into one image)
+- Fullscreen: `capture_screen` (requires `enabled=True`)
+
+### External .max files (no scene load)
+- `inspect_max_file` — OLE metadata + optional object names + class directory
+- `search_max_files` — scan folder for objects matching pattern (batched, token-optimized)
+- `merge_from_file` — selective merge with duplicate handling
+- `batch_file_info` — parallel metadata from multiple files
+
+### Plugin discovery
+- `discover_plugin_surface`, `get_plugin_manifest`, `refresh_plugin_manifest`
+- `inspect_plugin_class`, `inspect_plugin_constructor`, `inspect_plugin_instance`
+- MCP resources: `resource://3dsmax-mcp/plugins/{name}/manifest|guide|recipes|gotchas`
+
+### tyFlow
+- Create: `create_tyflow`, `create_tyflow_basic_verified`
+- Inspect: `get_tyflow_info` (enable `include_operator_properties` for deep readback)
+- Edit: `modify_tyflow_operator`, `set_tyflow_shape`, `set_tyflow_physx`, `add_tyflow_collision`
+- Simulate: `reset_tyflow_simulation`, `get_tyflow_particle_count`, `get_tyflow_particles`
+
+### Controllers & wiring
+- `assign_controller`, `inspect_controller`, `inspect_track_view`
+- `list_wireable_params`, `wire_params`, `get_wired_params`, `unwire_params`
+
+### Data Channel
+- `add_data_channel`, `inspect_data_channel`, `set_data_channel_operator`, `add_dc_script_operator`
+
+### Scene management
+- `manage_scene` (hold/fetch/reset/save/info)
+- `get_state_sets`, `get_camera_sequence`
+
+## 6. When to Use `execute_maxscript`
+
+Only when no dedicated tool exists:
+- Quick experiments, animation keyframing, render/environment settings
+- Custom scripted operations, unsupported host features
+
+Never as default when a proper tool exists.
+
+## 7. MCP Tool Pitfalls
+
+- Fast/small models send `"foo"` instead of `["foo"]` for list params — all tool signatures use coerced types (`StrList`, `FloatList`, `IntList`, `DictList` from `src/coerce.py`) that auto-wrap single values into one-element lists. Any new tool with a `list[T]` param **must** use these types instead of bare `list[]`.
+- **Serialize material operations** — never run `get_material_slots`, `assign_material_verified`, or `set_material_verified` in parallel with each other. They send multiple sequential pipe commands and concurrent flooding can freeze the 3ds Max main thread. Run material tools one at a time.
+- `get_material_slots` with `slot_scope:"all"` + `include_values:true` is heavy on complex materials (Physical, Arnold). Prefer `slot_scope:"map"` (default) unless you need every param.
+- `assign_controller` and `set_controller_props` `params` dict values must work as both strings and numbers — the native handler coerces automatically. Small models may send `{"seed": 42}` (number) or `{"seed": "42"}` (string); both are valid.
+- `list_wireable_params` returns paths with `[#Parameters]` grouping level (e.g. `[#Object (Box)][#Parameters][#height]`). The native `NormalizeSubAnimPath` strips this automatically when passed to `wire_params`/`assign_controller`/`unwire_params`.
+- `get_wired_params` returns paths with `[#name]` format. These paths can be passed directly to `unwire_params` — `NormalizeSubAnimPath` handles both `[name]` and `[#name]` formats.
+- `add_controller_target` only works on script, expression, and constraint controllers. Noise/Bezier/other controllers will return a clear error message. Use `assign_controller` with `controller_type:"float_script"` if you need node references.
+
+## 8. MAXScript Pitfalls
+
+- **No parens with keyword args**: `Box width:10` not `Box() width:10`
+- **Case-insensitive** but avoid ambiguous short names
+- **Wrap in try/catch**: `try (...) catch (ex) (ex)` — errors otherwise appear as generic failures
+- **Escape strings**: use `src.helpers.maxscript.safe_string`, use `MCP_Server.escapeJsonString` in MAXScript
+- **`Noise` vs `Noisemodifier`**: texture map vs modifier
+- **`(getDir #temp)`** is Max temp, not OS temp
+- **.NET strings**: convert to MAXScript strings before using string methods
+- `assign_controller`/`wire_params` track paths may fail with display-style tokens like `[#Transform][#Position][#Z Position]`; normalize to lowercase underscore form like `[#transform][#position][#z_position]`.
+
+### UberBitmap + Shell Material Workflow
+- `create_shell_material` builds a Shell Material wrapping Arnold (render) + glTF (export)
+- Arnold render slot uses UberBitmap2.osl (OSLMap) for all texture loading — NOT ai_image or Bitmaptexture
+- UberBitmap2.osl path: `(getDir #maxroot) + "OSL\\UberBitmap2.osl"` — do NOT search for it
+- All built-in OSL shaders live in `<maxroot>\OSL\`
+- Packed ORM textures are split via `MultiOutputChannelTexmapToTexmap`:
+  - Output 1 = Col (RGB), 2 = R, 3 = G, 4 = B, 5 = A, 6 = Luminance, 7 = Average
+- Standard ORM wiring: BaseColor×AO(R) via `ai_multiply` → base_color, G → specular_roughness, B → metalness
+- Shell Material slots: `originalMaterial` (slot 0, render) = Arnold, `bakedMaterial` (slot 1, export) = glTF
+- `renderMtlIndex = 0` (Arnold for rendering), `viewportMtlIndex = 1` (glTF for viewport/export)
+- When ORM texture detected in `_DEFAULT_CHANNEL_PATTERNS`, prefer packed split over separate roughness/metallic files
+- `replace_material` / `batch_replace_materials` for swapping materials across objects
+
+### OSL Shader Rules
+- Use `write_osl_shader` — handles file I/O, compilation, global storage
+- Shader function name MUST match `shader_name` exactly
+- Use unique shader names — reusing hits stale cache
+- OSLMap lowercases all param names — use lowercase keys
+- After creation, wire via `set_material_property`
+
+## 9. C++ SDK Pitfalls
+
+- `is_array()` / `is_string()` / `is_number_*()` / `is_boolean()` macro collision with MAXScript headers — use `.type() == json::value_t::array` / `::string` / `::number_float` / `::number_integer` / `::boolean` instead
+- `Matrix3(1)` deprecated in Max 2026 — use `Matrix3()` default
+- `Modifier::GetName(bool localized)` — use `mod->GetName(false).data()`
+- `ClassDesc::ClassName()` returns `const MCHAR*`, not a string class
+- Arnold/scripted plugins don't register in DllDir under MAXScript names — fall back to `RunMAXScript` for creation
+- `WStr::operator bool` deleted in Max 2026 — use `.data() && .data()[0]` checks
+- Native scene-delta baselines must be scoped per pipe client and cleared on scene reset/fetch; one process-global snapshot leaks across simultaneous agents and unrelated scenes.
+
+## 10. MAXScript Reference Files
+
+This skill includes bundled MAXScript reference files for writing correct MAXScript. Read the relevant file BEFORE writing MAXScript code for unfamiliar areas.
+
+| File | Covers |
+|------|--------|
+| `maxscript-core-syntax.md` | Variables, scope, types, operators, control flow, collections, strings |
+| `maxscript-common-patterns.md` | Undo blocks, animate blocks, callbacks, file I/O, performance |
+| `maxscript-3dsmax-objects.md` | Node creation, transforms, hierarchy, properties, superclasses |
+| `maxscript-mesh-poly-ops.md` | Mesh/poly sub-object ops, vertex/edge/face manipulation |
+| `maxscript-materials-textures.md` | Material creation, texmap wiring, Standard/Physical/Arnold |
+| `maxscript-animation-controllers.md` | Controllers, constraints, expressions, wire params |
+| `maxscript-rendering-cameras.md` | Render settings, cameras, environment, render elements |
+| `maxscript-splines-shapes.md` | Spline creation, knots, interpolation, shape booleans |
+| `maxscript-scripted-plugins.md` | Custom scripted geometry, modifiers, materials, utilities |
+| `maxscript-ui-rollouts.md` | Rollout UIs, dialogs, controls, event handlers |
+
+**IMPORTANT:** Before writing any MAXScript, READ the relevant file. Do not guess syntax.
+
+**Location:** `skills/3dsmax-mcp-dev/` in the project root. Example:
+```
+Read: skills/3dsmax-mcp-dev/maxscript-materials-textures.md
+```
+
+## 11. Architecture
+
+```
+Agent <-> FastMCP (Python/stdio) <-> Named Pipe <-> C++ GUP Plugin <-> 3ds Max SDK
+                                  |
+                                  +-> TCP:8765 fallback -> MAXScript listener
+```
+
+- 76 native C++ handlers via named pipe (pure SDK, 86-130x faster)
+- Multi-instance pipe — multiple agents connect simultaneously
+- Safe mode on pipe — blocks DOSCommand, ShellLaunch, deleteFile, python.Execute, createFile
+- ScriptSource::NonEmbedded — .NET calls work through the pipe
+- `client.native_available` routes tools to native or MAXScript path
+- Remaining tools use MAXScript through `ExecuteMAXScriptScript()` in the C++ bridge
+
+### Adding a native handler
+1. Add handler function to relevant `.cpp` in `native/src/handlers/`
+2. Declare in `native_handlers.h`
+3. Route in `command_dispatcher.cpp`
+4. Add source to `CMakeLists.txt`
+5. Update Python tool with `if client.native_available:` + MAXScript fallback
+6. Build → deploy → restart Max
+
+### Unwrap UVW Editor
+- The macroscript `OpenUnwrapUI` does NOT open the UV editor window
+- To open the editor: `modifierInstance.edit()` on the Unwrap_UVW modifier (e.g. `$Box001.modifiers[#Unwrap_UVW].edit()`)
+- Action table "Unwrap UVW" has 228 actions including "Edit UVW's" (id 40005)
+- Use `list_macroscripts` and `list_action_tables` to discover available commands — don't guess names
+
+### System Discovery (native handlers)
+- `list_macroscripts` — walks MacroDir, 4000+ macros, filter by category/pattern
+- `list_action_tables` — walks IActionManager, 100+ tables with all menu/shortcut actions
+- `introspect_interface` — full FPInterface dump (functions, properties, enums with live values)
+- `invoke_interface` — call FPInterface functions + set properties directly, no MAXScript parsing
+- `run_macroscript` — execute macroscripts by category + name via MacroEntry::Execute()
+- Use these to discover any plugin's API surface before guessing MAXScript commands
+
 ---
 
-## 15) Modal Dialogs Lock You Out
+## 12. Redshift Pitfalls
+
+- `RS_Bump_Map` (underscores!) — `RS_BumpMap` does NOT exist, silently fails
+- `RS_Normal_Map.tex0_filename` — set directly, do NOT wire RS_Bitmap to `.tex0`
+- `RS_Displacement.texMap_map` — wire an RS_Bitmap child node here
+- `RS_Bitmap` — use `.tex0_filename` and `.tex0_colorSpace` ("sRGB"/"Raw"/"ACEScg")
+- `CompositeTexturemap name:"X"` — `name:` constructor param collides; use `.name = "X"` after creation
+- Skip AO compositing for Redshift — GI handles ambient occlusion natively
+- `Sphere mapcoords = false` by default — textures render BLACK. Always set `mapcoords = true`
+- `render ... vfb:false` — prevents standard Max VFB from popping up
+- rsPhysicalLight uses `intensity` (not `multiplier`); rsDomeLight uses `multiplier` (not `intensity`)
+- Redshift defaults to Arnold after fresh Max start — must explicitly set `renderers.current = Redshift_Renderer()`
+- Standard Max OSLMap not supported by Redshift — use `RS_OSL_Map`
+- `RS_OSL_Map` file mode (oslSource=0) doesn't load shader code — use text mode (oslSource=1)
+- `RS_Material` is the correct class for Redshift standard materials — NOT `Redshift_Material` (undefined)
+- Cannot use direct property assignment for RS material texture map slots — must use `setProperty mat #slot_name texNode`
+- After wiring a `_map` slot, enable the companion property: `try (setProperty mat #base_color_mapenable true) catch()`
+- RS texture displacement (displacementMode=2) is more efficient than normal maps for surface detail
+- `Redshift_Mesh_Parameters` — modifier for per-object tessellation/displacement. Uses full `Redshift_` prefix, NOT `RS_`
+- `RS_OSL_Map` corruption: `oslCode` assignment can crash with access violation — create a fresh instance instead of modifying a corrupted one
+- `RefractionsEnable`: Redshift global refraction toggle (`renderers.current.RefractionsEnable`) can silently be `false`. Always verify when transparency doesn't render
+
+## 13. RPManager Pitfalls
+
+- `fRefresh()` crashes — use `try(RPMdata.rmrefresh())catch()` instead
+- `RPMdata.AddPass()` fails in fresh scenes — must open RPManager UI first
+- `addPassSetup()` triggers modal dialogs — NEVER call it
+- `SetPassOutputPath` requires UI open — silently fails without `RMopenFloater()` first
+- Orphan vis sets cause blocking modal — must check ALL vis set names
+- Before/after scripts are the ONLY reliable way to control per-pass layer states and RS properties
+- `GetPassCamera` returns node reference, not string — convert with `.name`
+- `MouseDownSelection.ListView` returns undefined until user has clicked the pass list — wrap in try/catch
+- RPManager `.mse` encryption is custom (polyalphabetic cipher in RPMdlx.dlx), NOT standard Max `encryptScript`
+- Vis set creation via `RMLSetMaker.oker.pressed()` assigns name but does NOT store layer data — BROKEN
+
+## 14. tyFlow Pitfalls
+
+- Shape `_tab` arrays are the ONLY writable path; single-item props are READ-ONLY
+- SubAnim access: spaces become underscores (`#PhysX_Shape` NOT `#'PhysX Shape'`)
+- tyFlow 2.0 (Zenith): Export operator is `Export Inferno` NOT `Inferno Export`
+- Volume API: `updateVolumes()`/`releaseVolumes()` must be paired (GPU memory)
+- Temperature props use `Celcius` (misspelled in tyFlow)
+- Per-particle vertex color or UVW mapping overrides BREAK GPU instancing
+- Only particle transforms (pos/rot/scale) are lightweight instance data
+- `meshSplitElements_tab = #(true)` splits reference mesh elements into separate particles
+- `displayMaterial = true` on Display operator required for materials to render
+- Material modifier ignored by tyFlow: tyFlow reads base mesh face matIDs, NOT Material modifier. Must `collapseStack` or set face matIDs directly via `polyop.setFaceMatID`
+- Inferno is a forward-only GPU sim — timeline scrubbing does NOT update the volume display
+- `playAnimation()` blocks the TCP listener — avoid calling it via MAXScript
+- `createPreview` does NOT trigger `updateParticles` — Inferno won't animate in previews
+- tyCache `renderable` flag resets to `false` after Max restart — must set explicitly
+- tyCache renderMode: 0=Triangle mesh (combined, slow), 1=Render instances (fast, GPU instancing). Use 1 for production
+
+## 15. Physical_Material Pitfalls
+
+- `emission_weight` does NOT exist — use `emission` (float, default 1.0) for emission strength
+- `emission_color` does NOT exist — use `emit_color` (color) for emission color
+- `.emit_luminance` for intensity, `.emit_color` for color, `.emit_kelvin` for temperature
+- Other emit properties: `emit_color_map`, `emit_color_map_on`
+
+## 16. Forest Pack + Redshift Pitfalls
+
+- ForestColor texmap NOT supported by Redshift or other GPU renderers (iToo confirmed)
+- Forest Pack tintmap with Redshift: untested, likely breaks instancing
+- Materials on the Forest Pack object itself are VIEWPORT-ONLY — Redshift ignores them at render time
+- Assign RS materials to the **source geometry** nodes, or populate `fp.matlist` (per-source override array)
+- `fp.rmesh = 0` (Automatic mode) is the correct setting for Redshift — enables native instancing
+- Do NOT wrap FP source geometry in RedshiftProxy; Forest Pack handles the instancing bridge internally
+- Correct FP scale properties: `scalexmin`, `scalexmax` (NOT `scalemin`/`scalemax`)
+- `divers` NOT `diversity`, `clusize` NOT `clustsize`, `animation` NOT `animmode`
+
+## 17. Modal Dialogs Warning
 
 **CRITICAL:** Any MAXScript that triggers a modal dialog (confirmation, file browser, error popup) will block the TCP listener indefinitely. Max stops responding to MCP commands until the user manually dismisses the dialog.
 
-- **Never trigger "overwrite?" confirmations** — check `doesFileExist` before saving, use unique names for RPManager vis sets, etc.
+- Modal dialogs lock the MAXScript listener — NEVER trigger them via MCP
+- RPManager `addPassSetup()` triggers modal
+- Orphan vis set references trigger modal confirmation
+- **Never trigger "overwrite?" confirmations** — check `doesFileExist` before saving, use unique names
 - **Never call functions that open file browsers** (`getOpenFileName`, `getSaveFileName`) — pass paths directly
-- **RPManager `RMLSetMaker` dialog:** Do NOT use — `oker.pressed()` doesn't store layer data, and duplicate names cause a blocking modal. Use before/after scripts instead.
 - **Avoid `messageBox`**, `queryBox`, `yesNoCancelBox` in any script you execute
-- **If locked out:** user must click through the dialog in Max, then retry the MCP command
 - **`quiet:true`** flags exist on many Max functions — always use them (e.g. `loadMaxFile ... quiet:true`, `resetMaxFile #noPrompt`)
-
----
-
-## 16) Safety for Destructive Operations
-
-- Prefer **Hold/Fetch** for critical operations:
-  - `holdMaxFile()`
-  - revert with: `fetchMaxFile quiet:true`
-
-For batch ops:
-- wrap with `disableSceneRedraw()` / `enableSceneRedraw()` / `redrawViews()`
-- preserve selection
-- allow abort via `keyboard.escPressed`
-
----
-
-## 17) Data Channel Modifier (DC)
-
-Use tools:
-- Build full graph → `add_data_channel`
-- Inspect → `inspect_data_channel`
-- Change one operator → `set_data_channel_operator`
-- Add script operator → `add_dc_script_operator`
-- Presets → `list_dc_presets` / `load_dc_preset`
-
-Common DC pitfalls:
-- Must be Editable Mesh/Poly → convert first
-- `operator_order` is **0-based**
-- Operators not in order do not execute
-- GeoQuantize before element-level ops to avoid tearing
-- Node references must be actual nodes, not strings
-- **Always include `vertex_output` (output=0, Position)** at the end of TransformElements/ColorElements pipelines — composite operators need it to write results to the mesh
-- **TransformElements.transformType actual values**: 0=Position, 1=Rotation, 2=Scale%, 3=ScaleUniform (sequential, NOT the gapped 0,2,3,4 from Autodesk docs)
-- Use `"blend"` key in operator dicts to set `operator_ops` blend mode: 0=Replace, 1=Add, 2=Subtract, 3=Multiply, 4=Divide, 5=Dot, 6=Cross
-
----
-
-## 18) Wire Parameters
-
-Use tools:
-- Discover params → `list_wireable_params`
-- Create wire → `wire_params`
-- Inspect wires → `get_wired_params`
-- Remove wire → `unwire_params`
-
-Wire tips:
-- You do NOT need to `unwire_params` before re-wiring — `paramWire.connect` overwrites existing wire controllers automatically
-- **Rotation wire expressions use RADIANS**, not degrees — use `distance / radius` not `distance * 360 / (2*pi*r)`
-- Sub-anim paths from `list_wireable_params` start with `[#` — no dot separator needed before brackets
-- MAXScript `pi` constant is available in wire expressions
-
----
-
-## 17) Animation Controllers
-
-Use tools:
-- Assign controller → `assign_controller`
-- Inspect controller → `inspect_controller`
-- Add target/variable → `add_controller_target`
-- Update script/props → `set_controller_props`
-
-Supported controller types:
-- **Script**: `float_script`, `position_script`, `rotation_script`, `scale_script`, `point3_script`
-- **Constraints**: `position_constraint`, `orientation_constraint`, `lookat_constraint`, `path_constraint`, `surface_constraint`, `link_constraint`, `attachment_constraint`
-- **Noise**: `noise_float`, `noise_position`, `noise_rotation`, `noise_scale`
-- **List**: `float_list`, `position_list`, `rotation_list`, `scale_list`
-- **Expression**: `float_expression`, `position_expression`
-- **Other**: `spring`
-
-Controller tips:
-- `dependsOn` in script controllers = self-reference to the owning node (critical for dependency tracking)
-- Script controller `addNode` creates name-independent references (survive object renames)
-- Expression controllers require `ctrl.update()` after `setExpression` — `assign_controller` and `set_controller_props` handle this automatically
-- Link constraint uses `addTarget node frame` (not `appendTarget`)
-- Attachment constraint uses `appendTarget node face`
-- Use `list_wireable_params` to find the correct sub-anim path before assigning controllers
-- Sub-anim paths starting with `[` need no dot separator (same pattern as wire_params)
-- **Use `layer=True`** to add a controller on top of existing (wraps in list controller, preserves current value)
-
-List controller pitfalls:
-- **Cannot assign sub-controllers via local variable** — `listCtrl[2].controller = X()` fails with "Cannot set controller"
-- **Must use `execute("$'name'.pos.controller.Available.controller = ...")`** — the `$` path is required for list sub-anim assignment
-- Position_List sub-anim structure: [1]=default Bezier, [2]=Available (dummy), [numsubs]=Weights — after adding, new ctrl is at numsubs-2
-- `assign_controller` with `layer=True` handles all of this automatically
-
-Noise controller property names:
-- `Noise_Position`: `noise_strength` (Point3, e.g. `[0.3, 0.3, 0.15]`) — NOT `X_Strength`/`Y_Strength`/`Z_Strength`
-- `Noise_Float`: `strength` (float)
-- `Noise_Rotation`: `noise_strength` (Point3, XYZ in degrees)
-- Common props: `seed`, `frequency`, `fractal`, `roughness`, `rampin`, `rampout`, `x_positive`/`y_positive`/`z_positive`
-
----
-
-## 18) Debug / Test Loop
-
-- Use `execute_maxscript` as an “escape hatch” for quick experiments.
-- If you get `ConnectionRefusedError`, the MAXScript listener isn’t running.
-- Confirm comms/temp directory exists to validate bridge readiness.
-- Restart MCP server after Python tool edits.
-
----
-
-## 19) tyFlow + tyCache Rendering Pitfalls
-
-- **Material modifier ignored by tyFlow**: tyFlow reads base mesh face matIDs, NOT Material modifier. Must `collapseStack` or set face matIDs directly via `polyop.setFaceMatID`.
-- **tyCache matID ordering**: tyCache exports with its own Multi/Sub ordering (from `OLED_Instances_Mat` or auto-generated). This may NOT match the tyFlow object's material. Always verify slot ordering and create a matching Multi/Sub for the tyCache.
-- **RS_OSL_Map corruption**: `oslCode` assignment can crash with access violation if the map is in a bad state. Create a fresh `RS_OSL_Map` instead of modifying the corrupted one.
-- **RS_OSL_Map multi-output**: Shaders with multiple outputs (e.g. `output color Out` + `output float Weight`) need `MultiOutputChannelTexmapToTexmap` wrapper. Single-output shaders can be assigned directly to material slots.
-- **RefractionsEnable**: Redshift global refraction toggle (`renderers.current.RefractionsEnable`) can silently be `false`. Always verify when transparency doesn't render.
-- **MCP listener access violation**: `dotNet.setLifetimeControl listener #dotnet` prevents .NET GC from invalidating the TCP listener during heavy operations.
-- **Always backup before destructive mesh ops**: `polyop.attach`, `collapseStack`, `convertTo` are irreversible. Clone + hide originals first.
-- **tyCache renderable flag**: resets to `false` after Max restart. Must set `tc.renderable = true` explicitly.
-- **tyCache renderMode**: 0=Triangle mesh (combined, slow), 1=Render instances (fast, GPU instancing). Use 1 for production.
-- **tyCache export trigger**: `objectsAutoRenderExport = true` + render a frame to trigger. `reset_simulation()` alone does NOT export.
+- **If locked out:** user must click through the dialog in Max, then retry the MCP command

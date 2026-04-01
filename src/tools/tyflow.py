@@ -1,1178 +1,1046 @@
-"""tyFlow particle system tools for 3ds Max.
-
-Provides MCP tools for creating, inspecting, and controlling tyFlow
-particle systems and Inferno (Zenith) smoke/fire simulations.
-
-Based on live introspection of tyFlow v2.003 in 3ds Max 2025 (2026-03-22).
-
-Key constraints:
-- Shape ``_tab`` arrays are the ONLY writable path; single-item props are READ-ONLY.
-- ``addOperator`` requires two args: name + position index.
-- Operator variable names MUST use ``_Op`` suffix to avoid MAXScript global name collisions.
-- ``quickType_submit`` CRASHES -- never use it.
-- Operators with spaces in their name need ``#'PhysX Shape'`` quoting in SubAnim paths.
-- Inferno operators require tyFlow 2.0+ (Zenith). Tools fail gracefully on older versions.
-- Volume API: always pair ``updateVolumes()`` / ``releaseVolumes()`` to avoid GPU memory leaks.
-- Export operator is ``Export Inferno`` (not ``Inferno Export``).
-- tyCache export: call ``opRef.exportTyCache()`` on an Export Particles operator.
-  Also available: ``exportPRT()``, ``exportAlembic_Mesh()``, ``exportAlembic_PC()``.
-"""
-
 from __future__ import annotations
 
-from ..server import mcp, client
+import json
+from typing import Any
 
+from src.helpers.maxscript import safe_string
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+from ..server import client, mcp
+from ..coerce import StrList, FloatList, IntList, DictList
 
-def _safe_name(name: str) -> str:
-    """Escape a user-provided name for embedding in MAXScript strings."""
-    return name.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _name_array(names: list[str]) -> str:
-    """Build a MAXScript ``#("a","b",...)`` string array literal."""
-    return "#(" + ", ".join(f'"{_safe_name(n)}"' for n in names) + ")"
-
-
-def _int_array(values: list[int]) -> str:
-    """Build a MAXScript ``#(1, 2, ...)`` integer array literal."""
-    return "#(" + ", ".join(str(int(v)) for v in values) + ")"
-
-
-def _float_array(values: list[float]) -> str:
-    """Build a MAXScript ``#(1.0, 2.0, ...)`` float array literal."""
-    return "#(" + ", ".join(f"{float(v):.4f}" for v in values) + ")"
-
-
-def _bool_array(values: list[bool]) -> str:
-    """Build a MAXScript ``#(true, false, ...)`` boolean array literal."""
-    return "#(" + ", ".join("true" if v else "false" for v in values) + ")"
-
-
-def _ms_value(val) -> str:
-    """Convert a Python value to its MAXScript literal representation."""
-    if isinstance(val, bool):
-        return "true" if val else "false"
-    if isinstance(val, float):
-        return f"{val:.6f}"
-    if isinstance(val, int):
-        return str(val)
-    if isinstance(val, str):
-        return f'"{_safe_name(val)}"'
-    if isinstance(val, list):
-        # Detect element type from first element
-        if val and isinstance(val[0], bool):
-            return _bool_array(val)
-        if val and isinstance(val[0], float):
-            return _float_array(val)
-        if val and isinstance(val[0], int):
-            return _int_array(val)
-        if val and isinstance(val[0], str):
-            return _name_array(val)
-        return "#()"
-    return str(val)
-
-
-def _sa_name(name: str) -> str:
-    """Format a name for SubAnim access -- replace spaces with underscores."""
-    safe = _safe_name(name).replace(" ", "_")
-    return f"#{safe}"
-
-
-# ---------------------------------------------------------------------------
-# Shape ID mapping (VERIFIED 2026-03-03 via live introspection)
-# ---------------------------------------------------------------------------
 
 SHAPE_3D_IDS: dict[str, int] = {
     "triangle": 0,
     "cone": 1,
     "quad": 2,
-    "plane": 2,          # alias
+    "plane": 2,
     "cylinder": 3,
-    "sphere": 4,          # 289 verts, 512 faces
-    "pyramid": 5,         # DEFAULT -- 5 verts, 6 faces
+    "sphere": 4,
+    "pyramid": 5,
     "box": 6,
-    "cube": 6,            # alias
+    "cube": 6,
     "octahedron": 7,
     "geosphere_low": 8,
-    "geosphere": 9,       # medium (default geosphere)
-    "geosphere_med": 9,   # alias
+    "geosphere": 9,
     "geosphere_high": 10,
     "icosahedron": 11,
 }
 
 
-# ---------------------------------------------------------------------------
-# Tool 1: create_tyflow
-# ---------------------------------------------------------------------------
+KNOWN_OPERATORS: tuple[str, ...] = (
+    "Birth",
+    "Birth Surface",
+    "Birth Objects",
+    "Birth Spline",
+    "Speed",
+    "Spin",
+    "Rotation",
+    "Scale",
+    "Mass",
+    "Force",
+    "Shape",
+    "Display",
+    "PhysX Shape",
+    "PhysX Collision",
+    "Collision",
+    "Delete",
+    "Spawn",
+    "Select",
+    "Send Out",
+    "Split",
+    "Time Test",
+    "Object Test",
+    "Surface Test",
+    "Property Test",
+    "Voronoi Fracture",
+    "Element Fracture",
+    "Face Fracture",
+    "Bounds Fracture",
+    "Brick Fracture",
+    "Multifracture",
+    "Convex Hull",
+    "Export Particles",
+    "Display Data",
+    "Position Object",
+)
+
+
+HELPERS = """
+local esc = MCP_Server.escapeJsonString
+
+fn jsonStringArray arr =
+(
+    local s = "["
+    for i = 1 to arr.count do (
+        if i > 1 do s += ","
+        s += "\\"" + (esc arr[i]) + "\\""
+    )
+    s += "]"
+    s
+)
+
+fn findEventSubAnim flowNode eventName =
+(
+    if flowNode == undefined then return undefined
+    local bo = flowNode.baseobject
+    if bo == undefined then return undefined
+    local evSym = undefined
+    try (evSym = execute ("#'" + eventName + "'")) catch ()
+    if evSym == undefined then return undefined
+    local ev = undefined
+    try (ev = bo[evSym]) catch ()
+    ev
+)
+
+fn findOperatorSubAnim eventSub operatorName =
+(
+    if eventSub == undefined then return undefined
+    local opSym = undefined
+    try (opSym = execute ("#'" + operatorName + "'")) catch ()
+    if opSym == undefined then return undefined
+    local op = undefined
+    try (op = eventSub[opSym]) catch ()
+    op
+)
+"""
+
+
+def _load_json(raw: str, fallback: Any) -> Any:
+    try:
+        return json.loads(raw)
+    except Exception:
+        return fallback
+
+
+def _send_json(maxscript: str, fallback: Any) -> Any:
+    try:
+        response = client.send_command(maxscript)
+    except Exception as exc:
+        return {"error": str(exc)}
+    return _load_json(response.get("result", ""), fallback)
+
+
+def _mxs_string_array(items: list[str]) -> str:
+    return "#(" + ", ".join(f'"{safe_string(item)}"' for item in items) + ")"
+
+
+def _mxs_value(value: Any, raw_strings: bool = False) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return str(float(value))
+    if isinstance(value, str):
+        return value if raw_strings else f'"{safe_string(value)}"'
+    if isinstance(value, list):
+        if not value:
+            return "#()"
+        if all(isinstance(v, str) for v in value):
+            return _mxs_string_array(value)
+        if all(isinstance(v, bool) for v in value):
+            return "#(" + ", ".join("true" if v else "false" for v in value) + ")"
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
+            return "#(" + ", ".join(str(float(v)) if isinstance(v, float) else str(int(v)) for v in value) + ")"
+    raise ValueError(f"Unsupported value type: {type(value).__name__}")
+
+
+def _assignment_lines(values: dict[str, Any], var_name: str, raw_strings: bool = False) -> tuple[str, list[str]]:
+    lines: list[str] = []
+    names: list[str] = []
+    for prop_name, prop_value in values.items():
+        prop = safe_string(prop_name)
+        expr = _mxs_value(prop_value, raw_strings=raw_strings)
+        lines.append(
+            f'try ({var_name}.{prop} = {expr}; append applied "{prop}") '
+            f'catch (append errors "Could not set {prop}")'
+        )
+        names.append(prop_name)
+    return "\n".join(lines), names
+
+
+def _sa_name(name: str) -> str:
+    """Format a name for SubAnim access -- replace spaces with underscores."""
+    safe = safe_string(name).replace(" ", "_")
+    return f"#{safe}"
+
+
+@mcp.tool()
+def list_tyflow_operator_types() -> str:
+    """Return available and unavailable tyFlow operator names for this installation."""
+    candidates = _mxs_string_array(list(KNOWN_OPERATORS))
+    maxscript = f"""(
+{HELPERS}
+if tyFlow == undefined then (
+    "{{\\"error\\":\\"tyFlow plugin is not available\\"}}"
+) else (
+    local opNames = {candidates}
+    local flow = tyFlow name:"zzz_tyflow_op_probe"
+    local eventHandle = flow.tyFlow.addEvent()
+    local ev = eventHandle.Event
+    ev.setName "Probe"
+    local ok = #()
+    local fail = #()
+    for n in opNames do (
+        local op = undefined
+        try (op = ev.addOperator n -1) catch ()
+        if op == undefined then append fail n else (
+            append ok n
+            try (op.remove()) catch ()
+        )
+    )
+    delete flow
+    "{{\\"available\\":" + (jsonStringArray ok) + ",\\"unavailable\\":" + (jsonStringArray fail) + "}}"
+)
+)"""
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse operator probe response."}))
+
 
 @mcp.tool()
 def create_tyflow(
-    name: str = "tyFlow001",
-    events: list[dict] | None = None,
-    position: list[float] | None = None,
-    physx_gravity: bool = False,
-    physx_gravity_value: float = -980.0,
-    physx_ground_collider: bool = False,
-    physx_substeps: int = 4,
-    reset_simulation: bool = True,
-    open_editor: bool = False,
+    name: str = "",
+    position: FloatList | None = None,
+    event_name: str = "Emit",
+    event_position: IntList | None = None,
+    operators: DictList | None = None,
+    select_created: bool = True,
 ) -> str:
-    """Create a new tyFlow particle system with events and operators.
+    """Create tyFlow with one event and a configurable operator list."""
+    from .selection import select_objects
 
-    Each event dict should have:
-      - name (str): Event name.
-      - operators (list[dict]): Each operator dict has:
-        - type (str): Operator type name (e.g. "Birth", "Speed", "Shape").
-        - properties (dict, optional): Property name-value pairs to set.
-
-    Args:
-        name: tyFlow object name.
-        events: List of event definitions. If None a bare tyFlow is created.
-        position: World position [x, y, z]. Defaults to [0, 0, 0].
-        physx_gravity: Enable PhysX gravity on the tyFlow.
-        physx_gravity_value: Gravity strength (negative = down). Default -980.
-        physx_ground_collider: Enable built-in ground plane collider.
-        physx_substeps: PhysX substeps (default 4).
-        reset_simulation: Reset simulation after creation.
-        open_editor: Open the tyFlow editor UI.
-    """
     pos = position or [0.0, 0.0, 0.0]
-    safe = _safe_name(name)
-    events = events or []
+    ev_pos = event_position or [0, 0]
+    if len(pos) != 3:
+        raise ValueError("position must be [x, y, z]")
+    if len(ev_pos) != 2:
+        raise ValueError("event_position must be [x, y]")
 
-    lines: list[str] = [
-        f'local tfObj = tyflow()',
-        f'tfObj.name = "{safe}"',
-        f'tfObj.pos = [{pos[0]}, {pos[1]}, {pos[2]}]',
+    op_defs = operators or [
+        {"type": "Birth", "name": "Birth", "position": 0, "properties": {"birthMode": 0, "birthTotal": 100}},
+        {
+            "type": "Shape",
+            "name": "Shape",
+            "position": 1,
+            "properties": {
+                "shape_type_tab": [1],
+                "type_3d_ID_tab": [SHAPE_3D_IDS["sphere"]],
+                "frequency_tab": [100.0],
+                "scaleVal_tab": [100.0],
+            },
+        },
+        {"type": "Display", "name": "Display", "position": 2, "properties": {"displayMode": 2}},
     ]
 
-    # PhysX object-level settings
-    if physx_gravity:
-        lines.append("tfObj.physXGravityEnabled = true")
-        lines.append(f"tfObj.physXGravityValue = {physx_gravity_value:.6f}")
-    if physx_ground_collider:
-        lines.append("tfObj.physXGroundCollider = true")
-    if physx_substeps != 4:
-        lines.append(f"tfObj.physXSubsteps = {physx_substeps}")
-
-    # Build events
-    event_json_parts: list[str] = []
-    for evt_idx, evt in enumerate(events):
-        evt_name = _safe_name(evt.get("name", f"Event{evt_idx + 1}"))
-        lines.append(f'local ev{evt_idx} = tfObj.addEvent()')
-        lines.append(f'ev{evt_idx}.setName "{evt_name}"')
-
-        operators = evt.get("operators", [])
-        op_names: list[str] = []
-        for op_idx, op in enumerate(operators):
-            op_type = _safe_name(op.get("type", ""))
-            var = f"op_{evt_idx}_{op_idx}_Op"
-            lines.append(f'local {var} = ev{evt_idx}.addOperator "{op_type}" {op_idx + 1}')
-            props = op.get("properties", {})
-            for prop_name, prop_val in props.items():
-                lines.append(f'{var}.{prop_name} = {_ms_value(prop_val)}')
-            op_names.append(op_type)
-
-        # Build per-event JSON fragment
-        ops_json = ", ".join(f'\\"{o}\\"' for o in op_names)
-        event_json_parts.append(
-            f'"{{\\\"name\\\":\\\"{evt_name}\\\",\\\"operatorCount\\\":{len(op_names)},'
-            f'\\\"operators\\\":[{ops_json}]}}"'
+    op_blocks: list[str] = []
+    for idx, op in enumerate(op_defs, start=1):
+        op_type = safe_string(str(op.get("type", "Birth")))
+        op_name = safe_string(str(op.get("name", op.get("type", f"Operator{idx}"))))
+        op_pos = int(op.get("position", idx - 1))
+        var = f"op{idx}"
+        props = op.get("properties", {})
+        if not isinstance(props, dict):
+            props = {}
+        assign_lines: list[str] = []
+        for prop_name, prop_value in props.items():
+            prop = safe_string(prop_name)
+            expr = _mxs_value(prop_value)
+            assign_lines.append(f'try ({var}.{prop} = {expr}) catch (totalErrors += 1)')
+        assign_script = "\n".join(assign_lines)
+        op_blocks.append(
+            f"""
+local {var} = ev.addOperator "{op_type}" {op_pos}
+try ({var}.Operator.setName "{op_name}") catch ()
+{assign_script}
+operatorCount += 1
+"""
         )
 
-    if reset_simulation:
-        lines.append("tfObj.reset_simulation()")
-    if open_editor:
-        lines.append("tfObj.editor_open()")
+    maxscript = f"""(
+{HELPERS}
+if tyFlow == undefined then (
+    "{{\\"error\\":\\"tyFlow plugin is not available\\"}}"
+) else (
+    if "{safe_string(name)}" != "" and (getNodeByName "{safe_string(name)}") != undefined then (
+        "{{\\"error\\":\\"Object already exists: {safe_string(name)}\\"}}"
+    ) else (
+        local flow = if "{safe_string(name)}" == "" then tyFlow pos:[{float(pos[0])},{float(pos[1])},{float(pos[2])}] else tyFlow name:"{safe_string(name)}" pos:[{float(pos[0])},{float(pos[1])},{float(pos[2])}]
+        local eventHandle = flow.tyFlow.addEvent()
+        local ev = eventHandle.Event
+        ev.setName "{safe_string(event_name)}"
+        ev.setPosition [{int(ev_pos[0])},{int(ev_pos[1])}]
+        local operatorCount = 0
+        local totalErrors = 0
+        {"".join(op_blocks)}
+        "{{\\"name\\":\\"" + flow.name + "\\",\\"event\\":\\"" + ev.getName() + "\\",\\"operatorCount\\":" + (operatorCount as string) + ",\\"errorCount\\":" + (totalErrors as string) + "}}"
+    )
+)
+)"""
+    payload = _send_json(maxscript, {"error": "Could not parse create_tyflow response."})
+    if select_created and isinstance(payload, dict) and "name" in payload and "error" not in payload:
+        payload["selectResult"] = select_objects(names=[str(payload["name"])])
+    return json.dumps(payload)
 
-    # Build JSON response
-    events_json_str = " + \",\" + ".join(event_json_parts) if event_json_parts else '""'
-    lines.append(f'local evJson = ""')
-    if event_json_parts:
-        for i, part in enumerate(event_json_parts):
-            if i == 0:
-                lines.append(f'evJson += {part}')
-            else:
-                lines.append(f'evJson += "," + {part}')
-
-    lines.append(f'local json = "{{\\\"name\\\":\\\"" + tfObj.name + "\\\""')
-    lines.append(f'json += ",\\\"eventCount\\\":{len(events)}"')
-    lines.append(f'json += ",\\\"events\\\":[" + evJson + "]"')
-    lines.append(f'json += "}}"')
-    lines.append('json')
-
-    ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms).get("result", "")
-
-
-# ---------------------------------------------------------------------------
-# Tool 2: get_tyflow_info
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
 def get_tyflow_info(
     name: str,
-    include_properties: bool = False,
+    include_events: bool = True,
+    include_operator_properties: bool = False,
+    max_operators_per_event: int = 200,
+    include_flow_properties: bool = False,
+    include_event_properties: bool = False,
+    max_properties_per_operator: int = 200,
+    max_properties_per_event: int = 200,
+    max_properties_on_flow: int = 200,
 ) -> str:
-    """Get comprehensive info about a tyFlow object.
-
-    Returns events, operators, particle count, PhysX settings, and
-    simulation state.  Set include_properties=True for a full property
-    dump per operator (verbose).
-
-    Args:
-        name: tyFlow object name.
-        include_properties: Include full property list per operator.
-    """
-    safe = _safe_name(name)
-
-    # The MAXScript enumerates events via baseobject SubAnims.
-    # Fixed SubAnims are indices 1..20; events start at index 21+.
-    prop_block = ""
-    if include_properties:
-        prop_block = r"""
-                local ss = StringStream ""
-                showProperties (getSubAnim evSA j) to:ss
-                local propStr = substituteString (ss as string) "\"" "'"
-                propStr = substituteString propStr "\n" " | "
-                opJson += ",\"properties\":\"" + propStr + "\""
-"""
-    else:
-        prop_block = ""
-
+    """Inspect a tyFlow object with deep flow/event/operator/property readback."""
+    max_ops = max(1, int(max_operators_per_event))
+    max_op_props = max(1, int(max_properties_per_operator))
+    max_ev_props = max(1, int(max_properties_per_event))
+    max_flow_props = max(1, int(max_properties_on_flow))
     maxscript = f"""(
-    local tfObj = getNodeByName "{safe}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe}\\\"}}"
-    ) else if (classOf tfObj.baseobject) != tyFlow then (
-        "{{\\\"error\\\":\\\"Object is not a tyFlow: {safe}\\\"}}"
-    ) else (
-        local tf = tfObj.baseobject
-        tfObj.updateParticles currentTime
-        local pCount = tfObj.numParticles()
-        local p = tfObj.pos
+{HELPERS}
+fn parseSubAnimNamesByShowProps targetObj =
+(
+    local names = #()
+    local ss = stringstream ""
+    try (showProperties targetObj to:ss) catch ()
+    seek ss 0
+    while not eof ss do (
+        local line = trimRight (trimLeft (readline ss))
+        if line.count > 1 and (substring line 1 1) == "." then (
+            local rawName = trimRight (trimLeft (substring line 2 (line.count - 1)))
+            if (findString rawName ":") == undefined and rawName != "" do append names rawName
+        )
+    )
+    names
+)
 
-        local json = "{{\\\"name\\\":\\\"" + tfObj.name + "\\\""
-        json += ",\\\"class\\\":\\\"tyFlow\\\""
-        json += ",\\\"position\\\":[" + (p.x as string) + "," + (p.y as string) + "," + (p.z as string) + "]"
-        json += ",\\\"particleCount\\\":" + (pCount as string)
+fn clean s =
+(
+    local t = s as string
+    t = substituteString t "|" "<pipe>"
+    t = substituteString t "\\n" " "
+    t = substituteString t "\\r" ""
+    t
+)
 
-        -- PhysX info
-        json += ",\\\"physx\\\":{{\\\"gravityEnabled\\\":" + (tf.physXGravityEnabled as string)
-        json += ",\\\"gravityValue\\\":" + (tf.physXGravityValue as string)
-        json += ",\\\"groundCollider\\\":" + (tf.physXGroundCollider as string)
-        json += ",\\\"substeps\\\":" + (tf.physXSubsteps as string)
-        json += "}}"
+fn propLinesFor targetObj lineTag maxProps maxChars =
+(
+    local out = ""
+    local pNames = #()
+    try (pNames = getPropNames targetObj) catch ()
+    local total = pNames.count
+    local take = total
+    if take > maxProps do take = maxProps
+    for i = 1 to take do (
+        local p = pNames[i]
+        local pName = p as string
+        local pVal = ""
+        try (pVal = (getProperty targetObj p) as string) catch (pVal = "<unreadable>")
+        if pVal.count > maxChars do pVal = (substring pVal 1 maxChars) + "..."
+        out += lineTag + "|" + (clean pName) + "|" + (clean pVal) + "\\n"
+    )
+    if total > take do out += "WARN|" + lineTag + "_TRUNCATED|" + (total as string) + "|" + (take as string) + "\\n"
+    out
+)
 
-        -- Enumerate events (SubAnims after the 20 fixed ones)
-        local numSA = tf.numsubs
-        json += ",\\\"events\\\":["
-        local firstEvt = true
-        for i = 1 to numSA do (
-            local sa = getSubAnim tf i
-            -- Events are SubAnims that themselves have SubAnims (operators)
-            -- Fixed params have 0 subs; events have 1+ subs (their operators)
-            if sa.numsubs > 0 then (
-                local evName = getSubAnimName tf i
-                if not firstEvt do json += ","
-                firstEvt = false
-                json += "{{\\\"name\\\":\\\"" + (evName as string) + "\\\""
+local flow = getNodeByName "{safe_string(name)}"
+if flow == undefined then (
+    "__ERROR__|Object not found: {safe_string(name)}"
+) else (
+    local bo = flow.baseobject
+    local particleCount = 0
+    try (particleCount = flow.numParticles()) catch ()
 
-                -- Enumerate operators in this event
-                local evSA = sa
-                local opCount = evSA.numsubs
-                json += ",\\\"operatorCount\\\":" + (opCount as string)
-                json += ",\\\"operators\\\":["
-                for j = 1 to opCount do (
-                    if j > 1 do json += ","
-                    local opName = getSubAnimName evSA j
-                    local opJson = "{{\\\"name\\\":\\\"" + (opName as string) + "\\\""
-                    {prop_block.replace(chr(10), chr(10) + '                    ') if include_properties else ''}
-                    opJson += "}}"
-                    json += opJson
+    local out = "FLOW|" + (clean flow.name) + "|" + (clean ((classof bo) as string)) + "|" + (particleCount as string) + "\\n"
+    if {str(bool(include_flow_properties)).lower()} then (
+        local fpLines = propLinesFor bo "FP" {max_flow_props} 300
+        out += fpLines
+    )
+    if {str(bool(include_events)).lower()} then (
+        local eventNames = parseSubAnimNamesByShowProps bo
+        out += "META|eventSubAnimCount|" + (eventNames.count as string) + "\\n"
+        for eventName in eventNames do (
+            out += "EV|" + (clean eventName) + "\\n"
+            local evSym = undefined
+            local ev = undefined
+            try (evSym = execute ("#'" + eventName + "'")) catch ()
+            if evSym != undefined then (
+                try (ev = bo[evSym]) catch ()
+            )
+            if ev != undefined then (
+                if {str(bool(include_event_properties)).lower()} then (
+                    local epNames = #()
+                    try (epNames = getPropNames ev) catch ()
+                    local epTotal = epNames.count
+                    local epTake = epTotal
+                    if epTake > {max_ev_props} do epTake = {max_ev_props}
+                    for epi = 1 to epTake do (
+                        local ep = epNames[epi]
+                        local epName = ep as string
+                        local epVal = ""
+                        try (epVal = (getProperty ev ep) as string) catch (epVal = "<unreadable>")
+                        if epVal.count > 300 do epVal = (substring epVal 1 300) + "..."
+                        out += "EP|" + (clean eventName) + "|" + (clean epName) + "|" + (clean epVal) + "\\n"
+                    )
+                    if epTotal > epTake do out += "WARN|EP_TRUNCATED|" + (clean eventName) + "|" + (epTotal as string) + "|" + (epTake as string) + "\\n"
                 )
-                json += "]}}"
+                local opNames = parseSubAnimNamesByShowProps ev
+                local opCount = opNames.count
+                if opCount > {max_ops} then (
+                    out += "WARN|OP_TRUNCATED|" + (clean eventName) + "|" + (opNames.count as string) + "|" + ({max_ops} as string) + "\\n"
+                    opCount = {max_ops}
+                )
+                for oi = 1 to opCount do (
+                    local opName = opNames[oi]
+                    local opSym = undefined
+                    local op = undefined
+                    try (opSym = execute ("#'" + opName + "'")) catch ()
+                    if opSym != undefined then (
+                        try (op = ev[opSym]) catch ()
+                    )
+                    local opClass = "<unknown>"
+                    local propCount = 0
+                    if op != undefined then (
+                        try (opClass = (classof op.Operator) as string) catch (try (opClass = (classof op) as string) catch ())
+                        local pNames = #()
+                        try (pNames = getPropNames op) catch ()
+                        propCount = pNames.count
+                        out += "OP|" + (clean eventName) + "|" + (clean opName) + "|" + (clean opClass) + "|" + (propCount as string) + "\\n"
+                        if {str(bool(include_operator_properties)).lower()} then (
+                            local pTake = pNames.count
+                            if pTake > {max_op_props} do pTake = {max_op_props}
+                            for pi = 1 to pTake do (
+                                local p = pNames[pi]
+                                local pName = p as string
+                                local pVal = ""
+                                try (pVal = (getProperty op p) as string) catch (pVal = "<unreadable>")
+                                if pVal.count > 300 do pVal = (substring pVal 1 300) + "..."
+                                out += "PR|" + (clean eventName) + "|" + (clean opName) + "|" + (clean pName) + "|" + (clean pVal) + "\\n"
+                            )
+                            if pNames.count > pTake do out += "WARN|PR_TRUNCATED|" + (clean eventName) + "|" + (clean opName) + "|" + (pNames.count as string) + "|" + (pTake as string) + "\\n"
+                        )
+                    )
+                    if op == undefined then out += "OP|" + (clean eventName) + "|" + (clean opName) + "|<unresolved>|0\\n"
+                )
             )
         )
-        json += "]}}"
-        json
     )
+    out
+)
 )"""
-    return client.send_command(maxscript).get("result", "")
+    try:
+        response = client.send_command(maxscript)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+    raw = str(response.get("result", ""))
+    if raw.startswith("__ERROR__|"):
+        return json.dumps({"error": raw.split("|", 1)[1]})
+
+    def _decode_token(value: str) -> str:
+        return value.replace("<pipe>", "|")
+
+    result: dict[str, Any] = {
+        "name": name,
+        "class": "",
+        "particleCount": 0,
+        "flowPropertyCount": 0,
+        "flowProperties": [],
+        "eventSubAnimCount": 0,
+        "eventCount": 0,
+        "events": [],
+        "warnings": [],
+    }
+    events: dict[str, dict[str, Any]] = {}
+
+    for line in raw.splitlines():
+        parts = line.split("|")
+        if not parts:
+            continue
+        tag = parts[0]
+        if tag == "FLOW" and len(parts) >= 4:
+            result["name"] = _decode_token(parts[1])
+            result["class"] = _decode_token(parts[2])
+            try:
+                result["particleCount"] = int(parts[3])
+            except Exception:
+                result["particleCount"] = 0
+        elif tag == "META" and len(parts) >= 3:
+            if parts[1] == "eventSubAnimCount":
+                try:
+                    result["eventSubAnimCount"] = int(parts[2])
+                except Exception:
+                    result["eventSubAnimCount"] = 0
+        elif tag == "FP" and len(parts) >= 3:
+            result["flowProperties"].append({"name": _decode_token(parts[1]), "value": _decode_token(parts[2])})
+        elif tag == "EV" and len(parts) >= 2:
+            ev_name = _decode_token(parts[1])
+            if ev_name not in events:
+                events[ev_name] = {
+                    "name": ev_name,
+                    "propertyCount": 0,
+                    "properties": [],
+                    "operatorCount": 0,
+                    "operators": [],
+                }
+        elif tag == "EP" and len(parts) >= 4:
+            ev_name = _decode_token(parts[1])
+            p_name = _decode_token(parts[2])
+            p_val = _decode_token(parts[3])
+            if ev_name not in events:
+                events[ev_name] = {
+                    "name": ev_name,
+                    "propertyCount": 0,
+                    "properties": [],
+                    "operatorCount": 0,
+                    "operators": [],
+                }
+            events[ev_name]["properties"].append({"name": p_name, "value": p_val})
+        elif tag == "OP" and len(parts) >= 5:
+            ev_name = _decode_token(parts[1])
+            op_name = _decode_token(parts[2])
+            op_class = _decode_token(parts[3])
+            try:
+                prop_count = int(parts[4])
+            except Exception:
+                prop_count = 0
+            if ev_name not in events:
+                events[ev_name] = {
+                    "name": ev_name,
+                    "propertyCount": 0,
+                    "properties": [],
+                    "operatorCount": 0,
+                    "operators": [],
+                }
+            events[ev_name]["operators"].append({
+                "name": op_name,
+                "class": op_class,
+                "propertyCount": prop_count,
+                "properties": [],
+            })
+        elif tag == "PR" and len(parts) >= 5:
+            ev_name = _decode_token(parts[1])
+            op_name = _decode_token(parts[2])
+            prop_name = _decode_token(parts[3])
+            prop_value = _decode_token(parts[4])
+            ev = events.get(ev_name)
+            if not ev:
+                continue
+            op = next((item for item in ev["operators"] if item["name"] == op_name), None)
+            if op is None:
+                continue
+            op["properties"].append({"name": prop_name, "value": prop_value})
+        elif tag == "WARN":
+            decoded = [_decode_token(p) for p in parts[1:]]
+            if decoded:
+                result["warnings"].append(decoded)
+
+    event_list = list(events.values())
+    for ev in event_list:
+        ev["propertyCount"] = len(ev["properties"])
+        ev["operatorCount"] = len(ev["operators"])
+    result["flowPropertyCount"] = len(result["flowProperties"])
+    result["eventCount"] = len(event_list)
+    result["events"] = event_list
+    return json.dumps(result)
 
 
-# ---------------------------------------------------------------------------
-# Tool 3: modify_tyflow_operator
-# ---------------------------------------------------------------------------
+@mcp.tool()
+def add_tyflow_event(name: str, event_name: str, event_position: IntList | None = None) -> str:
+    """Add one event to an existing tyFlow object."""
+    pos = event_position or [0, 0]
+    if len(pos) != 2:
+        raise ValueError("event_position must be [x, y]")
+
+    maxscript = f"""(
+{HELPERS}
+local flow = getNodeByName "{safe_string(name)}"
+if flow == undefined then (
+    "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
+) else (
+    local evRef = flow.tyFlow.addEvent()
+    local ev = evRef.Event
+    ev.setName "{safe_string(event_name)}"
+    ev.setPosition [{int(pos[0])},{int(pos[1])}]
+    "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"event\\":\\"" + (esc ev.getName()) + "\\"}}"
+)
+)"""
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse add_tyflow_event response."}))
+
 
 @mcp.tool()
 def modify_tyflow_operator(
-    tyflow_name: str,
+    name: str,
     event_name: str,
     operator_name: str,
-    properties: dict,
+    properties: dict[str, Any],
+    raw_values: bool = False,
 ) -> str:
-    """Modify properties on an existing tyFlow operator.
+    """Set operator properties on an existing tyFlow event/operator pair."""
+    if not properties:
+        return json.dumps({"error": "properties cannot be empty"})
 
-    Access operators via baseobject SubAnim path.  Operators with spaces
-    in their name (e.g. "PhysX Shape") are handled automatically.
-
-    Args:
-        tyflow_name: tyFlow object name.
-        event_name: Event name containing the operator.
-        operator_name: Operator name to modify.
-        properties: Property name to value pairs to set.
-    """
-    safe_tf = _safe_name(tyflow_name)
-    sa_evt = _sa_name(event_name)
-    sa_op = _sa_name(operator_name)
-    safe_op = _safe_name(operator_name)
-
-    lines: list[str] = [
-        f'local tfObj = getNodeByName "{safe_tf}"',
-        f'if tfObj == undefined then (',
-        f'    "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"',
-        ') else (',
-        f'    local opRef = undefined',
-        f'    try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()',
-        f'    if opRef == undefined then (',
-        f'        "{{\\\"error\\\":\\\"Operator not found: {safe_op} in event {_safe_name(event_name)}\\\"}}"',
-        '    ) else (',
-    ]
-
-    # Build property assignment lines
-    prop_names: list[str] = []
-    for prop_name, prop_val in properties.items():
-        lines.append(f'        try (opRef.{prop_name} = {_ms_value(prop_val)}) catch ()')
-        prop_names.append(prop_name)
-
-    props_json = ", ".join(f'\\"{p}\\"' for p in prop_names)
-    lines.append(f'        "{{\\\"success\\\":true,\\\"operator\\\":\\\"{safe_op}\\\",'
-                 f'\\\"propertiesSet\\\":[{props_json}]}}"')
-    lines.append('    )')
-    lines.append(')')
-
-    ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms).get("result", "")
-
-
-# ---------------------------------------------------------------------------
-# Tool 4: add_tyflow_event
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def add_tyflow_event(
-    tyflow_name: str,
-    event_name: str,
-    operators: list[dict] | None = None,
-) -> str:
-    """Add a new event with operators to an existing tyFlow.
-
-    Each operator dict should have:
-      - type (str): Operator type name (e.g. "Birth", "Speed").
-      - properties (dict, optional): Property name-value pairs.
-
-    Args:
-        tyflow_name: tyFlow object name.
-        event_name: Name for the new event.
-        operators: List of operator definitions to add.
-    """
-    safe_tf = _safe_name(tyflow_name)
-    safe_evt = _safe_name(event_name)
-    operators = operators or []
-
-    lines: list[str] = [
-        f'local tfObj = getNodeByName "{safe_tf}"',
-        f'if tfObj == undefined then (',
-        f'    "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"',
-        ') else (',
-        f'    local newEv = tfObj.addEvent()',
-        f'    newEv.setName "{safe_evt}"',
-    ]
-
-    op_names: list[str] = []
-    for op_idx, op in enumerate(operators):
-        op_type = _safe_name(op.get("type", ""))
-        var = f"op_{op_idx}_Op"
-        lines.append(f'    local {var} = newEv.addOperator "{op_type}" {op_idx + 1}')
-        props = op.get("properties", {})
-        for prop_name, prop_val in props.items():
-            lines.append(f'    {var}.{prop_name} = {_ms_value(prop_val)}')
-        op_names.append(op_type)
-
-    ops_json = ", ".join(f'\\"{o}\\"' for o in op_names)
-    lines.append(f'    "{{\\\"success\\\":true,\\\"event\\\":\\\"{safe_evt}\\\",'
-                 f'\\\"operatorCount\\\":{len(op_names)},\\\"operators\\\":[{ops_json}]}}"')
-    lines.append(')')
-
-    ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms).get("result", "")
-
-
-# ---------------------------------------------------------------------------
-# Tool 5: connect_tyflow_events
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def connect_tyflow_events(
-    tyflow_name: str,
-    source_event: str,
-    target_event: str,
-    operator_name: str = "Event",
-) -> str:
-    """Connect two tyFlow events via an Event/Send Out operator.
-
-    Wires an Event (or Send Out) operator in the source event to point
-    at the target event.  If the operator does not exist it will be
-    created automatically.
-
-    Args:
-        tyflow_name: tyFlow object name.
-        source_event: Source event name.
-        target_event: Target event name.
-        operator_name: Name of the routing operator (default "Event").
-                       Common values: "Event", "Send Out", "Spawn".
-    """
-    safe_tf = _safe_name(tyflow_name)
-    sa_src = _sa_name(source_event)
-    sa_op = _sa_name(operator_name)
-    sa_tgt = _sa_name(target_event)
-    safe_src = _safe_name(source_event)
-    safe_tgt = _safe_name(target_event)
-    safe_op = _safe_name(operator_name)
-
+    assignments, names = _assignment_lines(properties, "op", raw_strings=raw_values)
+    req = _mxs_string_array(names)
     maxscript = f"""(
-    local tfObj = getNodeByName "{safe_tf}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"
+{HELPERS}
+local flow = getNodeByName "{safe_string(name)}"
+if flow == undefined then (
+    "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
+) else (
+    local ev = findEventSubAnim flow "{safe_string(event_name)}"
+    if ev == undefined then (
+        "{{\\"error\\":\\"Event not found: {safe_string(event_name)}\\"}}"
     ) else (
-        local opRef = undefined
-        try (opRef = tfObj.baseobject[{sa_src}][{sa_op}]) catch ()
-        if opRef == undefined then (
-            "{{\\\"error\\\":\\\"Operator '{safe_op}' not found in event '{safe_src}'\\\"}}"
+        local op = findOperatorSubAnim ev "{safe_string(operator_name)}"
+        if op == undefined then (
+            "{{\\"error\\":\\"Operator not found: {safe_string(operator_name)}\\"}}"
         ) else (
-            local targetEv = undefined
-            try (targetEv = tfObj.baseobject[{sa_tgt}]) catch ()
-            if targetEv == undefined then (
-                "{{\\\"error\\\":\\\"Target event not found: {safe_tgt}\\\"}}"
-            ) else (
-                try (opRef.connect targetEv) catch ()
-                "{{\\\"success\\\":true,\\\"from\\\":\\\"{safe_src}\\\",\\\"operator\\\":\\\"{safe_op}\\\",\\\"to\\\":\\\"{safe_tgt}\\\"}}"
-            )
+            local applied = #()
+            local errors = #()
+            {assignments}
+            "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"event\\":\\"" + (esc "{safe_string(event_name)}") + "\\",\\"operator\\":\\"" + (esc "{safe_string(operator_name)}") + "\\",\\"requested\\":" + (jsonStringArray {req}) + ",\\"applied\\":" + (jsonStringArray applied) + ",\\"errors\\":" + (jsonStringArray errors) + "}}"
         )
     )
+)
 )"""
-    return client.send_command(maxscript).get("result", "")
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse modify_tyflow_operator response."}))
 
-
-# ---------------------------------------------------------------------------
-# Tool 6: remove_tyflow_element
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def remove_tyflow_element(
-    tyflow_name: str,
-    event_name: str,
-    operator_name: str | None = None,
-) -> str:
-    """Remove an event or operator from a tyFlow.
-
-    If operator_name is provided, only that operator is removed.
-    If operator_name is None, the entire event is removed.
-
-    Args:
-        tyflow_name: tyFlow object name.
-        event_name: Event name.
-        operator_name: Operator to remove (None = remove entire event).
-    """
-    safe_tf = _safe_name(tyflow_name)
-    sa_evt = _sa_name(event_name)
-    safe_evt = _safe_name(event_name)
-
-    if operator_name is not None:
-        sa_op = _sa_name(operator_name)
-        safe_op = _safe_name(operator_name)
-        maxscript = f"""(
-    local tfObj = getNodeByName "{safe_tf}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"
-    ) else (
-        local opRef = undefined
-        try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()
-        if opRef == undefined then (
-            "{{\\\"error\\\":\\\"Operator not found: {safe_op}\\\"}}"
-        ) else (
-            opRef.remove()
-            "{{\\\"success\\\":true,\\\"removed\\\":\\\"operator\\\",\\\"name\\\":\\\"{safe_op}\\\",\\\"event\\\":\\\"{safe_evt}\\\"}}"
-        )
-    )
-)"""
-    else:
-        maxscript = f"""(
-    local tfObj = getNodeByName "{safe_tf}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"
-    ) else (
-        local evRef = undefined
-        try (evRef = tfObj.baseobject[{sa_evt}]) catch ()
-        if evRef == undefined then (
-            "{{\\\"error\\\":\\\"Event not found: {safe_evt}\\\"}}"
-        ) else (
-            evRef.remove()
-            "{{\\\"success\\\":true,\\\"removed\\\":\\\"event\\\",\\\"name\\\":\\\"{safe_evt}\\\"}}"
-        )
-    )
-)"""
-    return client.send_command(maxscript).get("result", "")
-
-
-# ---------------------------------------------------------------------------
-# Tool 7: set_tyflow_shape
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
 def set_tyflow_shape(
-    tyflow_name: str,
-    event_name: str,
-    shape_type: str = "sphere",
+    name: str,
+    event_name: str = "Emit",
     operator_name: str = "Shape",
+    shape: str = "sphere",
     scale: float = 100.0,
-    scale_variation: float = 0.0,
     frequency: float = 100.0,
+    create_if_missing: bool = True,
 ) -> str:
-    """Configure a Shape operator on a tyFlow event.
+    """Set Shape operator with validated 3D shape IDs."""
+    key = shape.strip().lower()
+    if key not in SHAPE_3D_IDS:
+        return json.dumps({"error": f"Unknown shape '{shape}'"})
 
-    Uses the verified shape ID mapping and writes via _tab arrays
-    (the ONLY writable path -- single-item props are READ-ONLY).
-
-    Available 3D shapes: triangle, cone, quad/plane, cylinder, sphere,
-    pyramid, box/cube, octahedron, geosphere_low, geosphere/geosphere_med,
-    geosphere_high, icosahedron.
-
-    Args:
-        tyflow_name: tyFlow object name.
-        event_name: Event containing the Shape operator.
-        shape_type: Shape name (e.g. "sphere", "box", "cylinder").
-        operator_name: Shape operator name (default "Shape").
-        scale: Shape scale percentage (default 100).
-        scale_variation: Scale variation percentage (default 0).
-        frequency: Distribution frequency (default 100).
-    """
-    safe_tf = _safe_name(tyflow_name)
-    sa_evt = _sa_name(event_name)
-    sa_op = _sa_name(operator_name)
-
-    shape_id = SHAPE_3D_IDS.get(shape_type.lower(), SHAPE_3D_IDS.get("sphere", 4))
-    safe_shape = _safe_name(shape_type)
-
+    shape_id = SHAPE_3D_IDS[key]
     maxscript = f"""(
-    local tfObj = getNodeByName "{safe_tf}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"
+{HELPERS}
+local flow = getNodeByName "{safe_string(name)}"
+if flow == undefined then (
+    "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
+) else (
+    local ev = findEventSubAnim flow "{safe_string(event_name)}"
+    if ev == undefined then (
+        "{{\\"error\\":\\"Event not found: {safe_string(event_name)}\\"}}"
     ) else (
-        local shapeOp = undefined
-        try (shapeOp = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()
+        local shapeOp = findOperatorSubAnim ev "{safe_string(operator_name)}"
+        if shapeOp == undefined and {str(bool(create_if_missing)).lower()} then (
+            local evI = undefined
+            try (evI = ev.Event) catch ()
+            if evI != undefined then (
+                shapeOp = evI.addOperator "Shape" -1
+                try (shapeOp.Operator.setName "{safe_string(operator_name)}") catch ()
+            )
+        )
         if shapeOp == undefined then (
-            "{{\\\"error\\\":\\\"Shape operator not found\\\"}}"
+            "{{\\"error\\":\\"Shape operator not found\\"}}"
         ) else (
-            shapeOp.shape_type_tab = #(1)  -- sets shapeMode to 3D automatically
-            shapeOp.type_3d_ID_tab = #({shape_id})
-            shapeOp.frequency_tab = #({frequency:.4f})
-            shapeOp.scaleVal_tab = #({scale:.4f})
-            shapeOp.scaleVariation_tab = #({scale_variation:.4f})
-            "{{\\\"success\\\":true,\\\"shape\\\":\\\"{safe_shape}\\\",\\\"shapeId\\\":{shape_id},\\\"scale\\\":{scale:.1f}}}"
+            local applied = #()
+            local errors = #()
+            try (shapeOp.shape_type_tab = #(1); append applied "shape_type_tab") catch (append errors "shape_type_tab")
+            try (shapeOp.type_3d_ID_tab = #({shape_id}); append applied "type_3d_ID_tab") catch (append errors "type_3d_ID_tab")
+            try (shapeOp.frequency_tab = #({float(frequency)}); append applied "frequency_tab") catch (append errors "frequency_tab")
+            try (shapeOp.scaleVal_tab = #({float(scale)}); append applied "scaleVal_tab") catch (append errors "scaleVal_tab")
+            "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"shape\\":\\"{safe_string(key)}\\",\\"shapeId\\":{shape_id},\\"applied\\":" + (jsonStringArray applied) + ",\\"errors\\":" + (jsonStringArray errors) + "}}"
         )
     )
+)
 )"""
-    return client.send_command(maxscript).get("result", "")
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse set_tyflow_shape response."}))
 
-
-# ---------------------------------------------------------------------------
-# Tool 8: set_tyflow_physx
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
-def set_tyflow_physx(
-    tyflow_name: str,
-    gravity_enabled: bool | None = None,
-    gravity_value: float | None = None,
-    ground_collider: bool | None = None,
-    ground_collider_height: float | None = None,
-    ground_collider_restitution: float | None = None,
-    ground_collider_static_friction: float | None = None,
-    ground_collider_dynamic_friction: float | None = None,
-    substeps: int | None = None,
-    pos_iterations: int | None = None,
-    vel_iterations: int | None = None,
-    ccd: bool | None = None,
-    enhanced_determinism: bool | None = None,
+def connect_tyflow_events(
+    name: str,
+    from_event: str,
+    to_event: str,
+    send_out_operator_name: str = "Send Out",
+    create_if_missing: bool = True,
 ) -> str:
-    """Configure PhysX solver settings on a tyFlow object.
-
-    Only provided (non-None) parameters are changed -- omitted settings
-    are left at their current values.
-
-    Args:
-        tyflow_name: tyFlow object name.
-        gravity_enabled: Enable/disable PhysX gravity.
-        gravity_value: Gravity strength (negative = down, e.g. -980).
-        ground_collider: Enable built-in ground collider plane.
-        ground_collider_height: Ground plane Z height.
-        ground_collider_restitution: Ground bounce coefficient.
-        ground_collider_static_friction: Ground static friction.
-        ground_collider_dynamic_friction: Ground dynamic friction.
-        substeps: PhysX substeps per frame.
-        pos_iterations: Position solver iterations.
-        vel_iterations: Velocity solver iterations.
-        ccd: Enable continuous collision detection.
-        enhanced_determinism: Enable enhanced determinism mode.
-    """
-    safe_tf = _safe_name(tyflow_name)
-
-    # Map Python param -> MAXScript property
-    _prop_map: list[tuple[str, str, object]] = [
-        ("physXGravityEnabled", "bool", gravity_enabled),
-        ("physXGravityValue", "float", gravity_value),
-        ("physXGroundCollider", "bool", ground_collider),
-        ("physXGroundColliderHeight", "float", ground_collider_height),
-        ("physXGroundColliderRestitution", "float", ground_collider_restitution),
-        ("physXGroundColliderSFriction", "float", ground_collider_static_friction),
-        ("physXGroundColliderDFriction", "float", ground_collider_dynamic_friction),
-        ("physXSubsteps", "int", substeps),
-        ("physXPosIterations", "int", pos_iterations),
-        ("physXVelIterations", "int", vel_iterations),
-        ("physXCCD", "bool", ccd),
-        ("physXEnhancedDeterminism", "bool", enhanced_determinism),
-    ]
-
-    prop_lines: list[str] = []
-    set_names: list[str] = []
-    for ms_prop, _typ, val in _prop_map:
-        if val is None:
-            continue
-        prop_lines.append(f"        tf.{ms_prop} = {_ms_value(val)}")
-        set_names.append(ms_prop)
-
-    if not prop_lines:
-        prop_lines.append("        -- no properties to set")
-
-    props_json = ", ".join(f'\\"{p}\\"' for p in set_names)
-
+    """Connect events with Send Out by applying common destination property candidates."""
     maxscript = f"""(
-    local tfObj = getNodeByName "{safe_tf}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"
+{HELPERS}
+local flow = getNodeByName "{safe_string(name)}"
+if flow == undefined then (
+    "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
+) else (
+    local src = findEventSubAnim flow "{safe_string(from_event)}"
+    local dst = findEventSubAnim flow "{safe_string(to_event)}"
+    if src == undefined then (
+        "{{\\"error\\":\\"Source event not found: {safe_string(from_event)}\\"}}"
+    ) else if dst == undefined then (
+        "{{\\"error\\":\\"Destination event not found: {safe_string(to_event)}\\"}}"
     ) else (
-        local tf = tfObj.baseobject
-{chr(10).join(prop_lines)}
-        "{{\\\"success\\\":true,\\\"name\\\":\\\"" + tfObj.name + "\\\",\\\"propertiesSet\\\":[{props_json}]}}"
+        local sendOp = findOperatorSubAnim src "{safe_string(send_out_operator_name)}"
+        if sendOp == undefined and {str(bool(create_if_missing)).lower()} then (
+            local srcI = undefined
+            try (srcI = src.Event) catch ()
+            if srcI != undefined then (
+                sendOp = srcI.addOperator "Send Out" -1
+                try (sendOp.Operator.setName "{safe_string(send_out_operator_name)}") catch ()
+            )
+        )
+        if sendOp == undefined then (
+            "{{\\"error\\":\\"Send Out operator not found\\"}}"
+        ) else (
+            local applied = #()
+            local errors = #()
+            local props = #("eventName", "targetEvent", "nextEvent", "destinationEvent")
+            for pName in props do (
+                local pSym = execute ("#" + pName)
+                if isProperty sendOp pSym then (
+                    try (setProperty sendOp pSym "{safe_string(to_event)}"; append applied pName) catch (append errors ("Could not set " + pName))
+                )
+            )
+            "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"fromEvent\\":\\"{safe_string(from_event)}\\",\\"toEvent\\":\\"{safe_string(to_event)}\\",\\"operator\\":\\"{safe_string(send_out_operator_name)}\\",\\"applied\\":" + (jsonStringArray applied) + ",\\"errors\\":" + (jsonStringArray errors) + "}}"
+        )
     )
+)
 )"""
-    return client.send_command(maxscript).get("result", "")
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse connect_tyflow_events response."}))
 
-
-# ---------------------------------------------------------------------------
-# Tool 9: add_tyflow_collision
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
 def add_tyflow_collision(
-    tyflow_name: str,
+    name: str,
     event_name: str,
-    collision_objects: list[str],
-    operator_name: str = "PhysX Collision",
-    hull_mode: int = 3,
-    restitution: float = 0.3,
-    static_friction: float = 0.5,
-    dynamic_friction: float = 0.3,
+    collider_names: StrList,
+    operator_name: str = "Collision",
+    create_if_missing: bool = True,
 ) -> str:
-    """Add collision objects to a PhysX Collision operator on a tyFlow event.
-
-    If the operator does not exist it will report an error -- add a
-    "PhysX Collision" operator first via create_tyflow or add_tyflow_event.
-
-    Hull modes: 0=Sphere, 1=Box, 2=Convex Hull, 3=Mesh (default).
-
-    Args:
-        tyflow_name: tyFlow object name.
-        event_name: Event containing the PhysX Collision operator.
-        collision_objects: List of scene object names to use as colliders.
-        operator_name: Operator name (default "PhysX Collision").
-        hull_mode: Collision hull mode (0-3).
-        restitution: Bounce coefficient.
-        static_friction: Static friction.
-        dynamic_friction: Dynamic friction.
-    """
-    safe_tf = _safe_name(tyflow_name)
-    sa_evt = _sa_name(event_name)
-    sa_op = _sa_name(operator_name)
-    names_arr = _name_array(collision_objects)
-
+    """Add/configure Collision operator and wire collider node list."""
+    requested = _mxs_string_array(collider_names)
     maxscript = f"""(
-    local tfObj = getNodeByName "{safe_tf}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"
+{HELPERS}
+local flow = getNodeByName "{safe_string(name)}"
+local names = {requested}
+if flow == undefined then (
+    "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
+) else (
+    local ev = findEventSubAnim flow "{safe_string(event_name)}"
+    if ev == undefined then (
+        "{{\\"error\\":\\"Event not found: {safe_string(event_name)}\\"}}"
     ) else (
-        local collOp = undefined
-        try (collOp = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()
-        if collOp == undefined then (
-            "{{\\\"error\\\":\\\"PhysX Collision operator not found in event\\\"}}"
-        ) else (
-            local colliderNames = {names_arr}
-            local colliderNodes = #()
-            local missingNames = #()
-            for cName in colliderNames do (
-                local cNode = getNodeByName cName
-                if cNode != undefined then append colliderNodes cNode
-                else append missingNames cName
-            )
-            if missingNames.count > 0 then (
-                local missStr = ""
-                for i = 1 to missingNames.count do (
-                    if i > 1 do missStr += ","
-                    missStr += "\\\"" + missingNames[i] + "\\\""
-                )
-                "{{\\\"error\\\":\\\"Objects not found\\\",\\\"missing\\\":[" + missStr + "]}}"
-            ) else (
-                collOp.objectlist = colliderNodes
-                try (collOp.hullMode = {hull_mode}) catch ()
-                try (collOp.restitution = {restitution:.6f}) catch ()
-                try (collOp.staticFriction = {static_friction:.6f}) catch ()
-                try (collOp.dynamicFriction = {dynamic_friction:.6f}) catch ()
-                "{{\\\"success\\\":true,\\\"colliderCount\\\":" + (colliderNodes.count as string) + "}}"
+        local collOp = findOperatorSubAnim ev "{safe_string(operator_name)}"
+        if collOp == undefined and {str(bool(create_if_missing)).lower()} then (
+            local evI = undefined
+            try (evI = ev.Event) catch ()
+            if evI != undefined then (
+                collOp = evI.addOperator "Collision" -1
+                try (collOp.Operator.setName "{safe_string(operator_name)}") catch ()
             )
         )
+        if collOp == undefined then (
+            "{{\\"error\\":\\"Collision operator not found\\"}}"
+        ) else (
+            local nodes = #()
+            local missing = #()
+            for n in names do (
+                local node = getNodeByName n
+                if node == undefined then append missing n else append nodes node
+            )
+            local applied = #()
+            local errors = #()
+            local props = #("colliderList", "objectList", "objects", "nodes")
+            for pName in props do (
+                local pSym = execute ("#" + pName)
+                if isProperty collOp pSym then (
+                    try (setProperty collOp pSym nodes; append applied pName) catch (append errors ("Could not set " + pName))
+                )
+            )
+            "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"operator\\":\\"{safe_string(operator_name)}\\",\\"requested\\":" + (jsonStringArray names) + ",\\"missing\\":" + (jsonStringArray missing) + ",\\"applied\\":" + (jsonStringArray applied) + ",\\"errors\\":" + (jsonStringArray errors) + "}}"
+        )
     )
+)
+    )"""
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse add_tyflow_collision response."}))
+
+
+@mcp.tool()
+def set_tyflow_physx(
+    name: str,
+    enabled: bool = True,
+    gravity: float = -980.0,
+    substeps: int = 8,
+    pos_iterations: int = 4,
+    vel_iterations: int = 1,
+) -> str:
+    """Set object-level PhysX settings from tyFlow object properties."""
+    maxscript = f"""(
+{HELPERS}
+local flow = getNodeByName "{safe_string(name)}"
+if flow == undefined then (
+    "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
+) else (
+    local bo = flow.baseobject
+    local applied = #()
+    local errors = #()
+    fn setIf propName propValue = (
+        local pSym = execute ("#" + propName)
+        if isProperty bo pSym then (
+            try (setProperty bo pSym propValue; append applied propName) catch (append errors ("Could not set " + propName))
+        )
+    )
+    setIf "physXGravityEnabled" {str(bool(enabled)).lower()}
+    setIf "physXGravityValue" {float(gravity)}
+    setIf "physXSubsteps" {int(substeps)}
+    setIf "physXPosIterations" {int(pos_iterations)}
+    setIf "physXVelIterations" {int(vel_iterations)}
+    "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"applied\\":" + (jsonStringArray applied) + ",\\"errors\\":" + (jsonStringArray errors) + "}}"
+)
 )"""
-    return client.send_command(maxscript).get("result", "")
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse set_tyflow_physx response."}))
 
 
-# ---------------------------------------------------------------------------
-# Tool 10: get_tyflow_particles
-# ---------------------------------------------------------------------------
+@mcp.tool()
+def remove_tyflow_element(name: str, event_name: str, operator_name: str = "") -> str:
+    """Remove operator from an event, or remove event when operator_name is empty."""
+    maxscript = f"""(
+{HELPERS}
+local flow = getNodeByName "{safe_string(name)}"
+if flow == undefined then (
+    "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
+) else (
+    local ev = findEventSubAnim flow "{safe_string(event_name)}"
+    if ev == undefined then (
+        "{{\\"error\\":\\"Event not found: {safe_string(event_name)}\\"}}"
+    ) else (
+        if "{safe_string(operator_name)}" != "" then (
+            local op = findOperatorSubAnim ev "{safe_string(operator_name)}"
+            if op == undefined then (
+                "{{\\"error\\":\\"Operator not found: {safe_string(operator_name)}\\"}}"
+            ) else (
+                local ok = false
+                try (op.remove(); ok = true) catch ()
+                if ok then "{{\\"removed\\":\\"operator\\",\\"event\\":\\"{safe_string(event_name)}\\",\\"operator\\":\\"{safe_string(operator_name)}\\"}}" else "{{\\"error\\":\\"Could not remove operator\\"}}"
+            )
+        ) else (
+            local ok = false
+            try (ev.remove(); ok = true) catch ()
+            if ok then "{{\\"removed\\":\\"event\\",\\"event\\":\\"{safe_string(event_name)}\\"}}" else "{{\\"error\\":\\"Could not remove event\\"}}"
+        )
+    )
+)
+)"""
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse remove_tyflow_element response."}))
+
+
+@mcp.tool()
+def get_tyflow_particle_count(name: str, frame: int | None = None, update: bool = True) -> str:
+    """Return tyFlow particle count at current frame or supplied frame."""
+    frame_expr = "currentTime" if frame is None else f"{int(frame)}f"
+    maxscript = f"""(
+{HELPERS}
+local flow = getNodeByName "{safe_string(name)}"
+if flow == undefined then (
+    "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
+) else (
+    if {str(bool(update)).lower()} then (
+        sliderTime = {frame_expr}
+        try (flow.updateParticles {frame_expr}) catch ()
+    )
+    local n = 0
+    try (n = flow.numParticles()) catch ()
+    "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"particleCount\\":" + (n as string) + "}}"
+)
+)"""
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse get_tyflow_particle_count response."}))
+
 
 @mcp.tool()
 def get_tyflow_particles(
-    tyflow_name: str,
-    properties: list[str] | None = None,
-    max_particles: int = 100,
-    frame: int | None = None,
-) -> str:
-    """Get particle data from a tyFlow system.
-
-    Reads particle positions, velocities, ages, etc.  Limited to
-    max_particles entries to avoid huge JSON payloads.
-
-    Available properties: positions, velocities, ages, ids, scales, masses.
-
-    Args:
-        tyflow_name: tyFlow object name.
-        properties: List of data types to read (default: ["positions"]).
-        max_particles: Maximum particles to return (default 100, 0=all).
-        frame: Frame to sample (None = current time).
-    """
-    safe_tf = _safe_name(tyflow_name)
-    props = properties or ["positions"]
-
-    frame_line = ""
-    if frame is not None:
-        frame_line = f"sliderTime = {frame}f"
-
-    # Build data extraction blocks
-    data_blocks: list[str] = []
-    for prop in props:
-        p = prop.lower()
-        if p == "positions":
-            data_blocks.append("""
-            local allPos = tfObj.getAllParticlePositions()
-            json += ",\\\"positions\\\":["
-            for i = 1 to (amin limit allPos.count) do (
-                if i > 1 do json += ","
-                local pp = allPos[i]
-                json += "[" + (pp.x as string) + "," + (pp.y as string) + "," + (pp.z as string) + "]"
-            )
-            json += "]"
-""")
-        elif p == "velocities":
-            data_blocks.append("""
-            local allVel = tfObj.getAllParticleVelocities()
-            json += ",\\\"velocities\\\":["
-            for i = 1 to (amin limit allVel.count) do (
-                if i > 1 do json += ","
-                local vv = allVel[i]
-                json += "[" + (vv.x as string) + "," + (vv.y as string) + "," + (vv.z as string) + "]"
-            )
-            json += "]"
-""")
-        elif p == "ages":
-            data_blocks.append("""
-            local allAge = tfObj.getAllParticleAges()
-            json += ",\\\"ages\\\":["
-            for i = 1 to (amin limit allAge.count) do (
-                if i > 1 do json += ","
-                json += (allAge[i] as string)
-            )
-            json += "]"
-""")
-        elif p == "ids":
-            data_blocks.append("""
-            local allID = tfObj.getAllParticleIDs()
-            json += ",\\\"ids\\\":["
-            for i = 1 to (amin limit allID.count) do (
-                if i > 1 do json += ","
-                json += (allID[i] as string)
-            )
-            json += "]"
-""")
-        elif p == "scales":
-            data_blocks.append("""
-            local allScl = tfObj.getAllParticleScales()
-            json += ",\\\"scales\\\":["
-            for i = 1 to (amin limit allScl.count) do (
-                if i > 1 do json += ","
-                local ss = allScl[i]
-                json += "[" + (ss.x as string) + "," + (ss.y as string) + "," + (ss.z as string) + "]"
-            )
-            json += "]"
-""")
-        elif p == "masses":
-            data_blocks.append("""
-            local allMass = tfObj.getAllParticleMasses()
-            json += ",\\\"masses\\\":["
-            for i = 1 to (amin limit allMass.count) do (
-                if i > 1 do json += ","
-                json += (allMass[i] as string)
-            )
-            json += "]"
-""")
-
-    data_code = "".join(data_blocks)
-
-    maxscript = f"""(
-    local tfObj = getNodeByName "{safe_tf}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"
-    ) else (
-        {frame_line}
-        tfObj.updateParticles currentTime
-        local n = tfObj.numParticles()
-        local limit = if {max_particles} > 0 then {max_particles} else n
-
-        local json = "{{\\\"name\\\":\\\"" + tfObj.name + "\\\""
-        json += ",\\\"frame\\\":" + ((currentTime.frame as integer) as string)
-        json += ",\\\"particleCount\\\":" + (n as string)
-        json += ",\\\"returnedCount\\\":" + ((amin limit n) as string)
-{data_code}
-        json += "}}"
-        json
-    )
-)"""
-    return client.send_command(maxscript).get("result", "")
-
-
-# ---------------------------------------------------------------------------
-# Tool 11: get_tyflow_particle_count
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def get_tyflow_particle_count(
-    tyflow_name: str,
-    frame: int | None = None,
-) -> str:
-    """Quick particle count check on a tyFlow (no data serialization).
-
-    Args:
-        tyflow_name: tyFlow object name.
-        frame: Frame to sample (None = current time).
-    """
-    safe_tf = _safe_name(tyflow_name)
-
-    frame_line = ""
-    if frame is not None:
-        frame_line = f"sliderTime = {frame}f"
-
-    maxscript = f"""(
-    local tfObj = getNodeByName "{safe_tf}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"
-    ) else (
-        {frame_line}
-        tfObj.updateParticles currentTime
-        local n = tfObj.numParticles()
-        "{{\\\"name\\\":\\\"" + tfObj.name + "\\\",\\\"particleCount\\\":" + (n as string) + ",\\\"frame\\\":" + ((currentTime.frame as integer) as string) + "}}"
-    )
-)"""
-    return client.send_command(maxscript).get("result", "")
-
-
-# ---------------------------------------------------------------------------
-# Tool 12: reset_tyflow_simulation
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def reset_tyflow_simulation(
-    tyflow_name: str,
-) -> str:
-    """Reset the simulation cache on a tyFlow object.
-
-    This clears all cached particle data and resets the simulation
-    back to the start frame.
-
-    Args:
-        tyflow_name: tyFlow object name.
-    """
-    safe_tf = _safe_name(tyflow_name)
-
-    maxscript = f"""(
-    local tfObj = getNodeByName "{safe_tf}"
-    if tfObj == undefined then (
-        "{{\\\"error\\\":\\\"tyFlow not found: {safe_tf}\\\"}}"
-    ) else (
-        tfObj.reset_simulation()
-        "{{\\\"success\\\":true,\\\"name\\\":\\\"" + tfObj.name + "\\\"}}"
-    )
-)"""
-    return client.send_command(maxscript).get("result", "")
-
-
-# ---------------------------------------------------------------------------
-# Tool 13: create_tyflow_preset
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def create_tyflow_preset(
     name: str,
-    preset: str,
-    position: list[float] | None = None,
-    particle_count: int | None = None,
-    shape: str | None = None,
-    scale: float = 100.0,
-    speed: float | None = None,
-    lifetime_frames: int | None = None,
+    frame: int | None = None,
+    max_particles: int = 1000,
+    include_position: bool = True,
+    include_velocity: bool = True,
+    include_age: bool = True,
 ) -> str:
-    """Create a tyFlow with a preset particle effect configuration.
+    """Return particle data rows from tyFlow read-only APIs."""
+    if max_particles <= 0:
+        raise ValueError("max_particles must be > 0")
+    frame_expr = "currentTime" if frame is None else f"{int(frame)}f"
+    maxscript = f"""(
+{HELPERS}
+local flow = getNodeByName "{safe_string(name)}"
+if flow == undefined then (
+    "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
+) else (
+    sliderTime = {frame_expr}
+    try (flow.updateParticles {frame_expr}) catch ()
+    local total = 0
+    try (total = flow.numParticles()) catch ()
+    local takeCount = total
+    if takeCount > {int(max_particles)} do takeCount = {int(max_particles)}
+    local pos = #()
+    local vel = #()
+    local age = #()
+    if {str(bool(include_position)).lower()} then (try (pos = flow.getAllParticlePositions()) catch ())
+    if {str(bool(include_velocity)).lower()} then (try (vel = flow.getAllParticleVelocities()) catch ())
+    if {str(bool(include_age)).lower()} then (try (age = flow.getAllParticleAges()) catch ())
 
-    Presets: fountain, rain, explosion, snow, debris, confetti, sparks, smoke.
+    local rows = #()
+    for i = 1 to takeCount do (
+        local row = "{{\\"id\\":" + (i as string)
+        if {str(bool(include_position)).lower()} and pos.count >= i then (
+            local p = pos[i]
+            row += ",\\"position\\":[" + ((p.x) as string) + "," + ((p.y) as string) + "," + ((p.z) as string) + "]"
+        )
+        if {str(bool(include_velocity)).lower()} and vel.count >= i then (
+            local v = vel[i]
+            row += ",\\"velocity\\":[" + ((v.x) as string) + "," + ((v.y) as string) + "," + ((v.z) as string) + "]"
+        )
+        if {str(bool(include_age)).lower()} and age.count >= i then row += ",\\"age\\":" + ((age[i]) as string)
+        row += "}}"
+        append rows row
+    )
+    local payload = "["
+    for i = 1 to rows.count do (
+        if i > 1 do payload += ","
+        payload += rows[i]
+    )
+    payload += "]"
+    "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"total\\":" + (total as string) + ",\\"returned\\":" + (takeCount as string) + ",\\"particles\\":" + payload + "}}"
+)
+)"""
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse get_tyflow_particles response."}))
 
-    Each preset builds appropriate events, operators, and settings for the
-    named effect.  Override individual parameters to customize.
 
-    Args:
-        name: tyFlow object name.
-        preset: Preset name (fountain, rain, explosion, snow, debris,
-                confetti, sparks, smoke).
-        position: World position [x, y, z].
-        particle_count: Override default particle count.
-        shape: Override shape type (e.g. "sphere", "box").
-        scale: Shape scale percentage (default 100).
-        speed: Override speed magnitude.
-        lifetime_frames: Override particle lifetime in frames.
+@mcp.tool()
+def reset_tyflow_simulation(name: str = "") -> str:
+    """Reset simulation for one tyFlow object or for all tyFlow objects."""
+    maxscript = f"""(
+{HELPERS}
+local targets = #()
+if "{safe_string(name)}" != "" then (
+    local node = getNodeByName "{safe_string(name)}"
+    if node != undefined then append targets node
+) else (
+    for o in objects where ((classof o.baseobject as string) == "tyFlow" or (classof o as string) == "tyFlow") do append targets o
+)
+if targets.count == 0 then (
+    "{{\\"error\\":\\"No tyFlow objects found\\"}}"
+) else (
+    local resetNames = #()
+    for n in targets do (
+        try (n.reset_simulation(); append resetNames n.name) catch ()
+    )
+    "{{\\"count\\":" + (resetNames.count as string) + ",\\"names\\":" + (jsonStringArray resetNames) + "}}"
+)
+)"""
+    return json.dumps(_send_json(maxscript, {"error": "Could not parse reset_tyflow_simulation response."}))
+
+
+@mcp.tool()
+def set_tyflow_global_event(
+    tyflow_name: str,
+    event_name: str,
+    enabled: bool = True,
+    affect_mode: int = 0,
+    include_events: str | None = None,
+    exclude_events: str | None = None,
+) -> str:
+    """Mark a tyFlow event as global so its operators are auto-inserted into other events.
+
+    Adds or configures a Global operator in the specified event. Requires tyFlow 2.0+.
     """
-    pos = position or [0.0, 0.0, 0.0]
-    safe = _safe_name(name)
-    p = preset.lower()
+    sa_evt = _sa_name(event_name)
 
-    # Preset defaults
-    _defaults: dict[str, dict] = {
-        "fountain": {
-            "count": 1000, "birth_mode": 1, "birth_per_frame": 30.0,
-            "speed_mag": 500.0, "speed_var": 20.0, "speed_dir": 0, "speed_reverse": False,
-            "gravity": -1.0, "shape_id": SHAPE_3D_IDS.get("sphere", 4),
-            "shape_name": "sphere", "shape_scale": 20.0, "shape_scale_var": 10.0,
-            "has_spin": False, "has_kill_age": False, "kill_age": 100,
-        },
-        "rain": {
-            "count": 2000, "birth_mode": 1, "birth_per_frame": 50.0,
-            "speed_mag": 500.0, "speed_var": 10.0, "speed_dir": 0, "speed_reverse": True,
-            "gravity": -0.5, "shape_id": SHAPE_3D_IDS.get("quad", 2),
-            "shape_name": "quad", "shape_scale": 5.0, "shape_scale_var": 10.0,
-            "has_spin": False, "has_kill_age": True, "kill_age": 60,
-        },
-        "explosion": {
-            "count": 500, "birth_mode": 0, "birth_per_frame": 0.0,
-            "speed_mag": 800.0, "speed_var": 40.0, "speed_dir": 3, "speed_reverse": False,
-            "gravity": -1.0, "shape_id": SHAPE_3D_IDS.get("geosphere_low", 8),
-            "shape_name": "geosphere_low", "shape_scale": 30.0, "shape_scale_var": 50.0,
-            "has_spin": True, "has_kill_age": False, "kill_age": 100,
-        },
-        "snow": {
-            "count": 1000, "birth_mode": 1, "birth_per_frame": 20.0,
-            "speed_mag": 100.0, "speed_var": 30.0, "speed_dir": 0, "speed_reverse": True,
-            "gravity": -0.2, "shape_id": SHAPE_3D_IDS.get("quad", 2),
-            "shape_name": "quad", "shape_scale": 10.0, "shape_scale_var": 20.0,
-            "has_spin": True, "has_kill_age": True, "kill_age": 200,
-        },
-        "debris": {
-            "count": 200, "birth_mode": 0, "birth_per_frame": 0.0,
-            "speed_mag": 400.0, "speed_var": 50.0, "speed_dir": 3, "speed_reverse": False,
-            "gravity": -1.0, "shape_id": SHAPE_3D_IDS.get("cube", 6),
-            "shape_name": "cube", "shape_scale": 50.0, "shape_scale_var": 60.0,
-            "has_spin": True, "has_kill_age": False, "kill_age": 100,
-        },
-        "confetti": {
-            "count": 300, "birth_mode": 1, "birth_per_frame": 10.0,
-            "speed_mag": 100.0, "speed_var": 50.0, "speed_dir": 3, "speed_reverse": False,
-            "gravity": -0.3, "shape_id": SHAPE_3D_IDS.get("quad", 2),
-            "shape_name": "quad", "shape_scale": 15.0, "shape_scale_var": 30.0,
-            "has_spin": True, "has_kill_age": True, "kill_age": 150,
-        },
-        "sparks": {
-            "count": 500, "birth_mode": 0, "birth_per_frame": 0.0,
-            "speed_mag": 1200.0, "speed_var": 40.0, "speed_dir": 3, "speed_reverse": False,
-            "gravity": -1.5, "shape_id": SHAPE_3D_IDS.get("sphere", 4),
-            "shape_name": "sphere", "shape_scale": 3.0, "shape_scale_var": 20.0,
-            "has_spin": False, "has_kill_age": True, "kill_age": 30,
-        },
-        "smoke": {
-            "count": 200, "birth_mode": 1, "birth_per_frame": 5.0,
-            "speed_mag": 50.0, "speed_var": 30.0, "speed_dir": 0, "speed_reverse": False,
-            "gravity": 0.0, "shape_id": SHAPE_3D_IDS.get("sphere", 4),
-            "shape_name": "sphere", "shape_scale": 80.0, "shape_scale_var": 30.0,
-            "has_spin": True, "has_kill_age": True, "kill_age": 120,
-        },
-    }
-
-    if p not in _defaults:
-        available = ", ".join(sorted(_defaults.keys()))
-        return f'{{"error": "Unknown preset: {preset}. Available: {available}"}}'
-
-    d = _defaults[p]
-
-    # Apply user overrides
-    count = particle_count if particle_count is not None else d["count"]
-    spd = speed if speed is not None else d["speed_mag"]
-    lifetime = lifetime_frames if lifetime_frames is not None else d["kill_age"]
-
-    if shape:
-        shape_lower = shape.lower()
-        shape_id = SHAPE_3D_IDS.get(shape_lower, d["shape_id"])
-        shape_name = shape_lower
-    else:
-        shape_id = d["shape_id"]
-        shape_name = d["shape_name"]
-
-    shape_scale = scale if scale != 100.0 else d["shape_scale"]
-    shape_scale_var = d["shape_scale_var"]
-
-    # Build MAXScript
-    lines: list[str] = [
-        f'local tfObj = tyflow()',
-        f'tfObj.name = "{safe}"',
-        f'tfObj.pos = [{pos[0]}, {pos[1]}, {pos[2]}]',
-        '',
-        f'local ev1 = tfObj.addEvent()',
-        f'ev1.setName "{safe}_Event"',
-        '',
-    ]
-
-    op_idx = 1
-
-    # Birth operator
-    lines.append(f'local birth_Op = ev1.addOperator "Birth" {op_idx}')
-    op_idx += 1
-    if d["birth_mode"] == 0:
-        # Total mode (burst)
-        lines.append(f'birth_Op.birthMode = 0')
-        lines.append(f'birth_Op.birthTotal = {count}')
-        lines.append(f'birth_Op.birthStart = 0')
-        lines.append(f'birth_Op.birthEndEnable = true')
-        lines.append(f'birth_Op.birthEnd = 2')
-    else:
-        # Per-frame mode
-        per_frame = d["birth_per_frame"]
-        lines.append(f'birth_Op.birthMode = 1')
-        lines.append(f'birth_Op.birthPerFrame = {per_frame:.1f}')
-        lines.append(f'birth_Op.birthStart = 0')
-
-    # Speed operator
-    lines.append('')
-    lines.append(f'local speed_Op = ev1.addOperator "Speed" {op_idx}')
-    op_idx += 1
-    lines.append(f'speed_Op.magnitude = {spd:.1f}')
-    lines.append(f'speed_Op.magnitudeVariation = {d["speed_var"]:.1f}')
-    lines.append(f'speed_Op.directionMode = {d["speed_dir"]}')
-    if d.get("speed_reverse"):
-        lines.append('try (speed_Op.directionReverse = true) catch ()')
-
-    # Force operator (if gravity or noise)
-    if d["gravity"] != 0.0:
-        lines.append('')
-        lines.append(f'local force_Op = ev1.addOperator "Force" {op_idx}')
-        op_idx += 1
-        lines.append(f'force_Op.gravityStrength = {d["gravity"]:.2f}')
-        if p == "snow" or p == "confetti":
-            # Add some wind noise for snow and confetti
-            lines.append('try (force_Op.windStrength = 30.0) catch ()')
-        if p == "smoke":
-            lines.append('try (force_Op.windStrength = 20.0) catch ()')
-
-    # Spin operator (optional)
-    if d.get("has_spin"):
-        lines.append('')
-        lines.append(f'local spin_Op = ev1.addOperator "Spin" {op_idx}')
-        op_idx += 1
-        if p in ("confetti", "snow"):
-            lines.append('spin_Op.spinX = 50.0')
-            lines.append('spin_Op.spinY = 50.0')
-            lines.append('spin_Op.spinZ = 50.0')
-
-    # Kill Age operator (optional)
-    if d.get("has_kill_age"):
-        lines.append('')
-        lines.append(f'local killAge_Op = ev1.addOperator "Kill Age" {op_idx}')
-        op_idx += 1
-        lines.append(f'try (killAge_Op.age = {lifetime}) catch ()')
-        lines.append(f'try (killAge_Op.ageVariation = 20) catch ()')
-
-    # Shape operator
-    lines.append('')
-    lines.append(f'local shape_Op = ev1.addOperator "Shape" {op_idx}')
-    op_idx += 1
-    lines.append(f'shape_Op.shape_type_tab = #(1)')  # sets shapeMode to 3D automatically
-    lines.append(f'shape_Op.type_3d_ID_tab = #({shape_id})')
-    lines.append(f'shape_Op.frequency_tab = #(100.0)')
-    lines.append(f'shape_Op.scaleVal_tab = #({shape_scale:.1f})')
-    lines.append(f'shape_Op.scaleVariation_tab = #({shape_scale_var:.1f})')
-
-    # Display operator
-    lines.append('')
-    lines.append(f'local display_Op = ev1.addOperator "Display" {op_idx}')
-    op_idx += 1
-    lines.append('display_Op.displayMode = 2')
-
-    # PhysX for debris preset
-    if p == "debris":
-        lines.append('')
-        lines.append('tfObj.physXGravityEnabled = true')
-        lines.append('tfObj.physXGravityValue = -980.0')
-        lines.append('tfObj.physXGroundCollider = true')
-        lines.append('tfObj.physXGroundColliderHeight = 0.0')
-        lines.append('tfObj.physXSubsteps = 8')
-        lines.append('')
-        lines.append(f'local physxShape_Op = ev1.addOperator "PhysX Shape" {op_idx}')
-        op_idx += 1
-        lines.append('try (physxShape_Op.hullMode = 0) catch ()')
-        lines.append('try (physxShape_Op.restitution = 0.4) catch ()')
-
-    # Reset simulation
-    lines.append('')
-    lines.append('tfObj.reset_simulation()')
-
-    # JSON response
-    lines.append('')
-    lines.append(f'"{{\\\"name\\\":\\\"" + tfObj.name + "\\\",\\\"preset\\\":\\\"{p}\\\",'
-                 f'\\\"shape\\\":\\\"{shape_name}\\\",\\\"shapeId\\\":{shape_id}}}"')
+    lines: list[str] = []
+    lines.append(f'local tfObj = getNodeByName "{safe_string(tyflow_name)}"')
+    lines.append('if tfObj == undefined then (')
+    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"')
+    lines.append(') else (')
+    lines.append('  local evRef = undefined')
+    lines.append(f'  try (evRef = tfObj.baseobject[{sa_evt}]) catch ()')
+    lines.append('  if evRef == undefined then (')
+    lines.append(f'    "{{\\"error\\":\\"Event \\\\\\"{safe_string(event_name)}\\\\\\" not found\\"}}"')
+    lines.append('  ) else (')
+    lines.append('    local globalOp = undefined')
+    lines.append('    try (globalOp = evRef[#Global]) catch ()')
+    lines.append('    if globalOp == undefined do (')
+    lines.append('      try (globalOp = evRef.addOperator "Global" -1) catch ()')
+    lines.append('    )')
+    lines.append('    if globalOp == undefined then (')
+    lines.append('      "{\\"error\\":\\"Could not add Global operator. Requires tyFlow 2.0+.\\"}"')
+    lines.append('    ) else (')
+    lines.append(f'      try (globalOp.setEnabled {_mxs_value(enabled)}) catch ()')
+    lines.append(f'      try (globalOp.affectEvents = {affect_mode}) catch ()')
+    if include_events is not None:
+        lines.append(f'      try (globalOp.includeEventNames = "{safe_string(include_events)}") catch ()')
+    if exclude_events is not None:
+        lines.append(f'      try (globalOp.excludeEventNames = "{safe_string(exclude_events)}") catch ()')
+    lines.append(f'      "{{\\"success\\":true,\\"event\\":\\"{safe_string(event_name)}\\",\\"global\\":{_mxs_value(enabled)}}}"')
+    lines.append('    )')
+    lines.append('  )')
+    lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms).get("result", "")
+    return json.dumps(_send_json(ms, {"error": "Could not parse set_tyflow_global_event response."}))
+
+
+@mcp.tool()
+def export_tyflow_cache(
+    tyflow_name: str,
+    event_name: str = "Event_001",
+    operator_name: str = "Export Particles",
+    output_path: str | None = None,
+    create_tycache_object: bool = True,
+    only_if_not_created: bool = True,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
+) -> str:
+    """Export a tyFlow particle system to tyCache files.
+
+    Calls ``exportTyCache()`` on an Export Particles operator. Optionally
+    configures the output path, frame range, and whether a tyCache scene
+    object is created automatically. The export runs synchronously.
+    """
+    sa_evt = _sa_name(event_name)
+    sa_op = _sa_name(operator_name)
+
+    lines: list[str] = []
+    lines.append(f'local tfObj = getNodeByName "{safe_string(tyflow_name)}"')
+    lines.append('if tfObj == undefined then (')
+    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"')
+    lines.append(') else (')
+    lines.append('  local opRef = undefined')
+    lines.append(f'  try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()')
+    lines.append('  if opRef == undefined then (')
+    lines.append(f'    "{{\\"error\\":\\"Operator \\\\\\"{safe_string(operator_name)}\\\\\\" not found in event \\\\\\"{safe_string(event_name)}\\\\\\"\\"}}"')
+    lines.append('  ) else (')
+    lines.append('    try (opRef.exportMode = 2) catch ()  -- tyCache mode')
+    if output_path is not None:
+        lines.append(f'    try (opRef.tyCacheFilename = "{safe_string(output_path)}") catch ()')
+    lines.append(f'    try (opRef.tycacheCreateObject = {_mxs_value(create_tycache_object)}) catch ()')
+    lines.append(f'    try (opRef.tycacheCreateObjectIfNotCreated = {_mxs_value(only_if_not_created)}) catch ()')
+    if frame_start is not None:
+        lines.append(f'    try (opRef.frameStart = {int(frame_start)}) catch ()')
+    if frame_end is not None:
+        lines.append(f'    try (opRef.frameEnd = {int(frame_end)}) catch ()')
+    lines.append('    local exportResult = opRef.exportTyCache()')
+    lines.append('    local cachePath = try (opRef.tyCacheFilename) catch ("")')
+    lines.append(f'    "{{\\"success\\":true,\\"tyflow\\":\\"{safe_string(tyflow_name)}\\",\\"cachePath\\":\\"" + (substituteString cachePath "\\\\" "/") + "\\"}}"')
+    lines.append('  )')
+    lines.append(')')
+
+    ms = "(\n    " + "\n    ".join(lines) + "\n)"
+    return json.dumps(_send_json(ms, {"error": "Could not parse export_tyflow_cache response."}))
 
 
 # ---------------------------------------------------------------------------
-# Inferno operator list (VERIFIED 2026-03-22 via live introspection, tyFlow v2.003)
+# Inferno / preset tools (ported from local branch)
 # ---------------------------------------------------------------------------
 
 INFERNO_OPERATORS: list[str] = [
@@ -1194,136 +1062,6 @@ INFERNO_OPERATORS: list[str] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Tool 14: get_tyflow_volume_data
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def get_tyflow_volume_data(
-    tyflow_name: str,
-    positions: list[list[float]],
-    scalar_types: list[str] | None = None,
-    vector_types: list[str] | None = None,
-    temperature_units: str = "kelvin",
-) -> str:
-    """Sample scalar/vector data from a tyFlow Inferno fluid grid at world-space positions.
-
-    Requires tyFlow 2.0+ with an active Inferno simulation. Calls
-    updateVolumes() / releaseVolumes() to safely access GPU volume data.
-
-    Args:
-        tyflow_name: Name of the tyFlow object with Inferno simulation.
-        positions: List of [x, y, z] world-space sample points.
-        scalar_types: Scalars to sample -- any of "density", "fuel", "temperature".
-        vector_types: Vectors to sample -- any of "color", "velocity".
-        temperature_units: Unit for temperature values -- "celsius", "fahrenheit", or "kelvin".
-    """
-    safe = _safe_name(tyflow_name)
-    scalar_map = {"density": 0, "fuel": 1, "temperature": 2}
-    vector_map = {"color": 0, "velocity": 1}
-    temp_unit_map = {"celsius": 1, "fahrenheit": 2, "kelvin": 3}
-
-    scalars = scalar_types or []
-    vectors = vector_types or []
-    temp_unit = temp_unit_map.get(temperature_units, 3)
-
-    lines: list[str] = []
-    lines.append(f'local tfObj = getNodeByName "{safe}"')
-    lines.append('if tfObj == undefined then (')
-    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe}\\\\\\" not found\\"}}"')
-    lines.append(') else (')
-    lines.append('  tfObj.updateVolumes()')
-    lines.append('  local json = "{\\"samples\\":["')
-
-    for i, pos in enumerate(positions):
-        x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
-        lines.append(f'  local p{i} = [{x:.4f},{y:.4f},{z:.4f}]')
-        if i > 0:
-            lines.append('  json += ","')
-        lines.append(f'  json += "{{\\"pos\\":[{x:.4f},{y:.4f},{z:.4f}]"')
-
-        for stype in scalars:
-            sid = scalar_map.get(stype)
-            if sid is None:
-                continue
-            lines.append(f'  local s{i}_{stype} = try (tfObj.getVolumeScalar p{i} {sid}) catch (0.0)')
-            if stype == "temperature":
-                lines.append(f'  s{i}_{stype} = try (tfObj.convertVolumeTemperature s{i}_{stype} {temp_unit}) catch (s{i}_{stype})')
-            lines.append(f'  json += ",\\"{stype}\\":" + (s{i}_{stype} as string)')
-
-        for vtype in vectors:
-            vid = vector_map.get(vtype)
-            if vid is None:
-                continue
-            lines.append(f'  local v{i}_{vtype} = try (tfObj.getVolumeVector p{i} {vid}) catch ([0,0,0])')
-            lines.append(f'  json += ",\\"{vtype}\\":[" + (v{i}_{vtype}.x as string) + "," + (v{i}_{vtype}.y as string) + "," + (v{i}_{vtype}.z as string) + "]"')
-
-        lines.append('  json += "}"')
-
-    lines.append('  json += "]}"')
-    lines.append('  tfObj.releaseVolumes()')
-    lines.append('  json')
-    lines.append(')')
-
-    ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms).get("result", "")
-
-
-# ---------------------------------------------------------------------------
-# Tool 15: convert_tyflow_temperature
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def convert_tyflow_temperature(
-    tyflow_name: str,
-    temperature: float,
-    from_units: str,
-    to_units: str,
-) -> str:
-    """Convert a temperature value between units using tyFlow's built-in converter.
-
-    Uses the tyFlow volume API's convertVolumeTemperature function to ensure
-    consistency with Inferno simulation temperature values.
-
-    Args:
-        tyflow_name: Name of any tyFlow object (needed to access the API).
-        temperature: The temperature value to convert.
-        from_units: Source units -- "celsius", "fahrenheit", or "kelvin".
-        to_units: Target units -- "celsius", "fahrenheit", or "kelvin".
-    """
-    safe = _safe_name(tyflow_name)
-    unit_map = {"celsius": 1, "fahrenheit": 2, "kelvin": 3}
-    from_id = unit_map.get(from_units)
-    to_id = unit_map.get(to_units)
-    if from_id is None or to_id is None:
-        return '{"error":"Invalid units. Use celsius, fahrenheit, or kelvin."}'
-
-    ms = f"""(
-    local tfObj = getNodeByName "{safe}"
-    if tfObj == undefined then (
-        "{{\\"error\\":\\"tyFlow \\\\\\"{safe}\\\\\\" not found\\"}}"
-    ) else (
-        local normalized = try (tfObj.convertVolumeTemperature {temperature:.6f} {from_id}) catch (undefined)
-        if normalized == undefined then (
-            "{{\\"error\\":\\"convertVolumeTemperature failed -- is tyFlow 2.0+ installed?\\"}}"
-        ) else (
-            local result = try (tfObj.convertVolumeTemperature normalized {to_id}) catch (undefined)
-            if result == undefined then (
-                "{{\\"error\\":\\"Temperature conversion failed\\"}}"
-            ) else (
-                "{{\\"from_value\\":" + ({temperature:.6f} as string) + ",\\"from_units\\":\\"{from_units}\\",\\"to_value\\":" + (result as string) + ",\\"to_units\\":\\"{to_units}\\"}}"
-            )
-        )
-    )
-)"""
-    return client.send_command(ms).get("result", "")
-
-
-# ---------------------------------------------------------------------------
-# Tool 16: create_tyflow_inferno
-# ---------------------------------------------------------------------------
-
-# Inferno preset defaults
 _INFERNO_PRESETS: dict[str, dict] = {
     "fire": {
         "voxelSize": 2.0,
@@ -1387,11 +1125,172 @@ _INFERNO_PRESETS: dict[str, dict] = {
 
 
 @mcp.tool()
+def create_tyflow_preset(
+    preset: str,
+    name: str = "",
+    position: FloatList | None = None,
+    particle_count: int | None = None,
+    shape: str | None = None,
+    scale: float = 100.0,
+    speed: float | None = None,
+    lifetime_frames: int | None = None,
+) -> str:
+    """Create a tyFlow with a preset particle effect configuration.
+
+    Presets: fountain, rain, explosion, snow, debris, confetti, sparks, smoke.
+    Each preset builds appropriate events, operators, and settings for the
+    named effect. Override individual parameters to customize.
+    """
+    pos = position or [0.0, 0.0, 0.0]
+    actual_name = name or f"ty_{preset.lower()}"
+    safe = safe_string(actual_name)
+    p = preset.lower()
+
+    _defaults: dict[str, dict] = {
+        "fountain": {
+            "count": 1000, "birth_mode": 1, "birth_per_frame": 30.0,
+            "speed_mag": 500.0, "speed_var": 20.0, "speed_dir": 0, "speed_reverse": False,
+            "gravity": -1.0, "shape_id": SHAPE_3D_IDS.get("sphere", 4),
+            "shape_name": "sphere", "shape_scale": 20.0, "shape_scale_var": 10.0,
+            "has_spin": False, "has_kill_age": False, "kill_age": 100,
+        },
+        "rain": {
+            "count": 2000, "birth_mode": 1, "birth_per_frame": 50.0,
+            "speed_mag": 500.0, "speed_var": 10.0, "speed_dir": 0, "speed_reverse": True,
+            "gravity": -0.5, "shape_id": SHAPE_3D_IDS.get("quad", 2),
+            "shape_name": "quad", "shape_scale": 5.0, "shape_scale_var": 10.0,
+            "has_spin": False, "has_kill_age": True, "kill_age": 60,
+        },
+        "explosion": {
+            "count": 500, "birth_mode": 0, "birth_per_frame": 0.0,
+            "speed_mag": 800.0, "speed_var": 40.0, "speed_dir": 3, "speed_reverse": False,
+            "gravity": -1.0, "shape_id": SHAPE_3D_IDS.get("geosphere_low", 8),
+            "shape_name": "geosphere_low", "shape_scale": 30.0, "shape_scale_var": 50.0,
+            "has_spin": True, "has_kill_age": False, "kill_age": 100,
+        },
+        "snow": {
+            "count": 1000, "birth_mode": 1, "birth_per_frame": 20.0,
+            "speed_mag": 100.0, "speed_var": 30.0, "speed_dir": 0, "speed_reverse": True,
+            "gravity": -0.2, "shape_id": SHAPE_3D_IDS.get("quad", 2),
+            "shape_name": "quad", "shape_scale": 10.0, "shape_scale_var": 20.0,
+            "has_spin": True, "has_kill_age": True, "kill_age": 200,
+        },
+        "debris": {
+            "count": 200, "birth_mode": 0, "birth_per_frame": 0.0,
+            "speed_mag": 400.0, "speed_var": 50.0, "speed_dir": 3, "speed_reverse": False,
+            "gravity": -1.0, "shape_id": SHAPE_3D_IDS.get("cube", 6),
+            "shape_name": "cube", "shape_scale": 50.0, "shape_scale_var": 60.0,
+            "has_spin": True, "has_kill_age": False, "kill_age": 100,
+        },
+        "confetti": {
+            "count": 300, "birth_mode": 1, "birth_per_frame": 10.0,
+            "speed_mag": 100.0, "speed_var": 50.0, "speed_dir": 3, "speed_reverse": False,
+            "gravity": -0.3, "shape_id": SHAPE_3D_IDS.get("quad", 2),
+            "shape_name": "quad", "shape_scale": 15.0, "shape_scale_var": 30.0,
+            "has_spin": True, "has_kill_age": True, "kill_age": 150,
+        },
+        "sparks": {
+            "count": 500, "birth_mode": 0, "birth_per_frame": 0.0,
+            "speed_mag": 1200.0, "speed_var": 40.0, "speed_dir": 3, "speed_reverse": False,
+            "gravity": -1.5, "shape_id": SHAPE_3D_IDS.get("sphere", 4),
+            "shape_name": "sphere", "shape_scale": 3.0, "shape_scale_var": 20.0,
+            "has_spin": False, "has_kill_age": True, "kill_age": 30,
+        },
+        "smoke": {
+            "count": 200, "birth_mode": 1, "birth_per_frame": 5.0,
+            "speed_mag": 50.0, "speed_var": 30.0, "speed_dir": 0, "speed_reverse": False,
+            "gravity": 0.0, "shape_id": SHAPE_3D_IDS.get("sphere", 4),
+            "shape_name": "sphere", "shape_scale": 80.0, "shape_scale_var": 30.0,
+            "has_spin": True, "has_kill_age": True, "kill_age": 120,
+        },
+    }
+
+    if p not in _defaults:
+        available = ", ".join(sorted(_defaults.keys()))
+        return json.dumps({"error": f"Unknown preset: {preset}. Available: {available}"})
+
+    d = _defaults[p]
+    count = particle_count if particle_count is not None else d["count"]
+    spd = speed if speed is not None else d["speed_mag"]
+    lifetime = lifetime_frames if lifetime_frames is not None else d["kill_age"]
+
+    if shape:
+        shape_lower = shape.lower()
+        shape_id = SHAPE_3D_IDS.get(shape_lower, d["shape_id"])
+    else:
+        shape_id = d["shape_id"]
+
+    shape_scale = scale if scale != 100.0 else d["shape_scale"]
+    shape_scale_var = d["shape_scale_var"]
+
+    # Build operator list and delegate to create_tyflow
+    ops: list[dict] = []
+    op_pos = 0
+
+    # Birth
+    birth_props: dict[str, object] = {"birthStart": 0}
+    if d["birth_mode"] == 0:
+        birth_props.update({"birthMode": 0, "birthTotal": count, "birthEndEnable": True, "birthEnd": 2})
+    else:
+        birth_props.update({"birthMode": 1, "birthPerFrame": d["birth_per_frame"]})
+    ops.append({"type": "Birth", "name": "Birth", "position": op_pos, "properties": birth_props})
+    op_pos += 1
+
+    # Speed
+    speed_props: dict[str, object] = {
+        "magnitude": spd, "magnitudeVariation": d["speed_var"], "directionMode": d["speed_dir"],
+    }
+    if d.get("speed_reverse"):
+        speed_props["directionReverse"] = True
+    ops.append({"type": "Speed", "name": "Speed", "position": op_pos, "properties": speed_props})
+    op_pos += 1
+
+    # Force (optional)
+    if d["gravity"] != 0.0:
+        force_props: dict[str, object] = {"gravityStrength": d["gravity"]}
+        if p in ("snow", "confetti"):
+            force_props["windStrength"] = 30.0
+        if p == "smoke":
+            force_props["windStrength"] = 20.0
+        ops.append({"type": "Force", "name": "Force", "position": op_pos, "properties": force_props})
+        op_pos += 1
+
+    # Spin (optional)
+    if d.get("has_spin"):
+        spin_props: dict[str, object] = {}
+        if p in ("confetti", "snow"):
+            spin_props = {"spinX": 50.0, "spinY": 50.0, "spinZ": 50.0}
+        ops.append({"type": "Spin", "name": "Spin", "position": op_pos, "properties": spin_props})
+        op_pos += 1
+
+    # Kill Age (optional)
+    if d.get("has_kill_age"):
+        ops.append({"type": "Kill Age", "name": "Kill Age", "position": op_pos, "properties": {"age": lifetime, "ageVariation": 20}})
+        op_pos += 1
+
+    # Shape
+    ops.append({
+        "type": "Shape", "name": "Shape", "position": op_pos,
+        "properties": {
+            "shape_type_tab": [1], "type_3d_ID_tab": [shape_id],
+            "frequency_tab": [100.0], "scaleVal_tab": [shape_scale], "scaleVariation_tab": [shape_scale_var],
+        },
+    })
+    op_pos += 1
+
+    # Display
+    ops.append({"type": "Display", "name": "Display", "position": op_pos, "properties": {"displayMode": 2}})
+    op_pos += 1
+
+    return create_tyflow(name=actual_name, position=pos, operators=ops)
+
+
+@mcp.tool()
 def create_tyflow_inferno(
     name: str = "tyInferno001",
     preset: str | None = None,
-    position: list[float] | None = None,
-    emitter_objects: list[str] | None = None,
+    position: FloatList | None = None,
+    emitter_objects: StrList | None = None,
     voxel_size: float = 2.0,
     temperature: float = 1500.0,
     buoyancy: float = 1.0,
@@ -1399,7 +1298,7 @@ def create_tyflow_inferno(
     dissipation: float = 0.02,
     vorticity: float = 0.5,
     enable_collision: bool = False,
-    collision_objects: list[str] | None = None,
+    collision_objects: StrList | None = None,
     enable_ground: bool = False,
     ground_height: float = 0.0,
     enable_export: bool = False,
@@ -1411,29 +1310,8 @@ def create_tyflow_inferno(
 
     Builds a complete Inferno event with Birth Inferno, Emitter, Bounds,
     Display, and optional Collider/Export operators. Requires tyFlow 2.0+.
-
-    Args:
-        name: Name for the new tyFlow object.
-        preset: Optional preset -- "fire", "smoke", "explosion_smoke", or "campfire".
-            Overrides voxel_size/temperature/buoyancy/cooling/dissipation/vorticity defaults.
-        position: World position [x, y, z] for the tyFlow icon.
-        emitter_objects: Scene object names to use as emission sources.
-        voxel_size: Simulation voxel size (smaller = more detail, more VRAM).
-        temperature: Emission temperature in kelvin.
-        buoyancy: Temperature buoyancy strength.
-        cooling: Temperature cooling rate.
-        dissipation: Density dissipation rate.
-        vorticity: Vorticity confinement strength.
-        enable_collision: Add an Inferno Collider operator.
-        collision_objects: Scene objects for collision.
-        enable_ground: Add built-in ground plane collider.
-        ground_height: Ground plane height.
-        enable_export: Add an Export Inferno operator.
-        export_path: VDB export output path.
-        reset_simulation: Reset simulation after creation.
-        open_editor: Open the tyFlow editor window.
     """
-    safe = _safe_name(name)
+    safe = safe_string(name)
 
     # Apply preset defaults
     if preset and preset in _INFERNO_PRESETS:
@@ -1446,7 +1324,7 @@ def create_tyflow_inferno(
         vorticity = p.get("vorticity", vorticity)
 
     lines: list[str] = []
-    lines.append(f'local tfObj = tyflow()')
+    lines.append('local tfObj = tyflow()')
     lines.append(f'tfObj.name = "{safe}"')
 
     if position:
@@ -1500,7 +1378,7 @@ def create_tyflow_inferno(
 
     # Assign emitter objects
     if emitter_objects:
-        obj_refs = " ".join(f'(getNodeByName "{_safe_name(o)}")' for o in emitter_objects)
+        obj_refs = " ".join(f'(getNodeByName "{safe_string(o)}")' for o in emitter_objects)
         lines.append(f'  try (emitterOp.objectList = #({obj_refs})) catch ()')
 
     # Inferno Bounds
@@ -1518,7 +1396,7 @@ def create_tyflow_inferno(
         lines.append('  local colliderOp = ev1.addOperator "Inferno Collider" opIdx')
         lines.append('  opIdx += 1')
         if collision_objects:
-            obj_refs = " ".join(f'(getNodeByName "{_safe_name(o)}")' for o in collision_objects)
+            obj_refs = " ".join(f'(getNodeByName "{safe_string(o)}")' for o in collision_objects)
             lines.append(f'  try (colliderOp.objectList = #({obj_refs})) catch ()')
         if enable_ground:
             lines.append('  try (colliderOp.builtinGround = true) catch ()')
@@ -1529,8 +1407,7 @@ def create_tyflow_inferno(
         lines.append('  local exportOp = ev1.addOperator "Export Inferno" opIdx')
         lines.append('  opIdx += 1')
         if export_path:
-            safe_path = _safe_name(export_path)
-            lines.append(f'  try (exportOp.filenameSolver = "{safe_path}") catch ()')
+            lines.append(f'  try (exportOp.filenameSolver = "{safe_string(export_path)}") catch ()')
         lines.append('  try (exportOp.gridDensity = true) catch ()')
         lines.append('  try (exportOp.gridTemperature = true) catch ()')
         lines.append('  try (exportOp.gridVelocity = true) catch ()')
@@ -1555,12 +1432,8 @@ def create_tyflow_inferno(
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms).get("result", "")
+    return json.dumps(_send_json(ms, {"error": "Could not parse create_tyflow_inferno response."}))
 
-
-# ---------------------------------------------------------------------------
-# Tool 17: set_tyflow_inferno_display
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
 def set_tyflow_inferno_display(
@@ -1588,30 +1461,7 @@ def set_tyflow_inferno_display(
     """Configure an Inferno Display operator's viewport ray marching settings.
 
     Only specified (non-None) parameters are applied. Requires tyFlow 2.0+.
-
-    Args:
-        tyflow_name: Name of the tyFlow object.
-        event_name: Name of the event containing the display operator.
-        operator_name: Name of the display operator (default "Inferno Display").
-        show_smoke: Show smoke volume.
-        show_fire: Show fire volume.
-        smoke_opacity: Smoke opacity multiplier.
-        fire_color_intensity: Fire color intensity.
-        fire_opacity_intensity: Fire opacity intensity.
-        overall_opacity: Overall opacity multiplier.
-        temperature_blur: Temperature blur amount.
-        ao_strength: Ambient occlusion strength.
-        ao_distance: Ambient occlusion distance.
-        shadow_strength: Shadow strength.
-        light_intensity: Light intensity.
-        ambient_strength: Ambient light strength.
-        glow_enable: Enable heat glow effect.
-        glow_intensity: Glow intensity.
-        glow_scale: Glow scale.
-        motion_blur: Enable motion blur.
-        camera_step_size: Ray march step size.
     """
-    safe = _safe_name(tyflow_name)
     sa_evt = _sa_name(event_name)
     sa_op = _sa_name(operator_name)
 
@@ -1637,34 +1487,30 @@ def set_tyflow_inferno_display(
     }
     set_props = {k: v for k, v in props.items() if v is not None}
     if not set_props:
-        return '{"error":"No properties specified to change."}'
+        return json.dumps({"error": "No properties specified to change."})
 
     for prop_name, prop_val in set_props.items():
-        prop_lines.append(f'  try (opRef.{prop_name} = {_ms_value(prop_val)}) catch ()')
+        prop_lines.append(f'  try (opRef.{prop_name} = {_mxs_value(prop_val)}) catch ()')
 
     modified_json = ", ".join(f'\\"{k}\\"' for k in set_props)
 
     ms = f"""(
-    local tfObj = getNodeByName "{safe}"
+    local tfObj = getNodeByName "{safe_string(tyflow_name)}"
     if tfObj == undefined then (
-        "{{\\"error\\":\\"tyFlow \\\\\\"{safe}\\\\\\" not found\\"}}"
+        "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"
     ) else (
         local opRef = undefined
         try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()
         if opRef == undefined then (
-            "{{\\"error\\":\\"Operator \\\\\\"{operator_name}\\\\\\" not found in event \\\\\\"{event_name}\\\\\\"\\"}}"
+            "{{\\"error\\":\\"Operator \\\\\\"{safe_string(operator_name)}\\\\\\" not found in event \\\\\\"{safe_string(event_name)}\\\\\\"\\"}}"
         ) else (
 {chr(10).join(prop_lines)}
             "{{\\"success\\":true,\\"modified\\":[{modified_json}]}}"
         )
     )
 )"""
-    return client.send_command(ms).get("result", "")
+    return json.dumps(_send_json(ms, {"error": "Could not parse set_tyflow_inferno_display response."}))
 
-
-# ---------------------------------------------------------------------------
-# Tool 18: export_tyflow_inferno_vdb
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
 def export_tyflow_inferno_vdb(
@@ -1688,187 +1534,138 @@ def export_tyflow_inferno_vdb(
     Sets the export path, channel selection, and frame range on an existing
     Export Inferno operator. Does NOT trigger the export -- use the tyFlow
     editor or simulate to generate output.
-
-    Args:
-        tyflow_name: Name of the tyFlow object.
-        event_name: Name of the event containing the export operator.
-        output_path: VDB output file path (use .vdb extension).
-        operator_name: Name of the export operator (default "Export Inferno").
-        export_density: Export density channel.
-        export_temperature: Export temperature channel.
-        export_velocity: Export velocity channel.
-        export_color: Export color channel.
-        export_fuel: Export fuel channel.
-        velocity_mask_with_density: Mask velocity with density (reduces file size).
-        temperature_units_enabled: Write temperature in real units.
-        temperature_units: Temperature unit -- 1=Celsius, 2=Fahrenheit, 3=Kelvin.
-        frame_start: Export start frame (None = don't change).
-        frame_end: Export end frame (None = don't change).
     """
-    safe = _safe_name(tyflow_name)
-    safe_path = _safe_name(output_path)
     sa_evt = _sa_name(event_name)
     sa_op = _sa_name(operator_name)
 
     lines: list[str] = []
-    lines.append(f'local tfObj = getNodeByName "{safe}"')
+    lines.append(f'local tfObj = getNodeByName "{safe_string(tyflow_name)}"')
     lines.append('if tfObj == undefined then (')
-    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe}\\\\\\" not found\\"}}"')
+    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"')
     lines.append(') else (')
-    lines.append(f'  local opRef = undefined')
+    lines.append('  local opRef = undefined')
     lines.append(f'  try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()')
     lines.append('  if opRef == undefined then (')
-    lines.append(f'    "{{\\"error\\":\\"Operator \\\\\\"{operator_name}\\\\\\" not found in event \\\\\\"{event_name}\\\\\\"\\"}}"')
+    lines.append(f'    "{{\\"error\\":\\"Operator \\\\\\"{safe_string(operator_name)}\\\\\\" not found in event \\\\\\"{safe_string(event_name)}\\\\\\"\\"}}"')
     lines.append('  ) else (')
-    lines.append(f'    try (opRef.filenameSolver = "{safe_path}") catch ()')
-    lines.append(f'    try (opRef.gridDensity = {_ms_value(export_density)}) catch ()')
-    lines.append(f'    try (opRef.gridTemperature = {_ms_value(export_temperature)}) catch ()')
-    lines.append(f'    try (opRef.gridVelocity = {_ms_value(export_velocity)}) catch ()')
-    lines.append(f'    try (opRef.gridColor = {_ms_value(export_color)}) catch ()')
-    lines.append(f'    try (opRef.gridFuel = {_ms_value(export_fuel)}) catch ()')
-    lines.append(f'    try (opRef.gridVelocityMaskWithDensity = {_ms_value(velocity_mask_with_density)}) catch ()')
-    lines.append(f'    try (opRef.gridTemperatureUnitsEnabled = {_ms_value(temperature_units_enabled)}) catch ()')
+    lines.append(f'    try (opRef.filenameSolver = "{safe_string(output_path)}") catch ()')
+    lines.append(f'    try (opRef.gridDensity = {_mxs_value(export_density)}) catch ()')
+    lines.append(f'    try (opRef.gridTemperature = {_mxs_value(export_temperature)}) catch ()')
+    lines.append(f'    try (opRef.gridVelocity = {_mxs_value(export_velocity)}) catch ()')
+    lines.append(f'    try (opRef.gridColor = {_mxs_value(export_color)}) catch ()')
+    lines.append(f'    try (opRef.gridFuel = {_mxs_value(export_fuel)}) catch ()')
+    lines.append(f'    try (opRef.gridVelocityMaskWithDensity = {_mxs_value(velocity_mask_with_density)}) catch ()')
+    lines.append(f'    try (opRef.gridTemperatureUnitsEnabled = {_mxs_value(temperature_units_enabled)}) catch ()')
     lines.append(f'    try (opRef.gridTemperatureUnits = {temperature_units}) catch ()')
     if frame_start is not None:
         lines.append(f'    try (opRef.frameStart = {int(frame_start)}) catch ()')
     if frame_end is not None:
         lines.append(f'    try (opRef.frameEnd = {int(frame_end)}) catch ()')
-    lines.append(f'    "{{\\"success\\":true,\\"path\\":\\"{safe_path}\\",\\"channels\\":[\\"density\\",\\"temperature\\",\\"velocity\\"]}}"')
+    lines.append(f'    "{{\\"success\\":true,\\"path\\":\\"{safe_string(output_path)}\\",\\"channels\\":[\\"density\\",\\"temperature\\",\\"velocity\\"]}}"')
     lines.append('  )')
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms).get("result", "")
+    return json.dumps(_send_json(ms, {"error": "Could not parse export_tyflow_inferno_vdb response."}))
 
-
-# ---------------------------------------------------------------------------
-# Tool 19: set_tyflow_global_event
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
-def set_tyflow_global_event(
+def get_tyflow_volume_data(
     tyflow_name: str,
-    event_name: str,
-    enabled: bool = True,
-    affect_mode: int = 0,
-    include_events: str | None = None,
-    exclude_events: str | None = None,
+    positions: list[list[float]],
+    scalar_types: StrList | None = None,
+    vector_types: StrList | None = None,
+    temperature_units: str = "kelvin",
 ) -> str:
-    """Mark a tyFlow event as global so its operators are auto-inserted into other events.
+    """Sample scalar/vector data from a tyFlow Inferno fluid grid at world-space positions.
 
-    Adds or configures a Global operator in the specified event. Requires tyFlow 2.0+.
-
-    Args:
-        tyflow_name: Name of the tyFlow object.
-        event_name: Name of the event to make global.
-        enabled: Enable/disable the Global operator.
-        affect_mode: 0 = affect all events, 1 = include list, 2 = exclude list.
-        include_events: Comma-separated event names to include (when affect_mode=1).
-        exclude_events: Comma-separated event names to exclude (when affect_mode=2).
+    Requires tyFlow 2.0+ with an active Inferno simulation. Calls
+    updateVolumes() / releaseVolumes() to safely access GPU volume data.
     """
-    safe = _safe_name(tyflow_name)
-    sa_evt = _sa_name(event_name)
+    scalar_map = {"density": 0, "fuel": 1, "temperature": 2}
+    vector_map = {"color": 0, "velocity": 1}
+    temp_unit_map = {"celsius": 1, "fahrenheit": 2, "kelvin": 3}
+
+    scalars = scalar_types or []
+    vectors = vector_types or []
+    temp_unit = temp_unit_map.get(temperature_units, 3)
 
     lines: list[str] = []
-    lines.append(f'local tfObj = getNodeByName "{safe}"')
+    lines.append(f'local tfObj = getNodeByName "{safe_string(tyflow_name)}"')
     lines.append('if tfObj == undefined then (')
-    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe}\\\\\\" not found\\"}}"')
+    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"')
     lines.append(') else (')
-    lines.append(f'  local evRef = undefined')
-    lines.append(f'  try (evRef = tfObj.baseobject[{sa_evt}]) catch ()')
-    lines.append('  if evRef == undefined then (')
-    lines.append(f'    "{{\\"error\\":\\"Event \\\\\\"{event_name}\\\\\\" not found\\"}}"')
-    lines.append('  ) else (')
-    # Check if Global operator already exists
-    lines.append(f'    local globalOp = undefined')
-    lines.append(f'    try (globalOp = evRef[#Global]) catch ()')
-    lines.append(f'    if globalOp == undefined do (')
-    lines.append(f'      try (globalOp = evRef.addOperator "Global" -1) catch ()')
-    lines.append(f'    )')
-    lines.append(f'    if globalOp == undefined then (')
-    lines.append(f'      "{{\\"error\\":\\"Could not add Global operator. Requires tyFlow 2.0+.\\"}}"')
-    lines.append(f'    ) else (')
-    lines.append(f'      try (globalOp.setEnabled {_ms_value(enabled)}) catch ()')
-    lines.append(f'      try (globalOp.affectEvents = {affect_mode}) catch ()')
-    if include_events is not None:
-        lines.append(f'      try (globalOp.includeEventNames = "{_safe_name(include_events)}") catch ()')
-    if exclude_events is not None:
-        lines.append(f'      try (globalOp.excludeEventNames = "{_safe_name(exclude_events)}") catch ()')
-    lines.append(f'      "{{\\"success\\":true,\\"event\\":\\"{event_name}\\",\\"global\\":{_ms_value(enabled)}}}"')
-    lines.append(f'    )')
-    lines.append('  )')
+    lines.append('  tfObj.updateVolumes()')
+    lines.append('  local json = "{\\"samples\\":["')
+
+    for i, pos in enumerate(positions):
+        x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+        lines.append(f'  local p{i} = [{x:.4f},{y:.4f},{z:.4f}]')
+        if i > 0:
+            lines.append('  json += ","')
+        lines.append(f'  json += "{{\\"pos\\":[{x:.4f},{y:.4f},{z:.4f}]"')
+
+        for stype in scalars:
+            sid = scalar_map.get(stype)
+            if sid is None:
+                continue
+            lines.append(f'  local s{i}_{stype} = try (tfObj.getVolumeScalar p{i} {sid}) catch (0.0)')
+            if stype == "temperature":
+                lines.append(f'  s{i}_{stype} = try (tfObj.convertVolumeTemperature s{i}_{stype} {temp_unit}) catch (s{i}_{stype})')
+            lines.append(f'  json += ",\\"{stype}\\":" + (s{i}_{stype} as string)')
+
+        for vtype in vectors:
+            vid = vector_map.get(vtype)
+            if vid is None:
+                continue
+            lines.append(f'  local v{i}_{vtype} = try (tfObj.getVolumeVector p{i} {vid}) catch ([0,0,0])')
+            lines.append(f'  json += ",\\"{vtype}\\":[" + (v{i}_{vtype}.x as string) + "," + (v{i}_{vtype}.y as string) + "," + (v{i}_{vtype}.z as string) + "]"')
+
+        lines.append('  json += "}"')
+
+    lines.append('  json += "]}"')
+    lines.append('  tfObj.releaseVolumes()')
+    lines.append('  json')
     lines.append(')')
 
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms).get("result", "")
+    return json.dumps(_send_json(ms, {"error": "Could not parse get_tyflow_volume_data response."}))
 
-
-# ---------------------------------------------------------------------------
-# Tool 20: export_tyflow_cache
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
-def export_tyflow_cache(
+def convert_tyflow_temperature(
     tyflow_name: str,
-    event_name: str = "Event_001",
-    operator_name: str = "Export Particles",
-    output_path: str | None = None,
-    create_tycache_object: bool = True,
-    only_if_not_created: bool = True,
-    frame_start: int | None = None,
-    frame_end: int | None = None,
+    temperature: float,
+    from_units: str,
+    to_units: str,
 ) -> str:
-    """Export a tyFlow particle system to tyCache files.
+    """Convert a temperature value between units using tyFlow's built-in converter.
 
-    Calls ``exportTyCache()`` on an Export Particles operator, which is
-    equivalent to clicking the "Generate tyCache files" button in the UI.
-    Optionally configures the output path, frame range, and whether a
-    tyCache scene object is created automatically.
-
-    The export runs synchronously and may take a long time for large
-    particle counts.
-
-    Args:
-        tyflow_name: Name of the tyFlow object.
-        event_name: Name of the event containing the Export Particles operator.
-        operator_name: Name of the export operator (default "Export Particles").
-        output_path: tyCache output path (without extension). None = keep current.
-        create_tycache_object: Create a tyCache object in the scene after export.
-        only_if_not_created: Only create tyCache object if one doesn't already exist.
-        frame_start: Export start frame (None = don't change).
-        frame_end: Export end frame (None = don't change).
+    Uses the tyFlow volume API's convertVolumeTemperature function to ensure
+    consistency with Inferno simulation temperature values.
     """
-    safe = _safe_name(tyflow_name)
-    sa_evt = _sa_name(event_name)
-    sa_op = _sa_name(operator_name)
+    unit_map = {"celsius": 1, "fahrenheit": 2, "kelvin": 3}
+    from_id = unit_map.get(from_units)
+    to_id = unit_map.get(to_units)
+    if from_id is None or to_id is None:
+        return json.dumps({"error": "Invalid units. Use celsius, fahrenheit, or kelvin."})
 
-    lines: list[str] = []
-    lines.append(f'local tfObj = getNodeByName "{safe}"')
-    lines.append('if tfObj == undefined then (')
-    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe}\\\\\\" not found\\"}}"')
-    lines.append(') else (')
-    lines.append(f'  local opRef = undefined')
-    lines.append(f'  try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()')
-    lines.append('  if opRef == undefined then (')
-    lines.append(f'    "{{\\"error\\":\\"Operator \\\\\\"{operator_name}\\\\\\" not found in event \\\\\\"{event_name}\\\\\\"\\"}}"')
-    lines.append('  ) else (')
-    # Configure export settings
-    lines.append(f'    try (opRef.exportMode = 2) catch ()  -- tyCache mode')
-    if output_path is not None:
-        safe_path = _safe_name(output_path)
-        lines.append(f'    try (opRef.tyCacheFilename = "{safe_path}") catch ()')
-    lines.append(f'    try (opRef.tycacheCreateObject = {_ms_value(create_tycache_object)}) catch ()')
-    lines.append(f'    try (opRef.tycacheCreateObjectIfNotCreated = {_ms_value(only_if_not_created)}) catch ()')
-    if frame_start is not None:
-        lines.append(f'    try (opRef.frameStart = {int(frame_start)}) catch ()')
-    if frame_end is not None:
-        lines.append(f'    try (opRef.frameEnd = {int(frame_end)}) catch ()')
-    # Trigger the export
-    lines.append(f'    local exportResult = opRef.exportTyCache()')
-    lines.append(f'    local cachePath = try (opRef.tyCacheFilename) catch ("")')
-    lines.append(f'    "{{\\"success\\":true,\\"tyflow\\":\\"{safe}\\",\\"cachePath\\":\\"" + (substituteString cachePath "\\\\" "/") + "\\"}}"')
-    lines.append('  )')
-    lines.append(')')
-
-    ms = "(\n    " + "\n    ".join(lines) + "\n)"
-    return client.send_command(ms).get("result", "")
+    ms = f"""(
+    local tfObj = getNodeByName "{safe_string(tyflow_name)}"
+    if tfObj == undefined then (
+        "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"
+    ) else (
+        local normalized = try (tfObj.convertVolumeTemperature {temperature:.6f} {from_id}) catch (undefined)
+        if normalized == undefined then (
+            "{{\\"error\\":\\"convertVolumeTemperature failed -- is tyFlow 2.0+ installed?\\"}}"
+        ) else (
+            local result = try (tfObj.convertVolumeTemperature normalized {to_id}) catch (undefined)
+            if result == undefined then (
+                "{{\\"error\\":\\"Temperature conversion failed\\"}}"
+            ) else (
+                "{{\\"from_value\\":" + ({temperature:.6f} as string) + ",\\"from_units\\":\\"{from_units}\\",\\"to_value\\":" + (result as string) + ",\\"to_units\\":\\"{to_units}\\"}}"
+            )
+        )
+    )
+)"""
+    return json.dumps(_send_json(ms, {"error": "Could not parse convert_tyflow_temperature response."}))

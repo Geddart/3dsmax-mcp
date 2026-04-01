@@ -1,9 +1,8 @@
 from typing import Optional
+import json as _json
 from ..server import mcp, client
-
-
-def _safe_name(name: str) -> str:
-    return name.replace("\\", "\\\\").replace('"', '\\"')
+from ..coerce import StrList
+from src.helpers.maxscript import safe_string
 
 
 @mcp.tool()
@@ -17,7 +16,15 @@ def add_modifier(name: str, modifier: str, params: str = "") -> str:
 
     Returns confirmation or error.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            payload = _json.dumps({"name": name, "modifier": modifier, "params": params})
+            response = client.send_command(payload, cmd_type="native:add_modifier")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    safe = safe_string(name)
     maxscript = f"""(
         local obj = getNodeByName "{safe}"
         if obj != undefined then (
@@ -46,8 +53,16 @@ def remove_modifier(name: str, modifier: str) -> str:
 
     Returns confirmation or error.
     """
-    safe = _safe_name(name)
-    safe_mod = _safe_name(modifier)
+    if client.native_available:
+        try:
+            payload = _json.dumps({"name": name, "modifier": modifier})
+            response = client.send_command(payload, cmd_type="native:remove_modifier")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    safe = safe_string(name)
+    safe_mod = safe_string(modifier)
     maxscript = f"""(
         local obj = getNodeByName "{safe}"
         if obj != undefined then (
@@ -101,12 +116,26 @@ def set_modifier_state(
 
     Returns confirmation.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            payload = {"name": name, "modifier_name": modifier_name, "modifier_index": modifier_index}
+            if enabled is not None:
+                payload["enabled"] = enabled
+            if enabled_in_views is not None:
+                payload["enabled_in_views"] = enabled_in_views
+            if enabled_in_renders is not None:
+                payload["enabled_in_renders"] = enabled_in_renders
+            response = client.send_command(_json.dumps(payload), cmd_type="native:set_modifier_state")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    safe = safe_string(name)
 
     if modifier_index > 0:
         find_mod = f"local mod = obj.modifiers[{modifier_index}]"
     else:
-        safe_mod = _safe_name(modifier_name)
+        safe_mod = safe_string(modifier_name)
         find_mod = f"""local mod = undefined
             for i = 1 to obj.modifiers.count do (
                 if obj.modifiers[i].name == "{safe_mod}" do (mod = obj.modifiers[i]; exit)
@@ -163,7 +192,15 @@ def collapse_modifier_stack(
 
     Returns confirmation.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            payload = _json.dumps({"name": name, "to_index": to_index})
+            response = client.send_command(payload, cmd_type="native:collapse_modifier_stack")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    safe = safe_string(name)
     if to_index > 0:
         maxscript = f"""(
             local obj = getNodeByName "{safe}"
@@ -205,7 +242,15 @@ def make_modifier_unique(name: str, modifier_index: int) -> str:
 
     Returns confirmation.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            payload = _json.dumps({"name": name, "modifier_index": modifier_index})
+            response = client.send_command(payload, cmd_type="native:make_modifier_unique")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    safe = safe_string(name)
     maxscript = f"""(
         local obj = getNodeByName "{safe}"
         if obj != undefined then (
@@ -229,7 +274,7 @@ def batch_modify(
     modifier_class: str,
     property_name: str,
     property_value: str,
-    names: Optional[list[str]] = None,
+    names: Optional[StrList] = None,
     selection_only: bool = False,
 ) -> str:
     """Batch-set a property on all modifiers of a given class across multiple objects.
@@ -247,11 +292,26 @@ def batch_modify(
 
     Returns count of modified modifiers.
     """
-    safe_class = _safe_name(modifier_class)
-    safe_prop = _safe_name(property_name)
+    if client.native_available:
+        try:
+            payload = {
+                "modifier_class": modifier_class,
+                "property_name": property_name,
+                "property_value": property_value,
+                "selection_only": selection_only,
+            }
+            if names:
+                payload["names"] = names
+            response = client.send_command(_json.dumps(payload), cmd_type="native:batch_modify")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    safe_class = safe_string(modifier_class)
+    safe_prop = safe_string(property_name)
 
     if names:
-        name_arr = "#(" + ", ".join(f'"{_safe_name(n)}"' for n in names) + ")"
+        name_arr = "#(" + ", ".join(f'"{safe_string(n)}"' for n in names) + ")"
         collect_line = f"local objsel = for n in {name_arr} where (getNodeByName n) != undefined collect (getNodeByName n)"
     elif selection_only:
         collect_line = "local objsel = selection as array"

@@ -9,12 +9,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import json as _json
 from ..server import mcp, client
+from ..coerce import FloatList, IntList
 from ..helpers.construction import grid_position, circular_position
-
-
-def _safe_name(name: str) -> str:
-    return name.replace("\\", "\\\\").replace('"', '\\"')
+from src.helpers.maxscript import safe_string
 
 
 def _create_at(
@@ -24,50 +23,47 @@ def _create_at(
     w: float, d: float, h: float,
     color: tuple[int, int, int] | None = None,
 ) -> str:
-    """Create a primitive centred at (cx, cy, cz).
-
-    Supports Box, Cylinder, Sphere, and Plane.
-    For Box: pivot at centre-bottom, so we shift pos Z down by h/2.
-    For Sphere/Cylinder: similar centre logic.
-    """
-    safe = _safe_name(name)
+    """Create a primitive centred at (cx, cy, cz) via native create_object."""
     t = obj_type.lower()
 
     if t == "box":
         pos_z = cz - h / 2.0
-        params = (
-            f'name:"{safe}" width:{w} length:{d} height:{h} '
-            f"pos:[{cx},{cy},{pos_z}] "
-            f"lengthsegs:1 widthsegs:1 heightsegs:1"
-        )
+        params = f"width:{w} length:{d} height:{h} pos:[{cx},{cy},{pos_z}] lengthsegs:1 widthsegs:1 heightsegs:1"
         ctor = "Box"
     elif t == "cylinder":
         radius = min(w, d) / 2.0
         pos_z = cz - h / 2.0
-        params = f'name:"{safe}" radius:{radius} height:{h} pos:[{cx},{cy},{pos_z}]'
+        params = f"radius:{radius} height:{h} pos:[{cx},{cy},{pos_z}]"
         ctor = "Cylinder"
     elif t == "sphere":
         radius = min(w, d, h) / 2.0
-        params = f'name:"{safe}" radius:{radius} pos:[{cx},{cy},{cz}]'
+        params = f"radius:{radius} pos:[{cx},{cy},{cz}]"
         ctor = "Sphere"
     elif t == "plane":
-        params = f'name:"{safe}" width:{w} length:{d} pos:[{cx},{cy},{cz}]'
+        params = f"width:{w} length:{d} pos:[{cx},{cy},{cz}]"
         ctor = "Plane"
     else:
-        # Fallback: treat as Box
         pos_z = cz - h / 2.0
-        params = (
-            f'name:"{safe}" width:{w} length:{d} height:{h} '
-            f"pos:[{cx},{cy},{pos_z}]"
-        )
+        params = f"width:{w} length:{d} height:{h} pos:[{cx},{cy},{pos_z}]"
         ctor = obj_type
 
+    # Use native create_object handler
+    if client.native_available:
+        payload = _json.dumps({"type": ctor, "name": name, "params": params})
+        resp = client.send_command(payload, cmd_type="native:create_object")
+        created_name = resp.get("result", name)
+        if color:
+            r, g, b = color
+            col_payload = _json.dumps({"name": created_name, "property": "wirecolor", "value": f"{r},{g},{b}"})
+            client.send_command(col_payload, cmd_type="native:set_object_property")
+        return created_name
+
+    safe = safe_string(name)
     if color:
         r, g, b = color
-        cmd = f'(local o = {ctor} {params}; o.wirecolor = color {r} {g} {b}; o.name)'
+        cmd = f'(local o = {ctor} name:"{safe}" {params}; o.wirecolor = color {r} {g} {b}; o.name)'
     else:
-        cmd = f"({ctor} {params}).name"
-
+        cmd = f'({ctor} name:"{safe}" {params}).name'
     resp = client.send_command(cmd)
     return resp.get("result", name)
 
@@ -79,12 +75,12 @@ def _create_at(
 @mcp.tool()
 def place_on_grid(
     type: str = "Box",
-    grid_origin: list[float] = [0, 0, 0],
-    grid_index: list[float] = [0, 0, 0],
+    grid_origin: FloatList = [0, 0, 0],
+    grid_index: FloatList = [0, 0, 0],
     cell_size: float = 100.0,
-    object_size: list[float] = [100, 100, 100],
+    object_size: FloatList = [100, 100, 100],
     name: str = "",
-    color: list[int] | None = None,
+    color: IntList | None = None,
 ) -> str:
     """Place a single object at a grid cell position.
 
@@ -126,14 +122,14 @@ def place_on_grid(
 @mcp.tool()
 def place_grid_array(
     type: str = "Box",
-    grid_origin: list[float] = [0, 0, 0],
+    grid_origin: FloatList = [0, 0, 0],
     rows: int = 3,
     cols: int = 3,
     layers: int = 1,
     cell_size: float = 100.0,
-    object_size: list[float] = [80, 80, 80],
+    object_size: FloatList = [80, 80, 80],
     name_prefix: str = "Grid",
-    color: list[int] | None = None,
+    color: IntList | None = None,
 ) -> str:
     """Fill a 3D grid with objects.
 
@@ -187,12 +183,12 @@ def place_grid_array(
 @mcp.tool()
 def place_circle(
     type: str = "Box",
-    center: list[float] = [0, 0, 0],
+    center: FloatList = [0, 0, 0],
     radius: float = 200.0,
     count: int = 8,
-    object_size: list[float] = [30, 30, 30],
+    object_size: FloatList = [30, 30, 30],
     name_prefix: str = "Circle",
-    color: list[int] | None = None,
+    color: IntList | None = None,
 ) -> str:
     """Place objects evenly around a circle (e.g. fence posts, village houses, plaza benches).
 

@@ -6,11 +6,9 @@ object iteration.
 """
 
 from typing import Optional
+import json as _json
 from ..server import mcp, client
-
-
-def _safe_name(name: str) -> str:
-    return name.replace("\\", "\\\\").replace('"', '\\"')
+from src.helpers.maxscript import safe_string
 
 
 @mcp.tool()
@@ -42,7 +40,7 @@ def find_class_instances(
         JSON with found instances, counts, and which scene nodes reference them.
     """
     if superclass:
-        safe_sc = _safe_name(superclass)
+        safe_sc = safe_string(superclass)
         maxscript = f"""(
             local result = "{{\\\"superclass\\\": \\\"" + "{safe_sc}" + "\\\", \\\"classes\\\": ["
             local scls = execute "{safe_sc}"
@@ -83,7 +81,7 @@ def find_class_instances(
             )
         )"""
     else:
-        safe_cls = _safe_name(class_name)
+        safe_cls = safe_string(class_name)
         maxscript = f"""(
             local cls = execute "{safe_cls}"
             if cls == undefined then (
@@ -130,7 +128,15 @@ def get_instances(name: str) -> str:
     Returns:
         JSON with the instance group: all objects sharing the same base object.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            payload = _json.dumps({"name": name})
+            response = client.send_command(payload, cmd_type="native:get_instances")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    safe = safe_string(name)
     maxscript = f"""(
         local obj = getNodeByName "{safe}"
         if obj == undefined then (
@@ -176,13 +182,27 @@ def get_dependencies(
     Returns:
         JSON with dependency information grouped by class.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            payload = _json.dumps({"name": name, "direction": direction})
+            response = client.send_command(payload, cmd_type="native:get_dependencies")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    safe = safe_string(name)
+    normalized_direction = direction.lower().strip()
+    if normalized_direction not in ("dependents", "dependentnodes"):
+        return "direction must be 'dependents' or 'dependentnodes'"
+    deps_expr = "refs.dependents obj"
+    if normalized_direction == "dependentnodes":
+        deps_expr = "refs.dependentnodes obj"
     maxscript = f"""(
         local obj = getNodeByName "{safe}"
         if obj == undefined then (
             "{{\\\"error\\\": \\\"Object not found: {safe}\\\"}}"
         ) else (
-            local deps = refs.dependents obj
+            local deps = {deps_expr}
             local classMap = #()
             local classNames = #()
             for d in deps do (
@@ -195,7 +215,7 @@ def get_dependencies(
                     classMap[idx] += 1
                 )
             )
-            local result = "{{\\\"object\\\": \\\"" + obj.name + "\\\", \\\"totalDependents\\\": " + (deps.count as string) + ", \\\"byClass\\\": {{"
+            local result = "{{\\\"object\\\": \\\"" + obj.name + "\\\", \\\"direction\\\": \\\"{normalized_direction}\\\", \\\"totalDependents\\\": " + (deps.count as string) + ", \\\"byClass\\\": {{"
             for i = 1 to classNames.count do (
                 if i > 1 do result += ","
                 result += "\\\"" + classNames[i] + "\\\": " + (classMap[i] as string)
@@ -230,11 +250,23 @@ def find_objects_by_property(
     Returns:
         JSON list of matching objects.
     """
-    safe_prop = _safe_name(property_name)
-    safe_val = _safe_name(property_value)
+    if client.native_available:
+        try:
+            payload = {
+                "property_name": property_name,
+                "property_value": property_value,
+                "class_filter": class_filter,
+            }
+            response = client.send_command(_json.dumps(payload), cmd_type="native:find_objects_by_property")
+            return response.get("result", "[]")
+        except RuntimeError:
+            pass
+
+    safe_prop = safe_string(property_name)
+    safe_val = safe_string(property_value)
     class_cond = ""
     if class_filter:
-        safe_class = _safe_name(class_filter)
+        safe_class = safe_string(class_filter)
         class_cond = f'and (matchPattern ((classof obj) as string) pattern:"*{safe_class}*")'
 
     if property_value:

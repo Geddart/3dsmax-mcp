@@ -1,17 +1,16 @@
+import json as _json
 from typing import Optional
 from ..server import mcp, client
-
-
-def _safe_name(name: str) -> str:
-    return name.replace("\\", "\\\\").replace('"', '\\"')
+from ..coerce import FloatList
+from src.helpers.maxscript import safe_string
 
 
 @mcp.tool()
 def transform_object(
     name: str,
-    move: Optional[list[float]] = None,
-    rotate: Optional[list[float]] = None,
-    scale: Optional[list[float]] = None,
+    move: Optional[FloatList] = None,
+    rotate: Optional[FloatList] = None,
+    scale: Optional[FloatList] = None,
     coordinate_system: str = "world",
 ) -> str:
     """Move, rotate, and/or scale an object by the given offsets.
@@ -25,7 +24,24 @@ def transform_object(
 
     Returns confirmation of applied transforms.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            params: dict = {"name": name}
+            if move:
+                params["move"] = move
+            if rotate:
+                params["rotate"] = rotate
+            if scale:
+                params["scale"] = scale
+            if coordinate_system != "world":
+                params["coordinate_system"] = coordinate_system
+            response = client.send_command(_json.dumps(params), cmd_type="native:transform_object")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    # ── MAXScript fallback (TCP) ──────────────────────────────────
+    safe = safe_string(name)
 
     ops = []
     if move:

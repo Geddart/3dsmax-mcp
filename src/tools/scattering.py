@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from ..server import mcp, client
-
-
-def _safe_name(name: str) -> str:
-    return name.replace("\\", "\\\\").replace('"', '\\"')
+from ..coerce import StrList, FloatList
+from src.helpers.maxscript import safe_string
 
 
 def _name_array(names: list[str]) -> str:
-    return "#(" + ", ".join(f'"{_safe_name(name)}"' for name in names) + ")"
+    return "#(" + ", ".join(f'"{safe_string(name)}"' for name in names) + ")"
 
 
 def _float_array(values: list[float]) -> str:
@@ -19,9 +17,9 @@ def _float_array(values: list[float]) -> str:
 
 @mcp.tool()
 def scatter_forest_pack(
-    surfaces: list[str],
-    geometry: list[str],
-    probabilities: list[float] | None = None,
+    surfaces: StrList,
+    geometry: StrList,
+    probabilities: FloatList | None = None,
     density: int = 100,
     seed: int = 12345,
     scale_min: float = 85.0,
@@ -85,7 +83,7 @@ def scatter_forest_pack(
             )
         weights = [float(p) for p in probabilities]
 
-    safe_name = _safe_name(name or "ForestScatter")
+    safe_name = safe_string(name or "ForestScatter")
     surface_arr = _name_array(surfaces)
     geometry_arr = _name_array(geometry)
     weight_arr = _float_array(weights)

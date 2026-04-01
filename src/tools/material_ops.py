@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Optional
 from ..server import mcp, client
+from ..coerce import StrList
+from src.helpers.maxscript import safe_string
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +30,7 @@ _IMAGE_EXTENSIONS = {
 _DEFAULT_CHANNEL_PATTERNS: dict[str, list[str]] = {
     "diffuse":       ["_basecolor", "_base_color", "_albedo", "_diffuse", "_diff", "_color", "_col"],
     "ao":            ["_ambientocclusion", "_occlusion", "_ao"],
+    "orm":           ["_occlusionroughnessmetallic", "_orm"],
     "roughness":     ["_roughness", "_rough"],
     "glossiness":    ["_glossiness", "_gloss"],
     "metallic":      ["_metallic", "_metalness", "_metal"],
@@ -180,7 +183,7 @@ def _build_arnold_maxscript(
 ) -> str:
     """Generate MAXScript for Arnold (ai_standard_surface) material setup."""
     lines: list[str] = []
-    safe_mat = _safe_name(material_name)
+    safe_mat = safe_string(material_name)
     lines.append(f'mat = ai_standard_surface name:"{safe_mat}"')
     lines.append('summary = "Arnold ai_standard_surface"')
     lines.append('channelList = ""')
@@ -253,7 +256,7 @@ def _build_arnold_maxscript(
 
     # Assign to objects
     if assign_to:
-        names_arr = "#(" + ", ".join(f'"{_safe_name(n)}"' for n in assign_to) + ")"
+        names_arr = "#(" + ", ".join(f'"{safe_string(n)}"' for n in assign_to) + ")"
         lines.append(f'nameList = {names_arr}')
         lines.append('assignCount = 0')
         lines.append('for n in nameList do (obj = getNodeByName n; if obj != undefined then (obj.material = mat; assignCount += 1))')
@@ -272,7 +275,7 @@ def _build_physical_maxscript(
 ) -> str:
     """Generate MAXScript for PhysicalMaterial setup."""
     lines: list[str] = []
-    safe_mat = _safe_name(material_name)
+    safe_mat = safe_string(material_name)
     lines.append(f'mat = PhysicalMaterial name:"{safe_mat}"')
     lines.append('summary = "PhysicalMaterial"')
     lines.append('channelList = ""')
@@ -335,7 +338,7 @@ def _build_physical_maxscript(
                 lines.append(f'channelList += "{channel}, "')
 
     if assign_to:
-        names_arr = "#(" + ", ".join(f'"{_safe_name(n)}"' for n in assign_to) + ")"
+        names_arr = "#(" + ", ".join(f'"{safe_string(n)}"' for n in assign_to) + ")"
         lines.append(f'nameList = {names_arr}')
         lines.append('assignCount = 0')
         lines.append('for n in nameList do (obj = getNodeByName n; if obj != undefined then (obj.material = mat; assignCount += 1))')
@@ -354,7 +357,7 @@ def _build_redshift_maxscript(
 ) -> str:
     """Generate MAXScript for Redshift (RS_Standard_Material) setup."""
     lines: list[str] = []
-    safe_mat = _safe_name(material_name)
+    safe_mat = safe_string(material_name)
     lines.append(f'mat = RS_Standard_Material name:"{safe_mat}"')
     lines.append('summary = "Redshift RS_Standard_Material"')
     lines.append('channelList = ""')
@@ -424,7 +427,7 @@ def _build_redshift_maxscript(
                 lines.append(f'channelList += "{channel}, "')
 
     if assign_to:
-        names_arr = "#(" + ", ".join(f'"{_safe_name(n)}"' for n in assign_to) + ")"
+        names_arr = "#(" + ", ".join(f'"{safe_string(n)}"' for n in assign_to) + ")"
         lines.append(f'nameList = {names_arr}')
         lines.append('assignCount = 0')
         lines.append('for n in nameList do (obj = getNodeByName n; if obj != undefined then (obj.material = mat; assignCount += 1))')
@@ -436,13 +439,9 @@ def _build_redshift_maxscript(
     return "(\n    " + "\n    ".join(lines) + "\n)"
 
 
-def _safe_name(name: str) -> str:
-    return name.replace("\\", "\\\\").replace('"', '\\"')
-
-
 @mcp.tool()
 def assign_material(
-    names: list[str],
+    names: StrList,
     material_class: str,
     material_name: str = "",
     params: str = "",
@@ -465,9 +464,19 @@ def assign_material(
     Returns:
         Confirmation with material name and assigned object count.
     """
-    safe_mat_name = _safe_name(material_name)
+    if client.native_available:
+        payload = {
+            "names": names,
+            "material_class": material_class,
+            "material_name": material_name,
+            "params": params,
+        }
+        response = client.send_command(json.dumps(payload), cmd_type="native:assign_material")
+        return response.get("result", "")
+
+    safe_mat_name = safe_string(material_name)
     name_param = f' name:"{safe_mat_name}"' if material_name else ""
-    name_arr = "#(" + ", ".join(f'"{_safe_name(n)}"' for n in names) + ")"
+    name_arr = "#(" + ", ".join(f'"{safe_string(n)}"' for n in names) + ")"
 
     maxscript = f"""(
         try (
@@ -532,8 +541,18 @@ def set_material_property(
     Returns:
         Confirmation with the property name and new value, or error message.
     """
-    safe = _safe_name(name)
-    safe_prop = _safe_name(property)
+    if client.native_available:
+        payload = {
+            "name": name,
+            "property": property,
+            "value": value,
+            "sub_material_index": sub_material_index,
+        }
+        response = client.send_command(json.dumps(payload), cmd_type="native:set_material_property")
+        return response.get("result", "")
+
+    safe = safe_string(name)
+    safe_prop = safe_string(property)
 
     if sub_material_index > 0:
         mat_expr = f"obj.material[{sub_material_index}]"
@@ -599,7 +618,16 @@ def set_material_properties(
     Returns:
         Summary of all properties set and any errors encountered.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        payload = {
+            "name": name,
+            "properties": properties,
+            "sub_material_index": sub_material_index,
+        }
+        response = client.send_command(json.dumps(payload), cmd_type="native:set_material_properties")
+        return response.get("result", "")
+
+    safe = safe_string(name)
 
     if sub_material_index > 0:
         mat_expr = f"obj.material[{sub_material_index}]"
@@ -609,7 +637,7 @@ def set_material_properties(
     # Build the property-setting lines
     set_lines = []
     for prop, val in properties.items():
-        safe_prop = _safe_name(prop)
+        safe_prop = safe_string(prop)
         set_lines.append(
             f'try (mat.{safe_prop} = {val}; append okList "{safe_prop}") '
             f'catch (append errList ("{safe_prop}: " + (getCurrentException())))'
@@ -658,15 +686,20 @@ def get_material_slots(
     name: str,
     sub_material_index: int = 0,
     include_values: bool = False,
-    max_slots: int = 60,
+    max_slots: int = 40,
     slot_scope: str = "map",
-    max_per_group: int = 20,
+    max_per_group: int = 15,
 ) -> str:
     """Get compact material slot/property info without schema caches.
 
     This is a token-efficient runtime inspector that categorizes material
     properties into map/color/numeric/bool slots directly from 3ds Max.
     Use this when an agent needs practical slot names before writing values.
+
+    IMPORTANT: Prefer slot_scope="map" (default) or "summary" over "all".
+    Using "all" with include_values=True on complex materials (Physical,
+    Arnold) returns 40+ params and is heavy. Never call this in parallel
+    with other material tools — serialize material operations.
 
     Args:
         name: Object name whose material should be inspected.
@@ -679,7 +712,32 @@ def get_material_slots(
     Returns:
         Compact JSON with categorized slot names (and optional values).
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            payload = json.dumps({
+                "name": name,
+                "sub_material_index": sub_material_index,
+                "include_values": include_values,
+                "max_slots": max(1, int(max_slots)),
+                "slot_scope": (slot_scope or "map").strip().lower(),
+                "max_per_group": max(1, int(max_per_group)),
+            })
+            response = client.send_command(payload, cmd_type="native:get_material_slots")
+            raw = response.get("result", "")
+            if not raw:
+                return raw
+            try:
+                payload_data = json.loads(raw)
+            except Exception:
+                return raw
+            if isinstance(payload_data, dict):
+                material_class = str(payload_data.get("class", ""))
+                payload_data["hints"] = _material_slot_hints(material_class)
+            return json.dumps(payload_data, separators=(",", ":"))
+        except RuntimeError:
+            pass
+
+    safe = safe_string(name)
     max_slots = max(1, int(max_slots))
     max_per_group = max(1, int(max_per_group))
     slot_scope = (slot_scope or "map").strip().lower()
@@ -693,21 +751,14 @@ def get_material_slots(
         mat_expr = "obj.material"
 
     maxscript = f"""(
-        fn jsonEscape s = (
-            local t = (s as string)
-            t = substituteString t "\\\\" "\\\\\\\\"
-            t = substituteString t "\\\"" "'"
-            t = substituteString t "\\n" " "
-            t = substituteString t "\\r" ""
-            t
-        )
+        local esc = MCP_Server.escapeJsonString
 
         fn toJsonNameArray arr = (
             local out = "["
             local q = (bit.intAsChar 34)
             for i = 1 to arr.count do (
                 if i > 1 do out += ","
-                out += q + (jsonEscape arr[i]) + q
+                out += q + (esc arr[i]) + q
             )
             out += "]"
             out
@@ -721,7 +772,7 @@ def get_material_slots(
             local lim = amin #(names.count, vals.count)
             for i = 1 to lim do (
                 if i > 1 do out += ","
-                out += lb + q + "name" + q + ":" + q + (jsonEscape names[i]) + q + "," + q + "value" + q + ":" + q + (jsonEscape vals[i]) + q + rb
+                out += lb + q + "name" + q + ":" + q + (esc names[i]) + q + "," + q + "value" + q + ":" + q + (esc vals[i]) + q + rb
             )
             out += "]"
             out
@@ -738,13 +789,13 @@ def get_material_slots(
 
         local obj = getNodeByName "{safe}"
         if obj == undefined then (
-            "{{\\\\"error\\\\":\\\\"Object not found: {safe}\\\\"}}"
+            "{{\\"error\\":\\"Object not found: {safe}\\"}}"
         ) else if obj.material == undefined then (
-            "{{\\\\"error\\\\":\\\\"No material assigned to {safe}\\\\"}}"
+            "{{\\"error\\":\\"No material assigned to {safe}\\"}}"
         ) else (
             local mat = {mat_expr}
             if mat == undefined then (
-                "{{\\\\"error\\\\":\\\\"Sub-material index {sub_material_index} not found on {safe}\\\\"}}"
+                "{{\\"error\\":\\"Sub-material index {sub_material_index} not found on {safe}\\"}}"
             ) else (
                 local includeValues = {include_vals}
                 local maxSlots = {max_slots}
@@ -834,30 +885,30 @@ def get_material_slots(
                 )
 
                 local result = "{{"
-                result += "\\\\"name\\\\":\\\\"" + (jsonEscape mat.name) + "\\\\","
-                result += "\\\\"class\\\\":\\\\"" + (jsonEscape ((classOf mat) as string)) + "\\\\","
-                result += "\\\\"subMaterialIndex\\\\":" + (subIdx as string) + ","
-                result += "\\\\"inspectedCount\\\\":" + (scanned as string) + ","
-                result += "\\\\"counts\\\\":{{"
-                result += "\\\\"map\\\\":" + (mapNames.count as string) + ","
-                result += "\\\\"color\\\\":" + (colorNames.count as string) + ","
-                result += "\\\\"numeric\\\\":" + (numNames.count as string) + ","
-                result += "\\\\"bool\\\\":" + (boolNames.count as string) + ","
-                result += "\\\\"other\\\\":" + (otherNames.count as string)
+                result += "\\"name\\":\\"" + (esc mat.name) + "\\","
+                result += "\\"class\\":\\"" + (esc ((classOf mat) as string)) + "\\","
+                result += "\\"subMaterialIndex\\":" + (subIdx as string) + ","
+                result += "\\"inspectedCount\\":" + (scanned as string) + ","
+                result += "\\"counts\\":{{"
+                result += "\\"map\\":" + (mapNames.count as string) + ","
+                result += "\\"color\\":" + (colorNames.count as string) + ","
+                result += "\\"numeric\\":" + (numNames.count as string) + ","
+                result += "\\"bool\\":" + (boolNames.count as string) + ","
+                result += "\\"other\\":" + (otherNames.count as string)
                 result += "}},"
 
                 if includeValues then (
-                    result += "\\\\"mapSlots\\\\":" + (toJsonPairArray mapNames mapVals) + ","
-                    result += "\\\\"colorSlots\\\\":" + (toJsonPairArray colorNames colorVals) + ","
-                    result += "\\\\"numericSlots\\\\":" + (toJsonPairArray numNames numVals) + ","
-                    result += "\\\\"boolSlots\\\\":" + (toJsonPairArray boolNames boolVals) + ","
-                    result += "\\\\"otherSlots\\\\":" + (toJsonPairArray otherNames otherVals)
+                    result += "\\"mapSlots\\":" + (toJsonPairArray mapNames mapVals) + ","
+                    result += "\\"colorSlots\\":" + (toJsonPairArray colorNames colorVals) + ","
+                    result += "\\"numericSlots\\":" + (toJsonPairArray numNames numVals) + ","
+                    result += "\\"boolSlots\\":" + (toJsonPairArray boolNames boolVals) + ","
+                    result += "\\"otherSlots\\":" + (toJsonPairArray otherNames otherVals)
                 ) else (
-                    result += "\\\\"mapSlots\\\\":" + (toJsonNameArray mapNames) + ","
-                    result += "\\\\"colorSlots\\\\":" + (toJsonNameArray colorNames) + ","
-                    result += "\\\\"numericSlots\\\\":" + (toJsonNameArray numNames) + ","
-                    result += "\\\\"boolSlots\\\\":" + (toJsonNameArray boolNames) + ","
-                    result += "\\\\"otherSlots\\\\":" + (toJsonNameArray otherNames)
+                    result += "\\"mapSlots\\":" + (toJsonNameArray mapNames) + ","
+                    result += "\\"colorSlots\\":" + (toJsonNameArray colorNames) + ","
+                    result += "\\"numericSlots\\":" + (toJsonNameArray numNames) + ","
+                    result += "\\"boolSlots\\":" + (toJsonNameArray boolNames) + ","
+                    result += "\\"otherSlots\\":" + (toJsonNameArray otherNames)
                 )
 
                 result += "}}"
@@ -946,7 +997,18 @@ def create_texture_map(
     Returns:
         Confirmation with the global variable name to reference this map.
     """
-    safe_map_name = _safe_name(map_name)
+    if client.native_available:
+        payload = {
+            "map_class": map_class,
+            "map_name": map_name,
+            "params": params,
+            "properties": properties or {},
+            "global_var": global_var,
+        }
+        response = client.send_command(json.dumps(payload), cmd_type="native:create_texture_map")
+        return response.get("result", "")
+
+    safe_map_name = safe_string(map_name)
     name_param = f' name:"{safe_map_name}"' if map_name else ""
 
     # Generate global var name if not provided
@@ -962,7 +1024,7 @@ def create_texture_map(
     if properties:
         lines = []
         for prop, val in properties.items():
-            safe_prop = _safe_name(prop)
+            safe_prop = safe_string(prop)
             lines.append(
                 f'try (global {global_var} ; {global_var}.{safe_prop} = {val}; '
                 f'append okList "{safe_prop}") '
@@ -1016,9 +1078,14 @@ def set_texture_map_properties(
     Returns:
         Summary of properties set and any errors.
     """
+    if client.native_available:
+        payload = json.dumps({"global_var": global_var, "properties": properties})
+        response = client.send_command(payload, cmd_type="native:set_texture_map_properties")
+        return response.get("result", "")
+
     lines = []
     for prop, val in properties.items():
-        safe_prop = _safe_name(prop)
+        safe_prop = safe_string(prop)
         lines.append(
             f'try ({global_var}.{safe_prop} = {val}; append okList "{safe_prop}") '
             f'catch (append errList ("{safe_prop}: " + (getCurrentException())))'
@@ -1083,8 +1150,20 @@ def set_sub_material(
     Returns:
         Confirmation of the sub-material assignment.
     """
-    safe = _safe_name(name)
-    safe_mat_name = _safe_name(material_name)
+    if client.native_available:
+        payload = {
+            "name": name,
+            "sub_material_index": sub_material_index,
+            "material_class": material_class,
+            "material_name": material_name,
+            "params": params,
+            "source_index": source_index,
+        }
+        response = client.send_command(json.dumps(payload), cmd_type="native:set_sub_material")
+        return response.get("result", "")
+
+    safe = safe_string(name)
+    safe_mat_name = safe_string(material_name)
     name_param = f' name:"{safe_mat_name}"' if material_name else ""
 
     if source_index > 0:
@@ -1142,34 +1221,79 @@ def write_osl_shader(
     After loading, the OSLMap exposes all shader parameters as properties.
     Use the optional properties dict to set initial parameter values.
 
+    IMPORTANT — OSL rules for 3ds Max 2026:
+    - The shader function name MUST match shader_name exactly
+    - Use UNIQUE shader_name for each new shader (reusing a name may hit a stale cache)
+    - Property names get lowercased by OSLMap (use lowercase keys in properties dict)
+    - color * float multiplication IS valid (e.g. EdgeColor * Boost)
+    - All outputs must be typed: "output color result = 0" or "output float result = 0"
+    - Annotations [[ ]] are optional but valid: float Power = 3.0 [[ string label = "Power" ]]
+    - Standard OSL globals work: N, I, P, u, v, time, dPdu, dPdv
+    - Common functions: mix(), pow(), abs(), dot(), normalize(), noise(), clamp(), smoothstep()
+
+    Working example:
+        shader_name="FresnelGlow"
+        osl_code='''shader FresnelGlow(
+            color CoreColor = color(0.02, 0.02, 0.05),
+            color EdgeColor = color(0.2, 0.6, 1.0),
+            float Power = 3.0,
+            float Boost = 2.0,
+            output color result = 0
+        )
+        {
+            float d = dot(normalize(N), normalize(I));
+            float f = pow(1.0 - abs(d), Power);
+            result = mix(CoreColor, EdgeColor * Boost, f);
+        }'''
+        properties={"power": "4.0", "boost": "3.0"}
+
+    After creation, wire into a material:
+        set_material_property(name="MyObj", property="base_color_shader", value="FresnelGlow")
+
     Args:
-        shader_name: Name for the shader file and OSLMap (e.g. "ProceduralIris").
-                     Used as filename ({shader_name}.osl) and map display name.
+        shader_name: Name for the shader file and OSLMap. MUST match the shader
+                     function name in osl_code. Use unique names to avoid cache issues.
         osl_code: Complete OSL shader source code. Must include the shader
                   function with typed parameters and output(s).
         global_var: MAXScript global variable name. If empty, derived from
                     shader_name. Use this name to reference the map later.
         properties: Optional dict of shader parameter values to set after
-                    loading (e.g. {"PupilSize": "0.16", "IrisColor": "color 56 97 46"}).
+                    loading. Keys MUST be lowercase (e.g. {"power": "4.0"}).
 
     Returns:
-        Confirmation with file path and global variable name.
+        Confirmation with file path, global variable name, and compilation status.
     """
     if not global_var:
         global_var = "".join(c if c.isalnum() or c == "_" else "_" for c in shader_name)
         if global_var[0].isdigit():
             global_var = "m_" + global_var
 
+    if client.native_available:
+        payload = {
+            "shader_name": shader_name,
+            "osl_code": osl_code,
+            "global_var": global_var,
+        }
+        if properties:
+            payload["properties"] = properties
+        response = client.send_command(json.dumps(payload), cmd_type="native:write_osl_shader")
+        raw = response.get("result", "")
+        try:
+            data = json.loads(raw)
+            return data.get("message", raw)
+        except Exception:
+            return raw
+
     # Escape the OSL code for MAXScript string embedding
     safe_osl = osl_code.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-    safe_shader_name = _safe_name(shader_name)
+    safe_shader_name = safe_string(shader_name)
 
     # Build property-setting lines
     prop_lines = ""
     if properties:
         lines = []
         for prop, val in properties.items():
-            safe_prop = _safe_name(prop)
+            safe_prop = safe_string(prop)
             lines.append(
                 f'try (global {global_var} ; {global_var}.{safe_prop} = {val}; '
                 f'append okList "{safe_prop}") '
@@ -1188,8 +1312,9 @@ def write_osl_shader(
             close f
 
             global {global_var} = OSLMap name:"{safe_shader_name}"
-            {global_var}.OSLPath = oslPath
+            {global_var}.OSLCode = oslContent
             {global_var}.OSLAutoUpdate = true
+            {global_var}.OSLPath = oslPath
 
             okList = #()
             errList = #()
@@ -1218,7 +1343,7 @@ def create_material_from_textures(
     texture_folder: str,
     material_class: str = "",
     material_name: str = "",
-    assign_to: list[str] | None = None,
+    assign_to: StrList | None = None,
     custom_patterns: dict[str, list[str]] | None = None,
 ) -> str:
     """Create a fully-wired PBR material from a folder of texture maps.
@@ -1312,3 +1437,224 @@ def create_material_from_textures(
     # -- Step 6: Send to Max --
     response = client.send_command(maxscript)
     return response.get("result", "")
+
+
+# ---------------------------------------------------------------------------
+# UberBitmap + Shell Material helpers
+# ---------------------------------------------------------------------------
+
+_UBER_BITMAP_OSL = None  # Resolved dynamically via MAXScript: (getDir #maxRoot) + "OSL\\UberBitmap2.osl"
+# MultiOutputChannelTexmapToTexmap output indices for UberBitmap2:
+#   1=Col(RGB), 2=R, 3=G, 4=B, 5=A, 6=Luminance, 7=Average
+_UBER_OUT_COL = 1
+_UBER_OUT_R = 2
+_UBER_OUT_G = 3
+_UBER_OUT_B = 4
+
+
+def _ms_uber_bitmap(var: str, name: str, filepath: str) -> list[str]:
+    """Generate MAXScript lines to create a UberBitmap OSLMap."""
+    fp = filepath.replace("\\", "/")
+    return [
+        f'{var} = OSLMap()',
+        f'{var}.name = "{name}"',
+        f'{var}.OSLPath = oslPath',
+        f'{var}.OSLAutoUpdate = true',
+        f'{var}.filename = "{fp}"',
+    ]
+
+
+def _ms_channel_selector(var: str, source_var: str, output_index: int) -> list[str]:
+    """Generate MAXScript lines for a MultiOutputChannelTexmapToTexmap."""
+    return [
+        f'{var} = MultiOutputChannelTexmapToTexmap()',
+        f'{var}.sourceMap = {source_var}',
+        f'{var}.outputChannelIndex = {output_index}',
+    ]
+
+
+def _build_shell_maxscript(
+    shell_name: str,
+    render_name: str,
+    base_color_path: str,
+    orm_path: str,
+    normal_path: str | None,
+    gltf_material_name: str | None,
+    assign_to: list[str] | None,
+) -> str:
+    """Build MAXScript for Shell Material with UberBitmap RGB split Arnold setup."""
+    lines: list[str] = []
+    safe_shell = safe_string(shell_name)
+    safe_render = safe_string(render_name)
+
+    # Resolve UberBitmap OSL path dynamically from Max install
+    lines.append('oslPath = (getDir #maxRoot) + "OSL\\\\UberBitmap2.osl"')
+
+    # Find existing glTF material from scene
+    if gltf_material_name:
+        safe_gltf = safe_string(gltf_material_name)
+        lines.append(f'gltfMat = undefined')
+        lines.append(f'for obj in objects where obj.material != undefined do (')
+        lines.append(f'    if obj.material.name == "{safe_gltf}" do (gltfMat = obj.material; exit)')
+        lines.append(f')')
+        # Also check inside Shell Materials for the glTF mat
+        lines.append(f'if gltfMat == undefined do (')
+        lines.append(f'    for obj in objects where obj.material != undefined do (')
+        lines.append(f'        if (classOf obj.material) as string == "Shell_Material" and obj.material.bakedMaterial != undefined do (')
+        lines.append(f'            if obj.material.bakedMaterial.name == "{safe_gltf}" do (gltfMat = obj.material.bakedMaterial; exit)')
+        lines.append(f'        )')
+        lines.append(f'    )')
+        lines.append(f')')
+
+    # Create UberBitmap for BaseColor
+    lines.extend(_ms_uber_bitmap("uberBC", f"{safe_render}_diffuse", base_color_path))
+
+    # Create UberBitmap for ORM
+    lines.extend(_ms_uber_bitmap("uberORM", f"{safe_render}_orm", orm_path))
+
+    # Channel selectors from BaseColor
+    lines.extend(_ms_channel_selector("bcCol", "uberBC", _UBER_OUT_COL))
+
+    # Channel selectors from ORM: R=AO, G=Roughness, B=Metalness
+    lines.extend(_ms_channel_selector("ormR", "uberORM", _UBER_OUT_R))
+    lines.extend(_ms_channel_selector("ormG", "uberORM", _UBER_OUT_G))
+    lines.extend(_ms_channel_selector("ormB", "uberORM", _UBER_OUT_B))
+
+    # ai_multiply: diffuse × AO
+    lines.append(f'mult = ai_multiply()')
+    lines.append(f'mult.name = "{safe_render}_multiply"')
+    lines.append(f'mult.input1_shader = bcCol')
+    lines.append(f'mult.input2_shader = ormR')
+
+    # Arnold Standard Surface
+    lines.append(f'arnoldMat = ai_standard_surface()')
+    lines.append(f'arnoldMat.name = "{safe_render}"')
+    lines.append(f'arnoldMat.base_color_shader = mult')
+    lines.append(f'arnoldMat.specular_roughness_shader = ormG')
+    lines.append(f'arnoldMat.metalness_shader = ormB')
+
+    # Normal map (optional)
+    if normal_path:
+        lines.extend(_ms_uber_bitmap("uberNrm", f"{safe_render}_normal", normal_path))
+        lines.extend(_ms_channel_selector("nrmCol", "uberNrm", _UBER_OUT_COL))
+        lines.append(f'nrmMap = ai_normal_map()')
+        lines.append(f'nrmMap.name = "{safe_render}_nrm"')
+        lines.append(f'nrmMap.input_shader = nrmCol')
+        lines.append(f'bmpNode = ai_bump2d()')
+        lines.append(f'bmpNode.name = "{safe_render}_bump"')
+        lines.append(f'bmpNode.normal_shader = nrmMap')
+        lines.append(f'arnoldMat.normal_shader = bmpNode')
+
+    # Shell Material
+    lines.append(f'shell = Shell_Material()')
+    lines.append(f'shell.name = "{safe_shell}"')
+    lines.append(f'shell.originalMaterial = arnoldMat')
+    if gltf_material_name:
+        lines.append(f'if gltfMat != undefined do shell.bakedMaterial = gltfMat')
+    lines.append(f'shell.renderMtlIndex = 0')
+    lines.append(f'shell.viewportMtlIndex = 1')
+
+    # Assign to objects
+    lines.append(f'assignCount = 0')
+    if assign_to:
+        names_arr = "#(" + ", ".join(f'"{safe_string(n)}"' for n in assign_to) + ")"
+        lines.append(f'nameList = {names_arr}')
+        lines.append(f'for n in nameList do (obj = getNodeByName n; if obj != undefined then (obj.material = shell; assignCount += 1))')
+    elif gltf_material_name:
+        # Auto-assign to all objects using the glTF material
+        lines.append(f'if gltfMat != undefined do (')
+        lines.append(f'    for obj in objects where obj.material != undefined do (')
+        lines.append(f'        if obj.material == gltfMat or obj.material.name == "{safe_gltf}" do (')
+        lines.append(f'            obj.material = shell; assignCount += 1')
+        lines.append(f'        )')
+        lines.append(f'    )')
+        lines.append(f')')
+
+    # Build result JSON
+    lines.append(f'resultJson = "{{"')
+    lines.append(f'resultJson += "\\"shell_name\\":\\"" + shell.name + "\\","')
+    lines.append(f'resultJson += "\\"render_material\\":\\"" + arnoldMat.name + "\\","')
+    if gltf_material_name:
+        lines.append(f'resultJson += "\\"gltf_material\\":\\"" + (if gltfMat != undefined then gltfMat.name else "not_found") + "\\","')
+    lines.append(f'resultJson += "\\"assigned_count\\":" + (assignCount as string) + ","')
+    lines.append(f'resultJson += "\\"status\\":\\"success\\""')
+    lines.append(f'resultJson += "}}"')
+    lines.append(f'resultJson')
+
+    return "(\n    " + "\n    ".join(lines) + "\n)"
+
+
+@mcp.tool()
+def create_shell_material(
+    shell_name: str,
+    render_material_name: str,
+    base_color_path: str,
+    orm_path: str,
+    normal_path: str = "",
+    gltf_material_name: str = "",
+    assign_to: StrList | None = None,
+) -> str:
+    """Create a Shell Material with UberBitmap-based Arnold render slot and glTF export slot.
+
+    Builds a dual-pipeline material: Arnold ai_standard_surface for rendering
+    (originalMaterial, slot 0) and an existing glTF Material for export
+    (bakedMaterial, slot 1).
+
+    The Arnold material uses UberBitmap2 OSL maps with RGB channel splitting
+    via MultiOutputChannelTexmapToTexmap for packed ORM textures:
+    - BaseColor UberBitmap Col(RGB) × ORM R(AO) via ai_multiply → base_color
+    - ORM G → specular_roughness
+    - ORM B → metalness
+    - Optional: Normal UberBitmap → ai_normal_map → ai_bump2d → normal
+
+    Args:
+        shell_name: Name for the Shell Material (e.g. "m_mouse_shell").
+        render_material_name: Name for the Arnold material (e.g. "mouse_real").
+        base_color_path: Path to the BaseColor texture file.
+        orm_path: Path to the OcclusionRoughnessMetallic packed texture file.
+        normal_path: Optional path to the Normal map texture file.
+        gltf_material_name: Name of an existing glTF Material in scene to use
+                            as the baked/export slot. If empty, baked slot is left empty.
+        assign_to: Optional list of object names to assign the shell to.
+                   If empty but gltf_material_name is set, auto-assigns to all
+                   objects currently using that glTF material.
+
+    Returns:
+        JSON with shell_name, render_material, gltf_material, assigned_count, status.
+    """
+    if client.native_available:
+        try:
+            payload = json.dumps({
+                "name": shell_name,
+                "render_material_name": render_material_name,
+                "base_color_path": base_color_path,
+                "orm_path": orm_path,
+                "normal_path": normal_path,
+                "gltf_material_name": gltf_material_name,
+                "assign_to": assign_to or [],
+            })
+            response = client.send_command(payload, cmd_type="native:create_shell_material")
+            return response.get("result", "{}")
+        except RuntimeError:
+            pass
+
+    maxscript = _build_shell_maxscript(
+        shell_name=shell_name,
+        render_name=render_material_name,
+        base_color_path=base_color_path,
+        orm_path=orm_path,
+        normal_path=normal_path or None,
+        gltf_material_name=gltf_material_name or None,
+        assign_to=assign_to,
+    )
+
+    maxscript = f"""(
+    try (
+        {maxscript}
+    ) catch (
+        "{{\\"status\\":\\"error\\",\\"error\\":\\"" + (getCurrentException()) + "\\"}}"
+    )
+)"""
+
+    response = client.send_command(maxscript)
+    return response.get("result", "{}")

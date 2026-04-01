@@ -15,6 +15,8 @@ import random
 from typing import Any
 
 from ..server import mcp, client
+from ..coerce import FloatList
+from src.helpers.maxscript import safe_string
 from ..helpers.construction import (
     WALL_THICKNESS,
     FLOOR_THICKNESS,
@@ -48,10 +50,6 @@ from ..helpers.construction import (
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _safe_name(name: str) -> str:
-    return name.replace("\\", "\\\\").replace('"', '\\"')
-
-
 def _create_box(
     name: str,
     cx: float, cy: float, cz: float,
@@ -63,7 +61,7 @@ def _create_box(
     3ds Max Box origin is at the centre of its base, so we offset Z down by
     half height so the *geometric centre* sits at the requested cz.
     """
-    safe = _safe_name(name)
+    safe = safe_string(name)
     # Box pivot is at centre-bottom → we position at (cx, cy, cz - h/2)
     pos_z = cz - h / 2.0
     params = (
@@ -88,7 +86,7 @@ def _create_prism(
     color: tuple[int, int, int] | None = None,
 ) -> str:
     """Create a Prism (triangular cross-section) at centre-bottom position."""
-    safe = _safe_name(name)
+    safe = safe_string(name)
     params = (
         f'name:"{safe}" '
         f"side1Length:{side1} side2Length:{side2} side3Length:{side3} height:{height} "
@@ -105,8 +103,8 @@ def _create_prism(
 
 def _parent_objects(children: list[str], parent: str) -> str:
     """Parent a list of objects under *parent* in one MAXScript call."""
-    names_arr = "#(" + ", ".join(f'"{_safe_name(n)}"' for n in children) + ")"
-    safe_p = _safe_name(parent)
+    names_arr = "#(" + ", ".join(f'"{safe_string(n)}"' for n in children) + ")"
+    safe_p = safe_string(parent)
     cmd = f"""(
         local parentObj = getNodeByName "{safe_p}"
         local childNames = {names_arr}
@@ -126,7 +124,7 @@ def _parent_objects(children: list[str], parent: str) -> str:
 
 def _create_dummy(name: str, pos: list[float], box_size: list[float]) -> str:
     """Create a Dummy helper at *pos* with given boxsize, pivot at base Z."""
-    safe = _safe_name(name)
+    safe = safe_string(name)
     px, py, pz = pos
     bx, by, bz = box_size
     cmd = f"""(
@@ -145,7 +143,7 @@ def _create_cylinder(
     color: tuple[int, int, int] | None = None,
 ) -> str:
     """Create a Cylinder centred at (cx, cy, cz). Pivot at centre-bottom."""
-    safe = _safe_name(name)
+    safe = safe_string(name)
     pos_z = cz - height / 2.0
     params = f'name:"{safe}" radius:{radius} height:{height} pos:[{cx},{cy},{pos_z}] sides:18'
     if color:
@@ -164,7 +162,7 @@ def _create_sphere(
     color: tuple[int, int, int] | None = None,
 ) -> str:
     """Create a Sphere centred at (cx, cy, cz)."""
-    safe = _safe_name(name)
+    safe = safe_string(name)
     params = f'name:"{safe}" radius:{radius} pos:[{cx},{cy},{cz}] segs:16'
     if color:
         r, g, b = color
@@ -182,7 +180,7 @@ def _create_cone(
     color: tuple[int, int, int] | None = None,
 ) -> str:
     """Create a Cone (point-up) centred at (cx, cy, cz). Pivot at centre-bottom."""
-    safe = _safe_name(name)
+    safe = safe_string(name)
     pos_z = cz - height / 2.0
     params = f'name:"{safe}" radius1:{radius} radius2:0 height:{height} pos:[{cx},{cy},{pos_z}] sides:18'
     if color:
@@ -3225,7 +3223,7 @@ def _build_central_plaza(
 @mcp.tool()
 def build_structure(
     type: str,
-    location: list[float] = [0, 0, 0],
+    location: FloatList = [0, 0, 0],
     width: float = 200.0,
     depth: float = 150.0,
     height: float = 120.0,

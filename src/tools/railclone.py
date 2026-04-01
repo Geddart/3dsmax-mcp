@@ -1,6 +1,6 @@
 """RailClone Pro tools for parametric modeling along splines in 3ds Max.
 
-Provides 11 MCP tools for creating, inspecting, and configuring RailClone Pro
+Provides 12 MCP tools for creating, inspecting, and configuring RailClone Pro
 objects.  Style graphs cannot be built via MAXScript -- all tools follow a
 library-first approach: load pre-built styles, assign spline paths, and tweak
 exposed parameters.
@@ -10,6 +10,9 @@ docs/research/railclone_introspection.md).
 """
 
 from __future__ import annotations
+
+import json
+from typing import Any
 
 from ..server import mcp, client
 
@@ -1017,3 +1020,177 @@ def create_railclone_array(
     ms = "(\n    " + "\n    ".join(lines) + "\n)"
     response = client.send_command(ms)
     return response.get("result", "")
+
+
+# ---------------------------------------------------------------------------
+# Style graph introspection (from upstream)
+# ---------------------------------------------------------------------------
+
+def _decode(value: str) -> str:
+    return value.replace("<pipe>", "|")
+
+
+def _to_int(value: str, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _to_float(value: str, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _to_bool(value: str, default: bool = False) -> bool:
+    lower = (value or "").strip().lower()
+    if lower in {"true", "1", "yes", "on"}:
+        return True
+    if lower in {"false", "0", "no", "off"}:
+        return False
+    return default
+
+
+def _parse_style_graph_lines(raw: str, fallback_name: str) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "name": fallback_name, "class": "", "style": "",
+        "styleLength": 0, "styleDescLength": 0, "styleDesc": "",
+        "baseCount": 0, "segmentCount": 0, "parameterCount": 0,
+        "bases": [], "segments": [], "parameters": [],
+        "graph": {"nodes": [], "edges": []}, "warnings": [],
+    }
+    for line in raw.splitlines():
+        parts = line.split("|")
+        if not parts:
+            continue
+        tag = parts[0]
+        if tag == "HDR" and len(parts) >= 6:
+            result["name"] = _decode(parts[1])
+            result["class"] = _decode(parts[2])
+            result["style"] = _decode(parts[3])
+            result["styleLength"] = _to_int(parts[4])
+            result["styleDescLength"] = _to_int(parts[5])
+        elif tag == "DESC" and len(parts) >= 2:
+            result["styleDesc"] = _decode(parts[1])
+        elif tag == "META" and len(parts) >= 3:
+            key, val = parts[1], _to_int(parts[2])
+            if key in result:
+                result[key] = val
+        elif tag == "BA" and len(parts) >= 10:
+            result["bases"].append({
+                "index": _to_int(parts[1]), "id": _decode(parts[2]),
+                "type": _to_int(parts[3]), "name": _decode(parts[4]),
+                "node": _decode(parts[5]), "full": _to_bool(parts[6]),
+                "start": _to_float(parts[7]), "length": _to_float(parts[8]),
+                "description": _decode(parts[9]),
+            })
+        elif tag == "SG" and len(parts) >= 16:
+            result["segments"].append({
+                "index": _to_int(parts[1]), "id": _decode(parts[2]),
+                "name": _decode(parts[3]), "node": _decode(parts[4]),
+                "material": _to_int(parts[5]), "materialRange": _to_int(parts[6]),
+                "renderable": _to_bool(parts[7]), "bend": _to_bool(parts[8]),
+                "slice": _to_bool(parts[9]), "nesting": _to_bool(parts[10]),
+                "sliceSourceIndex": _to_int(parts[11]),
+                "position": _decode(parts[12]), "rotation": _decode(parts[13]),
+                "scale": _decode(parts[14]), "mappingChannels": _decode(parts[15]),
+            })
+        elif tag == "PA" and len(parts) >= 14:
+            result["parameters"].append({
+                "index": _to_int(parts[1]), "id": _decode(parts[2]),
+                "name": _decode(parts[3]), "type": _to_int(parts[4]),
+                "typeLabel": _decode(parts[5]), "limited": _to_bool(parts[6]),
+                "value": _decode(parts[7]), "min": _decode(parts[8]),
+                "max": _decode(parts[9]), "selector": _decode(parts[10]),
+                "description": _decode(parts[11]), "modified": _to_bool(parts[12]),
+                "retain": _to_int(parts[13]),
+            })
+        elif tag == "WARN" and len(parts) >= 2:
+            result["warnings"].append([_decode(p) for p in parts[1:]])
+    for key in ("baseCount", "segmentCount", "parameterCount"):
+        if result[key] <= 0:
+            mapping = {"baseCount": "bases", "segmentCount": "segments", "parameterCount": "parameters"}
+            result[key] = len(result[mapping[key]])
+    root_id = f"railclone:{result['name']}"
+    nodes = [{"id": root_id, "type": "railclone", "name": result["name"]}]
+    edges: list[dict[str, str]] = []
+    base_id_by_index: dict[int, str] = {}
+    for base in result["bases"]:
+        nid = f"base:{base.get('id') or base.get('index')}"
+        base_id_by_index[int(base.get("index", 0))] = nid
+        nodes.append({"id": nid, "type": "base", "name": base.get("name", ""), "node": base.get("node", "")})
+        edges.append({"from": root_id, "to": nid, "type": "has_base"})
+    for seg in result["segments"]:
+        nid = f"segment:{seg.get('id') or seg.get('index')}"
+        nodes.append({"id": nid, "type": "segment", "name": seg.get("name", ""), "node": seg.get("node", "")})
+        edges.append({"from": root_id, "to": nid, "type": "has_segment"})
+        src = int(seg.get("sliceSourceIndex", 0))
+        if src > 0 and src in base_id_by_index:
+            edges.append({"from": base_id_by_index[src], "to": nid, "type": "base_to_segment", "via": "slicesrc"})
+    for param in result["parameters"]:
+        nid = f"param:{param.get('id') or param.get('index')}"
+        nodes.append({"id": nid, "type": "parameter", "name": param.get("name", ""), "paramType": param.get("typeLabel", "")})
+        edges.append({"from": root_id, "to": nid, "type": "has_parameter"})
+    result["graph"] = {"nodes": nodes, "edges": edges}
+    if result["styleDescLength"] == 0 and not any((w and w[0] == "STYLE_DESC_EMPTY") for w in result["warnings"]):
+        result["warnings"].append(["STYLE_DESC_EMPTY", "RailClone getStyleDesc() returned empty; graph is reconstructed from exposed arrays only."])
+    return result
+
+
+@mcp.tool()
+def get_railclone_style_graph(
+    name: str,
+    include_bases: bool = True,
+    include_segments: bool = True,
+    include_parameters: bool = True,
+    include_raw_style_desc: bool = False,
+    max_bases: int = 300,
+    max_segments: int = 1000,
+    max_parameters: int = 500,
+    max_style_desc_chars: int = 4000,
+) -> str:
+    """Read RailClone style-editor graph data from exposed arrays/interfaces."""
+    max_b = max(1, int(max_bases))
+    max_s = max(1, int(max_segments))
+    max_p = max(1, int(max_parameters))
+    max_desc = max(1, int(max_style_desc_chars))
+    sn = _safe_name(name)
+
+    maxscript = f"""(
+fn clean s = ( local t = s as string; t = substituteString t "|" "<pipe>"; t = substituteString t "\\n" " "; t = substituteString t "\\r" ""; t )
+fn arrVal arr idx dv = ( local v = dv; try (if arr != undefined and idx >= 1 and arr.count >= idx do v = arr[idx]) catch (); v )
+fn maxAC arr cur = ( local o = cur; try (if arr != undefined and arr.count > o do o = arr.count) catch (); o )
+fn pTL t = ( case t of ( 0: "int"; 1: "float"; 2: "bool"; 3: "worldUnits"; 4: "string"; default: ("type_" + (t as string)) ) )
+
+local n = getNodeByName "{sn}"
+if n == undefined then "__ERROR__|Object not found: {sn}"
+else if (findString (toLower ((classof n) as string)) "railclone") == undefined then "__ERROR__|Not RailClone: " + n.name
+else (
+    local cls = (classof n) as string
+    local style = ""; try (style = n.style as string) catch ()
+    local sd = ""; try (sd = n.railclone.getStyleDesc()) catch ()
+    local out = "HDR|" + (clean n.name) + "|" + (clean cls) + "|" + (clean style) + "|" + (style.count as string) + "|" + (sd.count as string) + "\\n"
+    if {str(bool(include_raw_style_desc)).lower()} then ( local d = sd; if d.count > {max_desc} do d = (substring d 1 {max_desc}); out += "DESC|" + (clean d) + "\\n"; if sd.count > d.count do out += "WARN|DESC_TRUNCATED|" + (sd.count as string) + "|" + (d.count as string) + "\\n" )
+    local bc = 0; for a in #(n.baid, n.batype, n.baname, n.banode, n.bafull, n.bastart, n.balength, n.badesc) do bc = maxAC a bc
+    out += "META|baseCount|" + (bc as string) + "\\n"
+    if {str(bool(include_bases)).lower()} then ( local bt = bc; if bt > {max_b} then ( out += "WARN|BASE_TRUNCATED|" + (bc as string) + "|" + ({max_b} as string) + "\\n"; bt = {max_b} ); for i = 1 to bt do ( local bN = arrVal n.banode i undefined; local bNn = if bN != undefined then bN.name else ""; out += "BA|" + (i as string) + "|" + (clean (arrVal n.baid i "")) + "|" + ((arrVal n.batype i 0) as string) + "|" + (clean (arrVal n.baname i "")) + "|" + (clean bNn) + "|" + ((arrVal n.bafull i false) as string) + "|" + ((arrVal n.bastart i 0.0) as string) + "|" + ((arrVal n.balength i 0.0) as string) + "|" + (clean (arrVal n.badesc i "")) + "\\n" ) )
+    local sc = 0; for a in #(n.sid, n.sname, n.sobjnode, n.smaterial, n.smatrange, n.srenderable, n.sbend, n.sslice, n.snesting, n.slicesrc, n.spos, n.srot, n.ssca, n.smapchans) do sc = maxAC a sc
+    out += "META|segmentCount|" + (sc as string) + "\\n"
+    if {str(bool(include_segments)).lower()} then ( local st = sc; if st > {max_s} then ( out += "WARN|SEGMENT_TRUNCATED|" + (sc as string) + "|" + ({max_s} as string) + "\\n"; st = {max_s} ); for i = 1 to st do ( local sN = arrVal n.sobjnode i undefined; local sNn = if sN != undefined then sN.name else ""; out += "SG|" + (i as string) + "|" + (clean (arrVal n.sid i "")) + "|" + (clean (arrVal n.sname i "")) + "|" + (clean sNn) + "|" + ((arrVal n.smaterial i 0) as string) + "|" + ((arrVal n.smatrange i 1) as string) + "|" + ((arrVal n.srenderable i true) as string) + "|" + ((arrVal n.sbend i false) as string) + "|" + ((arrVal n.sslice i false) as string) + "|" + ((arrVal n.snesting i false) as string) + "|" + ((arrVal n.slicesrc i 0) as string) + "|" + (clean ((arrVal n.spos i [0,0,0]) as string)) + "|" + (clean ((arrVal n.srot i [0,0,0]) as string)) + "|" + (clean ((arrVal n.ssca i [100,100,100]) as string)) + "|" + (clean (arrVal n.smapchans i "")) + "\\n" ) )
+    local pc = 0; for a in #(n.paid, n.patype, n.paname, n.palimit, n.paintval, n.paintmin, n.paintmax, n.pafloatval, n.pafloatmin, n.pafloatmax, n.paunitval, n.paunitmin, n.paunitmax, n.paboolval, n.pastrval, n.paselector, n.padesc, n.pamodified, n.paretain) do pc = maxAC a pc
+    out += "META|parameterCount|" + (pc as string) + "\\n"
+    if {str(bool(include_parameters)).lower()} then ( local pt = pc; if pt > {max_p} then ( out += "WARN|PARAM_TRUNCATED|" + (pc as string) + "|" + ({max_p} as string) + "\\n"; pt = {max_p} ); for i = 1 to pt do ( local pT = arrVal n.patype i -1; local pV = ""; local pMn = ""; local pMx = ""; case pT of ( 0: ( pV = (arrVal n.paintval i 0) as string; pMn = (arrVal n.paintmin i 0) as string; pMx = (arrVal n.paintmax i 0) as string ); 1: ( pV = (arrVal n.pafloatval i 0.0) as string; pMn = (arrVal n.pafloatmin i 0.0) as string; pMx = (arrVal n.pafloatmax i 0.0) as string ); 3: ( pV = (arrVal n.paunitval i 0.0) as string; pMn = (arrVal n.paunitmin i 0.0) as string; pMx = (arrVal n.paunitmax i 0.0) as string ); default: ( local bv = arrVal n.paboolval i undefined; if bv != undefined then pV = bv as string else ( local sv = arrVal n.pastrval i undefined; if sv != undefined then pV = sv as string ) ) ); out += "PA|" + (i as string) + "|" + (clean (arrVal n.paid i "")) + "|" + (clean (arrVal n.paname i "")) + "|" + (pT as string) + "|" + (clean (pTL pT)) + "|" + ((arrVal n.palimit i false) as string) + "|" + (clean pV) + "|" + (clean pMn) + "|" + (clean pMx) + "|" + (clean (arrVal n.paselector i "")) + "|" + (clean (arrVal n.padesc i "")) + "|" + ((arrVal n.pamodified i false) as string) + "|" + ((arrVal n.paretain i 0) as string) + "\\n" ) )
+    out
+)
+)"""
+
+    try:
+        response = client.send_command(maxscript)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+    raw = str(response.get("result", ""))
+    if raw.startswith("__ERROR__|"):
+        return json.dumps({"error": raw.split("|", 1)[1]})
+    return json.dumps(_parse_style_graph_lines(raw, fallback_name=name))

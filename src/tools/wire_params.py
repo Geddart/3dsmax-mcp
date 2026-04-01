@@ -6,15 +6,9 @@ modifier's angle). These tools expose wiring as first-class operations.
 """
 
 from typing import Optional
+import json as _json
 from ..server import mcp, client
-
-
-def _safe(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _safe_name(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+from src.helpers.maxscript import safe_string, safe_name, normalize_subanim_path
 
 
 @mcp.tool()
@@ -44,12 +38,21 @@ def list_wireable_params(
         "modifiers[#Bend][#angle]" — bend modifier angle
         "position.controller[#X_Position]" — X position track
     """
-    safe = _safe(name)
+    if client.native_available:
+        payload = _json.dumps({
+            "name": name,
+            "filter": filter or "",
+            "depth": min(max(depth, 1), 5),
+        })
+        response = client.send_command(payload, cmd_type="native:list_wireable_params")
+        return response.get("result", "")
+
+    safe = safe_string(name)
     d = min(max(depth, 1), 5)
 
     filter_check = ""
     if filter:
-        safe_filter = _safe(filter.lower())
+        safe_filter = safe_string(filter.lower())
         filter_check = f'local filterStr = "{safe_filter}"'
 
     maxscript = f"""(
@@ -119,10 +122,15 @@ def wire_params(
     Creates a wire so that changes to the source parameter automatically
     drive the target parameter via the given expression.
 
+    IMPORTANT: source_param and target_param MUST be exact paths from
+    list_wireable_params output. Do NOT invent paths like
+    "[#Object (Cylinder)][#Parameters][#height]" — they will fail.
+    Call list_wireable_params first to get valid paths.
+
     Args:
         source_object: Source object name (e.g. "Box001").
-        source_param: Sub-anim path on source, as returned by list_wireable_params
-                      (e.g. "baseObject[#length]").
+        source_param: Sub-anim path on source — MUST come from list_wireable_params
+                      (e.g. "[#Object (Cylinder)][#height]").
         target_object: Target object name (e.g. "Sphere001").
         target_param: Sub-anim path on target (e.g. "baseObject[#radius]").
         expression: MAXScript expression driving the target value.
@@ -136,14 +144,27 @@ def wire_params(
     Returns:
         Confirmation with wired path details.
     """
+    if client.native_available:
+        payload = {
+            "source_object": source_object,
+            "source_param": source_param,
+            "target_object": target_object,
+            "target_param": target_param,
+            "expression": expression,
+            "two_way": two_way,
+            "reverse_expression": reverse_expression or "",
+        }
+        response = client.send_command(_json.dumps(payload), cmd_type="native:wire_params")
+        return response.get("result", "")
+
     if two_way and not reverse_expression:
         return "reverse_expression is required when two_way=True"
 
-    safe_src_obj = _safe(source_object)
-    safe_tgt_obj = _safe(target_object)
-    safe_src_param = _safe(source_param)
-    safe_tgt_param = _safe(target_param)
-    safe_expr = _safe(expression)
+    safe_src_obj = safe_string(source_object)
+    safe_tgt_obj = safe_string(target_object)
+    safe_src_param = safe_string(normalize_subanim_path(source_param))
+    safe_tgt_param = safe_string(normalize_subanim_path(target_param))
+    safe_expr = safe_string(expression)
 
     # If path starts with "[", no dot separator needed (e.g. $'Obj'[#transform])
     src_sep = "" if safe_src_param.startswith("[") else "."
@@ -161,7 +182,7 @@ def wire_params(
     ]
 
     if two_way:
-        safe_rev_expr = _safe(reverse_expression)
+        safe_rev_expr = safe_string(reverse_expression)
         lines.append(f'paramWire.connect2way srcSA tgtSA "{safe_expr}" "{safe_rev_expr}"')
         lines.append(f'"Wired 2-way: " + srcObj.name + ".{safe_src_param} <-> " + tgtObj.name + ".{safe_tgt_param} (fwd: {safe_expr}, rev: {safe_rev_expr})"')
     else:
@@ -188,7 +209,12 @@ def get_wired_params(name: str) -> str:
         JSON array of {param_path, controller_class, num_wires, expressions}
         for each wired parameter.
     """
-    safe = _safe(name)
+    if client.native_available:
+        payload = _json.dumps({"name": name})
+        response = client.send_command(payload, cmd_type="native:get_wired_params")
+        return response.get("result", "[]")
+
+    safe = safe_string(name)
     maxscript = f"""(
     local obj = getNodeByName "{safe}"
     if obj == undefined do return "Object not found: {safe}"
@@ -265,8 +291,13 @@ def unwire_params(
     Returns:
         Confirmation that the wire was removed.
     """
-    safe_obj = _safe(object_name)
-    safe_param = _safe(param_path)
+    if client.native_available:
+        payload = _json.dumps({"object_name": object_name, "param_path": param_path})
+        response = client.send_command(payload, cmd_type="native:unwire_params")
+        return response.get("result", "")
+
+    safe_obj = safe_string(object_name)
+    safe_param = safe_string(normalize_subanim_path(param_path))
     param_sep = "" if safe_param.startswith("[") else "."
     maxscript = f"""(
     local obj = getNodeByName "{safe_obj}"

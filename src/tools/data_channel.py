@@ -8,10 +8,8 @@ position, selection, vertex color, UVs, normals, etc.
 
 from typing import Optional
 from ..server import mcp, client
-
-
-def _safe(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+from ..coerce import DictList, IntList
+from src.helpers.maxscript import safe_string
 
 
 # ── Operator ID registry ────────────────────────────────────────────
@@ -59,8 +57,8 @@ _OP_IDS = {
 @mcp.tool()
 def add_data_channel(
     name: str,
-    operators: list[dict],
-    order: Optional[list[int]] = None,
+    operators: DictList,
+    order: Optional[IntList] = None,
     display: bool = True,
 ) -> str:
     """Add a Data Channel modifier with a complete operator graph.
@@ -154,7 +152,7 @@ def add_data_channel(
             {"type": "vertex_output", "params": {"output": 4}}
         ]
     """
-    safe = _safe(name)
+    safe = safe_string(name)
 
     # Build MAXScript to add DC modifier and configure operators
     lines = [
@@ -181,7 +179,7 @@ def add_data_channel(
         for key, val in params.items():
             if key == "node" and isinstance(val, str):
                 # Node reference
-                safe_node = _safe(val)
+                safe_node = safe_string(val)
                 lines.append(f'dcMod.operators[{idx}].{key} = getNodeByName "{safe_node}"')
             elif key == "script" and isinstance(val, str):
                 # Script operator — need to escape the script content
@@ -239,7 +237,7 @@ def inspect_data_channel(
     Returns:
         JSON with complete operator graph details.
     """
-    safe = _safe(name)
+    safe = safe_string(name)
     maxscript = f"""(
     local obj = getNodeByName "{safe}"
     if obj == undefined do return "Object not found: {safe}"
@@ -323,7 +321,7 @@ def set_data_channel_operator(
     Returns:
         Confirmation with the updated operator state.
     """
-    safe = _safe(name)
+    safe = safe_string(name)
 
     lines = [
         f'local obj = getNodeByName "{safe}"',
@@ -337,7 +335,7 @@ def set_data_channel_operator(
 
     for key, val in params.items():
         if key == "node" and isinstance(val, str):
-            safe_node = _safe(val)
+            safe_node = safe_string(val)
             lines.append(f'op.{key} = getNodeByName "{safe_node}"')
         elif key == "script" and isinstance(val, str):
             safe_script = val.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
@@ -401,7 +399,7 @@ def add_dc_script_operator(
     Returns:
         Confirmation with created modifier info.
     """
-    safe = _safe(name)
+    safe = safe_string(name)
 
     # Wrap script if needed
     if "on Process" not in script:
@@ -531,8 +529,8 @@ def load_dc_preset(
     Returns:
         Confirmation.
     """
-    safe = _safe(name)
-    safe_preset = _safe(preset_name)
+    safe = safe_string(name)
+    safe_preset = safe_string(preset_name)
     maxscript = f"""(
     local obj = getNodeByName "{safe}"
     if obj == undefined do return "Object not found: {safe}"

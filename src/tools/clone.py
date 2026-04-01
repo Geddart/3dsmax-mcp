@@ -1,16 +1,15 @@
+import json as _json
 from typing import Optional
 from ..server import mcp, client
-
-
-def _safe_name(name: str) -> str:
-    return name.replace("\\", "\\\\").replace('"', '\\"')
+from ..coerce import StrList, FloatList
+from src.helpers.maxscript import safe_string
 
 
 @mcp.tool()
 def clone_objects(
-    names: list[str],
+    names: StrList,
     mode: str = "copy",
-    offset: Optional[list[float]] = None,
+    offset: Optional[FloatList] = None,
 ) -> str:
     """Clone (copy/instance/reference) objects in the scene.
 
@@ -21,12 +20,23 @@ def clone_objects(
 
     Returns list of new clone names.
     """
+    if client.native_available:
+        try:
+            params: dict = {"names": names, "mode": mode}
+            if offset:
+                params["offset"] = offset
+            response = client.send_command(_json.dumps(params), cmd_type="native:clone_objects")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    # ── MAXScript fallback (TCP) ──────────────────────────────────
     if offset is None:
         offset = [0.0, 0.0, 0.0]
 
     mode_map = {"copy": "#copy", "instance": "#instance", "reference": "#reference"}
     ms_mode = mode_map.get(mode, "#copy")
-    name_arr = "#(" + ", ".join(f'"{_safe_name(n)}"' for n in names) + ")"
+    name_arr = "#(" + ", ".join(f'"{safe_string(n)}"' for n in names) + ")"
 
     maxscript = f"""(
         local nameList = {name_arr}

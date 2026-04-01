@@ -1,9 +1,8 @@
+import json as _json
+
 from ..server import mcp, client
-
-
-def _safe_name(name: str) -> str:
-    """Escape a string for use in a MAXScript string literal."""
-    return name.replace("\\", "\\\\").replace('"', '\\"')
+from ..coerce import StrList
+from src.helpers.maxscript import safe_string
 
 
 @mcp.tool()
@@ -15,7 +14,16 @@ def get_object_properties(name: str) -> str:
 
     Returns properties including transform, material, and modifier stack.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            params = _json.dumps({"name": name})
+            response = client.send_command(params, cmd_type="native:get_object_properties")
+            return response.get("result", "{}")
+        except RuntimeError:
+            pass
+
+    # ── MAXScript fallback (TCP) ──────────────────────────────────
+    safe = safe_string(name)
     maxscript = f"""(
         local obj = getNodeByName "{safe}"
         if obj != undefined then (
@@ -87,6 +95,10 @@ def get_object_properties(name: str) -> str:
 def set_object_property(name: str, property: str, value: str) -> str:
     """Set a property on a named object in the 3ds Max scene.
 
+    If unsure of exact property names, call get_object_properties or
+    inspect_object first. Property names vary by class (e.g. Cylinder has
+    "radius" not "radius1", Cone has "radius1"/"radius2").
+
     Args:
         name: The object name (e.g. "Box001")
         property: The property to set (e.g. "pos", "wirecolor", "height")
@@ -94,13 +106,22 @@ def set_object_property(name: str, property: str, value: str) -> str:
 
     Returns confirmation or error message.
     """
-    safe = _safe_name(name)
-    safe_prop = _safe_name(property)
+    if client.native_available:
+        try:
+            params = _json.dumps({"name": name, "property": property, "value": value})
+            response = client.send_command(params, cmd_type="native:set_object_property")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    # ── MAXScript fallback (TCP) ──────────────────────────────────
+    safe = safe_string(name)
+    safe_prop = safe_string(property)
     maxscript = f"""(
         local obj = getNodeByName "{safe}"
         if obj != undefined then (
             try (
-                execute ("obj." + "{safe_prop}" + " = " + "{value}")
+                execute ("$'" + obj.name + "'." + "{safe_prop}" + " = " + "{value}")
                 "Set {safe_prop} = " + ({value} as string) + " on " + obj.name
             ) catch (
                 "Error: " + (getCurrentException())
@@ -111,6 +132,29 @@ def set_object_property(name: str, property: str, value: str) -> str:
     )"""
     response = client.send_command(maxscript)
     return response.get("result", "")
+
+
+# Sensible defaults for common geometry types — SDK defaults are all zeros,
+# which creates invisible objects.  Only applied when params is empty.
+_TYPE_DEFAULTS = {
+    "box":      "length:25 width:25 height:25",
+    "sphere":   "radius:25",
+    "cylinder": "radius:10 height:25",
+    "cone":     "radius1:15 radius2:0 height:25",
+    "torus":    "radius:20 radius2:5",
+    "plane":    "length:50 width:50",
+    "teapot":   "radius:15",
+    "tube":     "radius1:15 radius2:10 height:25",
+    "pyramid":  "width:25 depth:25 height:25",
+    "geosphere": "radius:25",
+    "hedra":    "radius:15",
+    "torusknot": "radius:20 radius2:4",
+    "chamferbox": "length:25 width:25 height:25 fillet:2",
+    "chamfercyl": "radius:10 height:25 fillet:2",
+    "oiltank":  "radius:15 height:25 capheight:5",
+    "spindle":  "radius:15 height:25 capheight:5",
+    "capsule":  "radius:10 height:25",
+}
 
 
 @mcp.tool()
@@ -124,7 +168,24 @@ def create_object(type: str, name: str = "", params: str = "") -> str:
 
     Returns the name of the created object.
     """
-    safe = _safe_name(name)
+    # Apply sensible defaults when no params given — SDK defaults are all zeros
+    if not params:
+        params = _TYPE_DEFAULTS.get(type.lower(), "")
+
+    if client.native_available:
+        try:
+            p = {"type": type}
+            if name:
+                p["name"] = name
+            if params:
+                p["params"] = params
+            response = client.send_command(_json.dumps(p), cmd_type="native:create_object")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    # ── MAXScript fallback (TCP) ──────────────────────────────────
+    safe = safe_string(name)
     name_param = f' name:"{safe}"' if name else ""
     maxscript = f"""(
         local obj = {type}{name_param} {params}
@@ -135,7 +196,7 @@ def create_object(type: str, name: str = "", params: str = "") -> str:
 
 
 @mcp.tool()
-def delete_objects(names: list[str]) -> str:
+def delete_objects(names: StrList) -> str:
     """Delete objects from the 3ds Max scene by name.
 
     Args:
@@ -143,7 +204,16 @@ def delete_objects(names: list[str]) -> str:
 
     Returns summary of deleted and not found objects.
     """
-    name_checks = [f'"{_safe_name(n)}"' for n in names]
+    if client.native_available:
+        try:
+            params = _json.dumps({"names": names})
+            response = client.send_command(params, cmd_type="native:delete_objects")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    # ── MAXScript fallback (TCP) ──────────────────────────────────
+    name_checks = [f'"{safe_string(n)}"' for n in names]
     names_array = "#(" + ", ".join(name_checks) + ")"
 
     maxscript = f"""(

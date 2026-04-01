@@ -1,9 +1,11 @@
+import json
 import os
 import tempfile
 
 from mcp.server.fastmcp import Image
 
 from ..server import mcp, client
+from ..coerce import StrList
 
 
 COMMS_DIR = os.path.join(tempfile.gettempdir(), "3dsmax-mcp")
@@ -89,6 +91,13 @@ def capture_viewport() -> Image:
     Returns the viewport screenshot as a PNG image that can be displayed
     directly in the chat.
     """
+    if client.native_available:
+        response = client.send_command(json.dumps({}), cmd_type="native:capture_viewport")
+        data = json.loads(response.get("result", "{}"))
+        file_path = data.get("file", "")
+        if file_path:
+            return Image(data=_read_image_bytes(file_path), format="png")
+
     capture_path = os.path.join(COMMS_DIR, "viewport_capture.png").replace("\\", "/")
     _capture_viewport_to_file(capture_path)
     img_data = _read_image_bytes(capture_path)
@@ -125,6 +134,15 @@ def capture_screen(
 
     max_width = max(0, int(max_width))
     max_height = max(0, int(max_height))
+
+    if client.native_available:
+        payload = json.dumps({"max_width": max_width, "max_height": max_height})
+        response = client.send_command(payload, cmd_type="native:capture_screen")
+        data = json.loads(response.get("result", "{}"))
+        file_path = data.get("file", "")
+        if file_path:
+            return Image(data=_read_image_bytes(file_path), format="jpeg")
+
     max_bytes = max(0, int(max_bytes))
     min_width = max(1, int(min_width))
 
@@ -147,3 +165,36 @@ def capture_screen(
             attempts += 1
 
     return Image(data=img_data, format="jpeg")
+
+
+@mcp.tool()
+def capture_multi_view(
+    views: StrList | None = None,
+) -> Image:
+    """Capture multiple viewport angles and stitch into a single labeled grid image.
+
+    Captures 4 orthographic views in rapid succession without user interaction,
+    stitches them into a 2x2 grid with labels, and returns as one image.
+    Gives AI complete spatial awareness from a single image — saves tokens
+    vs 4 separate capture_viewport calls.
+
+    Each view auto-zooms to scene extents before capture.
+    Original viewport state is restored after capture.
+
+    Args:
+        views: List of view names to capture. Default: ["front", "right", "back", "top"].
+               Options: "front", "back", "left", "right", "top", "bottom", "perspective".
+
+    Returns the stitched grid image as PNG.
+    """
+    payload = {}
+    if views:
+        payload["views"] = views
+    response = client.send_command(json.dumps(payload), cmd_type="native:capture_multi_view")
+    raw = response.get("result", "")
+    data = json.loads(raw)
+    file_path = data.get("file", "")
+    if not file_path:
+        raise RuntimeError("No image file returned from multi-view capture")
+    img_data = _read_image_bytes(file_path)
+    return Image(data=img_data, format="png")

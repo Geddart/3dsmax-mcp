@@ -1,12 +1,12 @@
+import json as _json
+
 from ..server import mcp, client
-
-
-def _safe_name(name: str) -> str:
-    return name.replace("\\", "\\\\").replace('"', '\\"')
+from ..coerce import StrList
+from src.helpers.maxscript import safe_string
 
 
 @mcp.tool()
-def set_parent(children: list[str], parent: str = "") -> str:
+def set_parent(children: StrList, parent: str = "") -> str:
     """Parent or unparent objects in the 3ds Max scene.
 
     Args:
@@ -15,10 +15,15 @@ def set_parent(children: list[str], parent: str = "") -> str:
 
     Returns confirmation summary.
     """
-    child_names = "#(" + ", ".join(f'"{_safe_name(n)}"' for n in children) + ")"
+    if client.native_available:
+        payload = _json.dumps({"children": children, "parent": parent})
+        response = client.send_command(payload, cmd_type="native:set_parent")
+        return response.get("result", "")
+
+    child_names = "#(" + ", ".join(f'"{safe_string(n)}"' for n in children) + ")"
 
     if parent:
-        safe_parent = _safe_name(parent)
+        safe_parent = safe_string(parent)
         maxscript = f"""(
             local parentObj = getNodeByName "{safe_parent}"
             if parentObj == undefined then (
@@ -72,7 +77,16 @@ def get_hierarchy(name: str) -> str:
 
     Returns JSON tree with name, class, and children for each node.
     """
-    safe = _safe_name(name)
+    if client.native_available:
+        try:
+            params = _json.dumps({"name": name})
+            response = client.send_command(params, cmd_type="native:get_hierarchy")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    # ── MAXScript fallback (TCP) ──────────────────────────────────
+    safe = safe_string(name)
     maxscript = f"""(
         fn buildTree obj = (
             local childArr = #()

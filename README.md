@@ -4,216 +4,142 @@
   <img src="images/logo.png" alt="3dsmax-mcp logo" width="200">
 </p>
 
-MCP server bridging Claude and other agents to Autodesk 3ds Max via TCP socket.
+MCP server that connects AI agents to Autodesk 3ds Max.
+Works with Claude Code, Claude Desktop, Codex, Gemini, and any MCP-compatible client.
 
-## Prerequisites
+### What's new in 0.5.0
+
+- **Native C++ Bridge** — 76 handlers running inside 3ds Max as a GUP plugin, 86-130x faster than MAXScript
+- **One-step installer** — `uv run python install.py` handles everything
+- **Multi-view capture** — pure SDK viewport switching, no MAXScript re-entrancy
+- **Controller & wiring tools** — assign controllers, wire parameters, inspect track views
+- **PB1 fallback** — legacy primitives (Capsule, Hedra, etc.) now get correct params
+- **159 tools** across scene, objects, materials, modifiers, controllers, viewport, introspection.
+- **Bundled MAXScript reference** — 10 topic files for agents to write correct MAXScript
+
+## Architecture
+
+```
+Agent  <-->  FastMCP (Python/stdio)  <-->  Named Pipe  <-->  C++ GUP Plugin  <-->  3ds Max SDK
+                                      |
+                                      +--> TCP:8765 fallback --> MAXScript listener
+```
+
+The native bridge runs inside 3ds Max as a Global Utility Plugin. It reads the scene graph directly through the C++ SDK and communicates over Windows named pipes. 76 native handlers for scene, objects, materials, modifiers, controllers, viewport, introspection, and more.
+
+## Requirements
 
 - [Python 3.10+](https://www.python.org/)
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- Autodesk 3ds Max 2025+ (only 2026 tested!)
+- [uv](https://docs.astral.sh/uv/)
+- Autodesk 3ds Max 2026 (2024/2025 supported via MAXScript fallback)
 
-## Ideas you can try
+## Installation
 
-- Write MaxScript/Python directly. Claude will read and debug code, fix issues, and keep the agent running on a loop until success.
-- Write OSL shaders
-- Read and manipulate scene data.
-- Organize objects.
-- Set up project folders and organize them.
-- Get feedback on your renders. (Claude can see outside 3dsmax window)
-- Will learn from mistakes and save it in SKILL.md
-- Basic 3dsmax skill file is included. Contributions welcome.
-- You can also rename objects using AI.(Only works on Claude Code). Ask Claude to rename objects using haiku. Claude will run haiku subagent and analyze selected objects in the scene. Be aware that this burns tokens CRAZILY. Only do this if you're rich.
-- Try using plugins like Forest Pack and tyFlow.
-- Convert scenes between renderers
-
-## Setup
-
-### 1. Clone the repo
-
-```bash
+```powershell
 git clone https://github.com/cl0nazepamm/3dsmax-mcp.git
 cd 3dsmax-mcp
-```
-
-### 2. Install dependencies
-
-```bash
 uv sync
+uv run python install.py
 ```
 
-### 3. Build and register skill file
+The installer will:
+- Detect your 3ds Max installation
+- Deploy the native bridge plugin (`.gup`)
+- Install the MAXScript listener (TCP fallback)
+- Build skill files for your agents
+- Register with Claude Code / Codex / Gemini / Claude Desktop
 
-```bash
-python scripts/build_skill.py
-python scripts/register.py
-```
-This copies the development skill to `.claude/skills/` and registers the skill file to .claude json.
+Restart 3ds Max and any running agents after installation.
 
-#### Global skill for all agents (optional)
+### Manual registration
 
-I recommend creating a symbolic link for the skill file so both Claude, Codex and Gemini can all get it. Use command prompt not powershell for this. 
+If the installer can't find your agent, register manually:
 
-First install agent-skills if you don't have it. Via powershell  `npm install -g @govcraft/agent-skills`
-
-then
-
-```bash
-mklink /D "%USERPROFILE%\.agents\skills\3dsmax-mcp-dev" "C:\path\to\3dsmax-mcp\skills\3dsmax-mcp-dev"
-mklink /D "%USERPROFILE%\.claude\skills\3dsmax-mcp-dev" "C:\path\to\3dsmax-mcp\skills\3dsmax-mcp-dev"
-```
-
-Replace `C:\path\to\3dsmax-mcp` with the actual path where you cloned the repo. This lets coding agents load the 3ds Max skill even when you're working outside this project. Requires admin permissions. If you don't have agent-skills you can just install it to `.codex/skills` or `.gemini/skills` etc. Claude might require you to create symlink in `.claude/skills`
-
-### 4. Set up 3ds Max (MAXScript listener)
-
-Copy the MAXScript files into your 3ds Max installation:
-
-1. Copy `maxscript/mcp_server.ms` to:
-   ```
-   [3ds Max Install Dir]/scripts/mcp/mcp_server.ms
-   ```
-
-2. Copy `maxscript/startup/mcp_autostart.ms` to:
-   ```
-   [3ds Max Install Dir]/scripts/startup/mcp_autostart.ms
-   ```
-
-3. Restart 3ds Max. You should see `MCP: Auto-start complete` in the MAXScript Listener.
-
-### 5. Setting up MCP for agents.
-
-In powershell 
-
-```bash
+**Claude Code / Codex / Gemini:**
+```powershell
 claude mcp add --scope user 3dsmax-mcp -- uv run --directory "C:\path\to\3dsmax-mcp" 3dsmax-mcp
-codex mcp add 3dsmax-mcp -- uv run --directory "C:\path\to\3dsmax-mcp 3dsmax-mcp" 3dsmax-mcp
-gemini mcp add --scope user 3dsmax-mcp -- uv run --directory "C:\path\to\3dsmax-mcp" 3dsmax-mcp
-
 ```
 
-#### Claude Desktop App
-
-Edit `%APPDATA%\Claude\claude_desktop_config.json`
-
-```bash
+**Claude Desktop** — add to `%APPDATA%\Claude\claude_desktop_config.json`:
+```json
 {
   "mcpServers": {
     "3dsmax-mcp": {
       "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "C:\\path\\to\\3dsmax-mcp",
-        "3dsmax-mcp"
-      ]
+      "args": ["run", "--directory", "C:\\path\\to\\3dsmax-mcp", "3dsmax-mcp"]
     }
   }
 }
 ```
-Replace `C:\\path\\to\\3dsmax-mcp` with the actual path where you cloned the repo. Restart the Claude Desktop app after editing.
 
-#### Add skill to Claude app
-Open Claude app go to settings> capabilities section and upload the .MD
+## Updating
 
-## How to update
-
-in powershell
-```
+```powershell
 git pull
-python scripts/build_skill.py
-
+uv sync
+uv run python install.py
 ```
 
+## Skill file
 
-## How it works
+The skill file teaches agents how to use the tools, what pitfalls to avoid, and how 3ds Max works. Without it, agents will guess wrong on material workflows, controller paths, and plugin APIs. The installer builds and deploys it automatically.
 
-1. The MAXScript listener runs inside 3ds Max on TCP port 8765
-2. The MCP server (Python) sends MAXScript commands via TCP socket
-3. 3ds Max executes commands and returns JSON responses
-4. Claude sends commands through the MCP server and gets results back
+If you need to rebuild manually:
+```powershell
+python scripts/build_skill.py
+```
 
-# Safe mode notice
+## Safe mode
 
-By default safe mode (safeExecute) is ON. This is a security feature so agents cannot run malicious commands.
- 
- Blocked
-  - DOSCommand — shell/cmd execution
-  - ShellLaunch — launch external applications
-  - deleteFile — delete files from disk
-  - python.Execute — Python execution inside 3ds Max
-  - createFile — write new files to disk
- 
+Both the native bridge and the MAXScript listener read from a shared config:
 
-  Allowed:
-  - All scene operations (create, modify, delete objects, materials, modifiers)
-  - openFile / readLine — read files
-  - getDir / getFiles — list directories and files
-  - render — render scenes
-  - saveMaxFile — save .max files
-  - gw.getViewportDib() — viewport capture
-  - fileIn — load MAXScript files (but reloading the server just restarts with safeMode = true again)
+```
+%LOCALAPPDATA%\3dsmax-mcp\mcp_config.ini
+```
 
-If you want to disable safeExecute flip the `safeMode = true` to `false` in `mcp_server.ms`
+```ini
+[mcp]
+safe_mode = true
+```
 
+When enabled (default), these commands are blocked:
+`DOSCommand`, `ShellLaunch`, `deleteFile`, `python.Execute`, `createFile`
 
-## Current list of tools
+To disable, set `safe_mode = false` and restart 3ds Max.
 
-- `build_structure` - Procedurally builds larger structures (house, tower, castle, etc.)
-- `clone_objects` - Clones objects as copy/instance/reference with optional offset.
-- `add_data_channel` - Creates a Data Channel modifier graph.
-- `inspect_data_channel` - Reads the full operator graph of a Data Channel modifier.
-- `set_data_channel_operator` - Edits parameters of one Data Channel operator.
-- `add_dc_script_operator` - Adds a MAXScript-based Data Channel script operator.
-- `list_dc_presets` - Lists available Data Channel presets.
-- `load_dc_preset` - Applies a Data Channel preset to an object.
-- `get_effects` - Lists atmospheric/render effects in the scene.
-- `toggle_effect` - Enables/disables an effect by index.
-- `delete_effect` - Deletes an atmospheric/render effect by index.
-- `execute_maxscript` - Runs arbitrary MAXScript and returns the result.
-- `build_floor_plan` - Builds a floor plan from room/cell definitions.
-- `place_on_grid` - Places one object at a grid index.
-- `place_grid_array` - Fills a grid volume with repeated objects.
-- `place_circle` - Places objects evenly around a circle.
-- `set_parent` - Parents/unparents objects.
-- `get_hierarchy` - Returns recursive child hierarchy for an object.
-- `isolate_and_capture_selected` - Isolates selected objects and captures viewport images.
-- `batch_rename_objects` - Renames many objects in one operation.
-- `inspect_object` - High-level deep inspection of one object.
-- `inspect_properties` - Deep property dump for object/base/modifier/material.
-- `inspect_modifier_properties` - Deep property dump for one modifier.
-- `assign_material` - Creates and assigns a material to objects.
-- `set_material_property` - Sets one property on object material/sub-material.
-- `set_material_properties` - Sets multiple material properties at once.
-- `get_material_slots` - Runtime slot inspector with low-token scopes (`map`/`summary`/`all`) plus bitmap/normal helper class hints.
-- `create_texture_map` - Creates a texture map and stores it as a global variable.
-- `set_texture_map_properties` - Sets properties on a stored texture map.
-- `set_sub_material` - Creates/assigns sub-material slots in Multi/Sub material.
-- `write_osl_shader` - Writes OSL to disk and creates an OSLMap from it.
-- `create_material_from_textures` - Auto-builds PBR material from a texture folder.
-- `get_materials` - Lists assigned materials and their object usage.
-- `add_modifier` - Adds a modifier to an object.
-- `remove_modifier` - Removes a modifier from an object.
-- `set_modifier_state` - Toggles modifier enabled/view/render states.
-- `collapse_modifier_stack` - Collapses modifier stack to baked geometry.
-- `make_modifier_unique` - De-instances a shared modifier.
-- `batch_modify` - Scene-wide property edits for all modifiers of a class.
-- `get_object_properties` - Detailed object properties (transform/material/modifiers).
-- `set_object_property` - Sets one object property via MAXScript expression.
-- `create_object` - Creates a primitive/object in scene.
-- `delete_objects` - Deletes objects by name.
-- `render_scene` - Runs an actual render (optionally saves file).
-- `manage_scene` - Scene state actions (hold/fetch/reset/save/info).
-- `find_class_instances` - Finds class instances scene-wide (`getclassinstances` style).
-- `get_instances` - Gets all object instances sharing same base object.
-- `get_dependencies` - Traces dependency graph for an object.
-- `find_objects_by_property` - Finds objects by property/value match.
-- `get_scene_info` - Lists scene objects with filters.
-- `get_selection` - Returns current selection info.
-- `select_objects` - Selects objects by names/pattern/class/all.
-- `get_state_sets` - Reads State Sets with camera/range metadata.
-- `get_camera_sequence` - Access to camera sequencer.
-- `transform_object` - Moves/rotates/scales an object.
-- `capture_viewport` - Fast active-viewport screenshot (safe default).
-- `capture_screen` - Fullscreen capture, disabled by default; requires `enabled=true`.
-- `scatter_forest_pack` - Builds a Forest Pack scatter object from named surfaces and source objects.
-- `set_visibility` - Hide/show/toggle/freeze/unfreeze objects.
+## Tools
+
+159 tools across scene management, objects, materials, modifiers, controllers, wiring, viewport capture, file access, plugin introspection, tyFlow, Forest Pack, RailClone, Data Channel, and more.
+
+| Category | Tools | Transport |
+|----------|-------|-----------|
+| Scene reads | `get_scene_info`, `get_selection`, `get_scene_snapshot`, `get_selection_snapshot`, `get_scene_delta`, `get_hierarchy`, `get_session_context` | C++ |
+| Objects | `create_object`, `delete_objects`, `transform_object`, `clone_objects`, `select_objects`, `set_object_property`, `set_visibility`, `set_parent`, `batch_rename_objects` | C++/Hybrid |
+| Inspection | `inspect_object`, `inspect_properties`, `introspect_class`, `introspect_instance`, `walk_references`, `learn_scene_patterns`, `map_class_relationships` | C++ |
+| Materials | `assign_material`, `set_material_property`, `get_material_slots`, `create_texture_map`, `write_osl_shader`, `create_shell_material`, `replace_material` | Hybrid |
+| Modifiers | `add_modifier`, `remove_modifier`, `set_modifier_state`, `collapse_modifier_stack`, `batch_modify` | Hybrid |
+| Controllers | `assign_controller`, `inspect_controller`, `inspect_track_view`, `set_controller_props`, `add_controller_target` | Hybrid |
+| Wiring | `wire_params`, `unwire_params`, `get_wired_params`, `list_wireable_params` | Hybrid |
+| Viewport | `capture_viewport`, `capture_multi_view`, `capture_screen`, `render_scene` | C++ |
+| Organization | `manage_layers`, `manage_groups`, `manage_selection_sets`, `manage_scene` | C++ |
+| File access | `inspect_max_file`, `merge_from_file`, `search_max_files`, `batch_file_info` | C++ |
+| Plugins | `discover_plugin_classes`, `introspect_class`, `introspect_instance`, `get_plugin_capabilities` | C++ |
+| Scene events | `watch_scene`, `get_scene_delta` | C++ |
+| tyFlow | `create_tyflow`, `get_tyflow_info`, `modify_tyflow_operator`, `set_tyflow_shape`, `reset_tyflow_simulation` | MAXScript |
+| Forest Pack | `scatter_forest_pack`, `verify_scatter_output` | MAXScript |
+| Data Channel | `add_data_channel`, `inspect_data_channel`, `set_data_channel_operator` | MAXScript |
+| Scripting | `execute_maxscript` | Pipe |
+
+## Building from source (native bridge)
+
+Only needed if you want to modify the C++ plugin.
+
+Requires: 3ds Max 2026 SDK, Visual Studio 2022, CMake 3.20+
+
+```powershell
+cd native
+cmake -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+```
+
+Then copy `native/build/Release/mcp_bridge.gup` to `C:\Program Files\Autodesk\3ds Max 2026\plugins\`.

@@ -11,3 +11,5 @@ tyflow = true
 rpmanager = true
 railclone = true
 forest_pack = true
+plugins = true
+plugin_workflows = true

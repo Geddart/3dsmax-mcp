@@ -6,15 +6,10 @@ math-driven motion, and list controllers for layered blending.
 """
 
 from typing import Optional
+import json as _json
 from ..server import mcp, client
-
-
-def _safe(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _safe_name(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+from ..coerce import DictList
+from src.helpers.maxscript import safe_string, safe_name, normalize_subanim_path
 
 
 # ── Controller type registry ────────────────────────────────────────
@@ -79,13 +74,13 @@ def _build_prop_lines(prefix: str, params: dict) -> list[str]:
     """Build MAXScript lines to set properties on a controller variable."""
     lines = []
     for key, val in params.items():
-        safe_key = _safe(key)
+        safe_key = safe_string(key)
         if isinstance(val, bool):
             lines.append(f'try ({prefix}.{safe_key} = {"true" if val else "false"}) catch ()')
         elif isinstance(val, (int, float)):
             lines.append(f'try ({prefix}.{safe_key} = {val}) catch ()')
         elif isinstance(val, str):
-            safe_val = _safe(val)
+            safe_val = safe_string(val)
             lines.append(f'try ({prefix}.{safe_key} = "{safe_val}") catch ()')
     return lines
 
@@ -96,7 +91,7 @@ def assign_controller(
     param_path: str,
     controller_type: str,
     script: Optional[str] = None,
-    variables: Optional[list[dict]] = None,
+    variables: Optional[DictList] = None,
     params: Optional[dict] = None,
     layer: bool = False,
 ) -> str:
@@ -124,8 +119,10 @@ def assign_controller(
             LIST: "float_list", "position_list", "rotation_list", "scale_list"
             EXPRESSION: "float_expression", "position_expression"
             OTHER: "spring"
-        script: Script text for script controllers, or expression string
-                for expression controllers.
+        script: Script text for script controllers (full MAXScript supported),
+                or math expression for expression controllers (NO MAXScript,
+                only math with named variables like "x + 10").
+                To reference other objects, use float_script NOT float_expression.
         variables: List of dicts for node references:
             - Script controllers: [{"var_name": "ground", "object": "Plane001"}]
               Creates name-independent node references via ctrl.addNode.
@@ -142,13 +139,26 @@ def assign_controller(
     Returns:
         JSON with controller class, object, and param path.
     """
+    if client.native_available:
+        payload = {
+            "name": name,
+            "param_path": param_path,
+            "controller_type": controller_type,
+            "script": script or "",
+            "variables": list(variables) if variables else [],
+            "params": {k: str(v) for k, v in (params or {}).items()},
+            "layer": layer,
+        }
+        response = client.send_command(_json.dumps(payload), cmd_type="native:assign_controller")
+        return response.get("result", "")
+
     ct = controller_type.lower()
     if ct not in _CONTROLLER_MAP:
         keys = ", ".join(sorted(_CONTROLLER_MAP.keys()))
         return f"Unknown controller_type: {controller_type}. Available: {keys}"
 
-    safe_obj = _safe_name(name)
-    safe_path = _safe(param_path)
+    safe_obj = safe_name(name)
+    safe_path = safe_string(normalize_subanim_path(param_path))
     sep = "" if safe_path.startswith("[") else "."
     ctor = _CONTROLLER_MAP[ct]
 
@@ -227,33 +237,33 @@ def _build_controller_config(
     if variables:
         if ct in _SCRIPT_TYPES:
             for var in variables:
-                vname = _safe(var.get("var_name", ""))
-                vobj = _safe_name(var.get("object", ""))
+                vname = safe_string(var.get("var_name", ""))
+                vobj = safe_name(var.get("object", ""))
                 lines.append(f'local varNode = getNodeByName "{vobj}"')
                 lines.append(f'if varNode != undefined do {ctrl_var}.addNode "{vname}" varNode')
         elif ct in _CONSTRAINT_TYPES:
             for var in variables:
-                tobj = _safe_name(var.get("object", ""))
+                tobj = safe_name(var.get("object", ""))
                 weight = var.get("weight", 50.0)
                 lines.append(f'local tgtNode = getNodeByName "{tobj}"')
                 lines.append(f'if tgtNode != undefined do {ctrl_var}.appendTarget tgtNode {weight}')
         elif ct == _LINK_TYPE:
             for var in variables:
-                tobj = _safe_name(var.get("object", ""))
+                tobj = safe_name(var.get("object", ""))
                 frame = var.get("frame", 0)
                 lines.append(f'local tgtNode = getNodeByName "{tobj}"')
                 lines.append(f'if tgtNode != undefined do {ctrl_var}.addTarget tgtNode {frame}')
         elif ct == _ATTACHMENT_TYPE:
             for var in variables:
-                tobj = _safe_name(var.get("object", ""))
+                tobj = safe_name(var.get("object", ""))
                 face = var.get("face", 1)
                 lines.append(f'local tgtNode = getNodeByName "{tobj}"')
                 lines.append(f'if tgtNode != undefined do {ctrl_var}.appendTarget tgtNode {face}')
         elif ct in _EXPRESSION_TYPES:
             for var in variables:
-                vname = _safe(var.get("var_name", ""))
-                tobj = _safe_name(var.get("object", ""))
-                tpath = _safe(var.get("target_param_path", ""))
+                vname = safe_string(var.get("var_name", ""))
+                tobj = safe_name(var.get("object", ""))
+                tpath = safe_string(var.get("target_param_path", ""))
                 tsep = "" if tpath.startswith("[") else "."
                 lines.append(f'local tgtNode = getNodeByName "{tobj}"')
                 lines.append(f'if tgtNode != undefined do (')
@@ -300,8 +310,13 @@ def inspect_controller(
     Returns:
         JSON with controller details, properties table, and type-specific sections.
     """
-    safe_obj = _safe_name(name)
-    safe_path = _safe(param_path)
+    if client.native_available:
+        payload = _json.dumps({"name": name, "param_path": param_path})
+        response = client.send_command(payload, cmd_type="native:inspect_controller")
+        return response.get("result", "")
+
+    safe_obj = safe_name(name)
+    safe_path = safe_string(normalize_subanim_path(param_path))
     sep = "" if safe_path.startswith("[") else "."
 
     maxscript = f"""(
@@ -441,6 +456,148 @@ def inspect_controller(
 
 
 @mcp.tool()
+def inspect_track_view(
+    name: str,
+    depth: int = 4,
+    filter: Optional[str] = None,
+    include_values: bool = True,
+) -> str:
+    """Inspect an object's controller/track tree in a Track View-style hierarchy.
+
+    This is the browse-first companion to inspect_controller:
+    - walks sub-anims recursively
+    - reports track names, paths, controller classes, and child tracks
+    - optionally includes compact current values
+
+    Args:
+        name: Object name (e.g. "Box001")
+        depth: Max recursion depth (default 4, max 6)
+        filter: Optional case-insensitive substring filter on path/name/controller
+        include_values: Include compact current value strings when true
+
+    Returns:
+        JSON with object info and nested track tree.
+    """
+    if client.native_available:
+        payload = _json.dumps({
+            "name": name,
+            "depth": min(max(int(depth), 1), 6),
+            "filter": filter or "",
+            "include_values": include_values,
+        })
+        response = client.send_command(payload, cmd_type="native:inspect_track_view")
+        return response.get("result", "")
+
+    safe_obj = safe_name(name)
+    safe_filter = safe_string((filter or "").lower())
+    max_depth = min(max(int(depth), 1), 6)
+    include_values_str = "true" if include_values else "false"
+
+    maxscript = f"""(
+    local esc = MCP_Server.escapeJsonString
+    local obj = getNodeByName "{safe_obj}"
+    if obj == undefined do return "{{\\"error\\":\\"Object not found: {safe_obj}\\"}}"
+
+    local filterStr = "{safe_filter}"
+    local includeValues = {include_values_str}
+
+    fn matchesFilter text filterText = (
+        if filterText == "" then return true
+        if text == undefined then return false
+        (findString (toLower text) filterText) != undefined
+    )
+
+    fn compactValue sub includeVals = (
+        if not includeVals then return ""
+        local valStr = try ((sub.value) as string) catch ""
+        valStr = esc valStr
+        if valStr.count > 120 do valStr = (substring valStr 1 120) + "..."
+        valStr
+    )
+
+    fn buildTrack sub path trackName depthLeft filterText includeVals = (
+        if depthLeft < 0 then return undefined
+
+        local ctrl = try (sub.controller) catch undefined
+        local ctrlClass = if ctrl != undefined then ((classof ctrl) as string) else ""
+        local ctrlSuper = if ctrl != undefined then ((superClassOf ctrl) as string) else ""
+        local rawName = if trackName != undefined then (trackName as string) else "?"
+        local pathStr = path
+        local valueStr = compactValue sub includeVals
+
+        local childrenJson = "["
+        local childCount = 0
+        local firstChild = true
+
+        if depthLeft > 0 do (
+            local numSubs = try (sub.numsubs) catch 0
+            for i = 1 to numSubs do (
+                local child = try (getSubAnim sub i) catch undefined
+                if child == undefined do continue
+                local childName = try ((getSubAnimName sub i) as string) catch undefined
+                if childName == undefined do continue
+                local childPath = pathStr + "[#" + childName + "]"
+                local childJson = buildTrack child childPath childName (depthLeft - 1) filterText includeVals
+                if childJson != undefined do (
+                    if not firstChild do childrenJson += ","
+                    firstChild = false
+                    childrenJson += childJson
+                    childCount += 1
+                )
+            )
+        )
+        childrenJson += "]"
+
+        local haystack = (toLower rawName) + " " + (toLower pathStr) + " " + (toLower ctrlClass)
+        local keep = matchesFilter haystack filterText or childCount > 0
+        if not keep then return undefined
+
+        local json = "{{"
+        json += "\\"name\\":\\"" + (esc rawName) + "\\""
+        json += ",\\"path\\":\\"" + (esc pathStr) + "\\""
+        if ctrlClass != "" then json += ",\\"controller\\":\\"" + (esc ctrlClass) + "\\""
+        if ctrlSuper != "" then json += ",\\"controllerSuperclass\\":\\"" + (esc ctrlSuper) + "\\""
+        if valueStr != "" then json += ",\\"value\\":\\"" + valueStr + "\\""
+        json += ",\\"childCount\\":" + (childCount as string)
+        json += ",\\"children\\":" + childrenJson
+        json += "}}"
+        json
+    )
+
+    local tracksJson = "["
+    local firstTrack = true
+    local rootCount = 0
+    local numSubs = try (obj.numsubs) catch 0
+    for i = 1 to numSubs do (
+        local child = try (getSubAnim obj i) catch undefined
+        if child == undefined do continue
+        local childName = try ((getSubAnimName obj i) as string) catch undefined
+        if childName == undefined do continue
+        local childPath = "[#" + childName + "]"
+        local childJson = buildTrack child childPath childName ({max_depth} - 1) filterStr includeValues
+        if childJson != undefined do (
+            if not firstTrack do tracksJson += ","
+            firstTrack = false
+            tracksJson += childJson
+            rootCount += 1
+        )
+    )
+    tracksJson += "]"
+
+    "{{" + \
+      "\\"object\\":\\"" + (esc obj.name) + "\\"," + \
+      "\\"class\\":\\"" + (esc ((classof obj) as string)) + "\\"," + \
+      "\\"depth\\":" + ({max_depth} as string) + "," + \
+      "\\"filter\\":\\"" + (esc filterStr) + "\\"," + \
+      "\\"rootTrackCount\\":" + (rootCount as string) + "," + \
+      "\\"tracks\\":" + tracksJson + \
+    "}}"
+)"""
+    response = client.send_command(maxscript, timeout=30.0)
+    return response.get("result", str(response))
+
+
+@mcp.tool()
 def add_controller_target(
     name: str,
     param_path: str,
@@ -468,10 +625,12 @@ def add_controller_target(
     Returns:
         Confirmation message.
     """
-    safe_obj = _safe_name(name)
-    safe_path = _safe(param_path)
-    safe_target = _safe_name(target_object)
-    safe_var = _safe(var_name) if var_name else ""
+    # Always use MAXScript TCP path — ctrl.addNode triggers script re-evaluation
+    # which causes re-entrancy inside the native ExecuteSync handler.
+    safe_obj = safe_name(name)
+    safe_path = safe_string(normalize_subanim_path(param_path))
+    safe_target = safe_name(target_object)
+    safe_var = safe_string(var_name) if var_name else ""
     sep = "" if safe_path.startswith("[") else "."
 
     lines = [
@@ -540,19 +699,35 @@ def set_controller_props(
     expression, or set properties (noise seed/frequency, constraint weights, etc.)
     without replacing the controller.
 
+    IMPORTANT: Float_Expression only supports simple math with named scalar
+    variables (added via add_controller_target). It does NOT support MAXScript
+    or object references like "$Cylinder001.height". If you need MAXScript
+    references to other objects, use float_script controller instead
+    (assign_controller with controller_type="float_script").
+
     Args:
         name: Object name.
         param_path: Sub-anim path to the controlled track.
-        script: New script text for script controllers, or new expression
-                for expression controllers. Expression controllers will
-                automatically call update() after setting.
+        script: New script text for float_script controllers, or new math
+                expression for Float_Expression controllers (e.g. "x + 10",
+                NOT "$obj.height"). Expression controllers call update() after.
         params: Dict of property names to values to set on the controller.
 
     Returns:
         Confirmation message.
     """
-    safe_obj = _safe_name(name)
-    safe_path = _safe(param_path)
+    if client.native_available:
+        payload = {
+            "name": name,
+            "param_path": param_path,
+            "script": script or "",
+            "params": {k: str(v) for k, v in (params or {}).items()},
+        }
+        response = client.send_command(_json.dumps(payload), cmd_type="native:set_controller_props")
+        return response.get("result", "")
+
+    safe_obj = safe_name(name)
+    safe_path = safe_string(normalize_subanim_path(param_path))
     sep = "" if safe_path.startswith("[") else "."
 
     lines = [

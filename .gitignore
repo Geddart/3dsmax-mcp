@@ -9,6 +9,15 @@ build/
 .DS_Store
 .claude/settings.local.json
 .claude/skills/
+.agents/
+AGENTS.md
+TODO.md
+PROJECT_OVERVIEW.md
 *.skill
 nul
 cache/
+local/
+
+# Native C++ build artifacts (but ship the binary)
+native/build/
+!native/bin/
