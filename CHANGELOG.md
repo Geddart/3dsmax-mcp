@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-04-01
+
+### Added
+- **Native C++ bridge** — 76 pure SDK handlers via named pipe (`\\.\pipe\3dsmax-mcp`), bypassing MAXScript for scene reads, object CRUD, modifiers, materials, controllers, viewport capture, and more
+- **Protocol v2** — request IDs, response metadata (transport, timing, safe mode), ping command
+- **Verified workflow tools** — 9 tools that combine action + delta tracking + readback in one call (`create_object_verified`, `assign_material_verified`, `set_material_verified`, `add_modifier_verified`, `transform_object_verified`, etc.)
+- **Scene snapshots & delta tracking** — `get_scene_snapshot`, `get_selection_snapshot`, `get_scene_delta` with per-client session scoping
+- **Session context** — `get_session_context` combines bridge status + capabilities + snapshot in one call
+- **Plugin discovery system** — `discover_plugin_surface`, `get_plugin_manifest`, `inspect_plugin_class`, `inspect_plugin_instance` with MCP resources for manifests/guides/recipes/gotchas
+- **File access tools** — `inspect_max_file`, `merge_from_file`, `batch_file_info`, `search_max_files` (inspect .max files without opening)
+- **Scene organization** — `manage_layers`, `manage_groups`, `manage_selection_sets` via pure C++ SDK
+- **SDK learning tools** — `walk_references`, `map_class_relationships`, `learn_scene_patterns`, `watch_scene`
+- **Material replacement** — `replace_material`, `batch_replace_materials`
+- **RailClone style graph introspection** — `get_railclone_style_graph` reads exposed bases/segments/parameters
+- **Multi-view capture** — `capture_multi_view` stitches 4 viewport angles into one image
+- **Coercion types** — `StrList`, `IntList`, `FloatList`, `DictList` auto-coerce single values into lists
+- **Shared helpers** — `safe_string`, `safe_name`, `normalize_subanim_path` in `src/helpers/maxscript.py`
+- **Installer/uninstaller** — `install.py` and `uninstall.py` for one-step C++ plugin deployment and agent registration
+- **Safe mode config** — `mcp_config.ini` shared between C++ bridge and MAXScript listener
+- **14 test modules** — full test suite with mocked bridge (65 tests)
+- **Enhanced MAXScript listener** — full JSON spec escaping (`\uXXXX`, control chars), `hexToInt`, `ping` command, inline safe mode blocklist
+
+### Changed
+- `MaxClientManager` now uses `transport="auto"` — tries native pipe first, falls back to TCP for port-based slot routing
+- `MaxClientManager` exposes `native_available` property for upstream tool compatibility
+- MAXScript listener upgraded to protocol v2 with `requestId` echo and `meta` block
+- `buildResponse` now includes timing, command type, and safe mode status
+- `execute_maxscript` gains `command` alias parameter (LLMs sometimes send wrong kwarg name)
+- Plugin tool loading expanded: `plugins` and `plugin_workflows` added to `plugins.toml`
+
+### Fixed
+- `safeExecute` was undefined in our MAXScript listener — replaced with upstream's inline blocklist
+- Enhanced `escapeJsonString` handles all control characters, backspace, form feed, `\uXXXX`
+- Protocol v2 client strips UTF-8 BOM, validates request IDs, adds client round-trip timing
+
 ## [0.4.0] - 2026-03-26
 
 ### Added
