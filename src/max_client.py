@@ -384,13 +384,16 @@ class MaxClientManager:
         """Get or create a MaxClient for the given slot."""
         if slot not in self._clients:
             port = self.base_port + slot - 1
-            # Force TCP for slot-based routing — the named pipe name is
-            # hardcoded in the C++ bridge so it can't target specific instances.
+            # Use "auto" transport: tries named pipe first, falls back to TCP.
+            # The named pipe name is hardcoded in the C++ bridge so it can't
+            # target specific instances — but auto mode degrades gracefully:
+            # native commands use pipe (reaching whichever instance has it),
+            # maxscript commands fall back to TCP with port-based routing.
             self._clients[slot] = MaxClient(
                 host=self.host,
                 port=port,
                 timeout=self.timeout,
-                transport="tcp",
+                transport="auto",
             )
         return self._clients[slot]
 
@@ -431,7 +434,7 @@ class MaxClientManager:
         """Check if a specific slot is reachable. Returns status dict."""
         port = self.base_port + slot - 1
         try:
-            c = MaxClient(host=self.host, port=port, timeout=timeout, transport="tcp")
+            c = MaxClient(host=self.host, port=port, timeout=timeout, transport="auto")
             resp = c.send_command(
                 '(local p = (dotNetClass "System.Diagnostics.Process").GetCurrentProcess(); p.Id as string)',
                 timeout=timeout,
