@@ -333,11 +333,13 @@ def introspect_osl(
     else:
         target_setup = f'local m = {safe_class}()'
 
-    # OSL setup
+    # OSL setup — verbatim @"..." preserves backslashes literally,
+    # so do NOT apply safe_string (which escapes \ → \\) for that branch.
     osl_setup = ""
     if osl_file and class_name.lower() in ("oslmap", "osl_map", "osl"):
         if "\\" in osl_file or "/" in osl_file:
-            osl_setup = f'm.OSLPath = @"{safe_osl}"\nm.OSLAutoUpdate = true'
+            raw_path = osl_file.replace('"', '')  # strip stray quotes that would terminate verbatim string
+            osl_setup = f'm.OSLPath = @"{raw_path}"\nm.OSLAutoUpdate = true'
         else:
             osl_setup = f'm.OSLPath = (getDir #maxRoot) + "OSL\\\\{safe_osl}.osl"\nm.OSLAutoUpdate = true'
 
