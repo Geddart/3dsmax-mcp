@@ -115,7 +115,7 @@ To disable, set `safe_mode = false` and restart 3ds Max.
 |----------|-------|-----------|
 | Scene reads | `get_scene_info`, `get_selection`, `get_scene_snapshot`, `get_selection_snapshot`, `get_scene_delta`, `get_hierarchy`, `get_session_context` | C++ |
 | Objects | `create_object`, `delete_objects`, `transform_object`, `clone_objects`, `select_objects`, `set_object_property`, `set_visibility`, `set_parent`, `batch_rename_objects` | C++/Hybrid |
-| Inspection | `inspect_object`, `inspect_properties`, `introspect_class`, `introspect_instance`, `walk_references`, `learn_scene_patterns`, `map_class_relationships` | C++ |
+| Inspection | `inspect_object`, `inspect_properties`, `introspect_class`, `introspect_instance`, `introspect_osl`, `walk_references`, `learn_scene_patterns`, `map_class_relationships` | C++ |
 | Materials | `assign_material`, `set_material_property`, `get_material_slots`, `create_texture_map`, `write_osl_shader`, `create_shell_material`, `replace_material` | Hybrid |
 | Modifiers | `add_modifier`, `remove_modifier`, `set_modifier_state`, `collapse_modifier_stack`, `batch_modify` | Hybrid |
 | Controllers | `assign_controller`, `inspect_controller`, `inspect_track_view`, `set_controller_props`, `add_controller_target` | Hybrid |

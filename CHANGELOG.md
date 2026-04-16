@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3-fork] - 2026-04-17
+
+Selective integration of upstream `cl0nazepamm/3dsmax-mcp` v0.5.3 (`abb87e5`) and v0.5.4 (`0dc3d65`). The fork is not a linear descendant of upstream — the cascade of deletions in upstream's v0.5.2 dropped modules this fork actively ships, so six upstream commits were skipped.
+
+### Added
+- `list_wireable_params`: bounded walk with new optional params `max_visits` (20000), `max_results` (500), `max_ms` (5000), `max_fanout` (200). Iterative visited-set walk replaces naive recursive DFS. Returns `__truncated__` synthetic terminal entry on cap trip. Prevents multi-minute main-thread hangs on rigs (Skin/biped/CAT), Multi/Sub materials, and particle systems. (Upstream `0dc3d65` / v0.5.4, cherry-picked)
+- `introspect_osl` tool — lightweight MAXScript reflection for materials/texmaps/OSLMaps with bounded output. `introspect_class` now redirects OSL classes. (Upstream `49dd51c`, manually applied)
+- `safe_value()` helper in `src/helpers/maxscript.py` — auto-protects backslash paths in MAXScript value expressions via verbatim-string coercion. Applied to all property-assignment sites in `material_ops.py` (including local Redshift additions). (Upstream `55aa5da`, manually applied)
+- `install.py`: per-Max-version `.gup` deployment via new `gup_src_for()` helper + `GUP_SRC_DEFAULT`/`GUP_SRCS` globals; elevated-mkdir fallback (PowerShell RunAs) for `scripts/mcp` directory when Max is installed under Program Files. (Upstream `36c90c3` + `e2cd040`, cherry-picked — applied cleanly)
+- `native/bin/mcp_bridge_2027.gup` — pre-built C++ plugin binary for Max 2027 (dormant on current 2024/2025 installs).
+
+### Changed
+- `native/bin/mcp_bridge.gup` updated to upstream's v0.5.4 compiled state (1072128 → 1079296 bytes). The running binary also contains upstream code from `c597ec0` (learning_handlers.cpp +96 lines, inspect_handlers.cpp +2 lines) that was NOT cherry-picked into source. Rebuilding from source will produce a binary missing those features. Accept for now; revisit if we diverge native code.
+
+### Fixed
+- `native/src/handlers/controller_handlers.cpp`: `ListWireableParams` replaced with iterative bounded walk, visited set (skip shared sub-anim subtrees), try/catch on every `NumSubs`/`SubAnim`/`SubAnimName` call to contain third-party plugin exceptions.
+
+### Skipped (incompatible with fork surface)
+- Upstream `ef33eca` — removed `verification.py`. Fork keeps all `*_verified` tools (`create_object_verified`, `transform_object_verified`, `assign_material_verified`, `set_material_verified`, `set_modifier_state_verified`, `set_object_property_verified`, `add_modifier_verified`, `create_tyflow_basic_verified`, `create_tyflow_scatter_from_objects_verified`).
+- Upstream `f969ebb` — removed `grid.py` (`place_circle`, `place_grid_array`, `place_on_grid`), `build.py` (`build_floor_plan`, `build_structure`), `plugin_workflows.py` (`discover_plugin_classes`, `discover_plugin_surface`), `workflows.py`, `capture_model` alias. Fork keeps all.
+- Upstream `1603a85` + `abb87e5` — README tool-count rewrite to 110 and "v0.5.2 Notice" block. Fork ships ~140+ tools.
+- Upstream `c597ec0` + `b8643b4` — Max 2027 SDK support and VS 2022 build docs. Not applicable to 2024/2025 targets.
+
 ## [0.5.2] - 2026-04-01
 
 ### Added
