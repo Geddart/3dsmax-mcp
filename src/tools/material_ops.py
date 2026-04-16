@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 from ..server import mcp, client
 from ..coerce import StrList
-from src.helpers.maxscript import safe_string
+from src.helpers.maxscript import safe_string, safe_value
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +573,7 @@ def set_material_property(
                 "Sub-material index {sub_material_index} not found on {safe}"
             ) else (
                 try (
-                    mat.{safe_prop} = {value}
+                    mat.{safe_prop} = {safe_value(value)}
                     readback = (getproperty mat #{safe_prop}) as string
                     "Set " + mat.name + ".{safe_prop} = " + readback
                 ) catch (
@@ -639,7 +639,7 @@ def set_material_properties(
     for prop, val in properties.items():
         safe_prop = safe_string(prop)
         set_lines.append(
-            f'try (mat.{safe_prop} = {val}; append okList "{safe_prop}") '
+            f'try (mat.{safe_prop} = {safe_value(val)}; append okList "{safe_prop}") '
             f'catch (append errList ("{safe_prop}: " + (getCurrentException())))'
         )
     set_block = "\n            ".join(set_lines)
@@ -1026,7 +1026,7 @@ def create_texture_map(
         for prop, val in properties.items():
             safe_prop = safe_string(prop)
             lines.append(
-                f'try (global {global_var} ; {global_var}.{safe_prop} = {val}; '
+                f'try (global {global_var} ; {global_var}.{safe_prop} = {safe_value(val)}; '
                 f'append okList "{safe_prop}") '
                 f'catch (append errList ("{safe_prop}: " + (getCurrentException())))'
             )
@@ -1087,7 +1087,7 @@ def set_texture_map_properties(
     for prop, val in properties.items():
         safe_prop = safe_string(prop)
         lines.append(
-            f'try ({global_var}.{safe_prop} = {val}; append okList "{safe_prop}") '
+            f'try ({global_var}.{safe_prop} = {safe_value(val)}; append okList "{safe_prop}") '
             f'catch (append errList ("{safe_prop}: " + (getCurrentException())))'
         )
     set_block = "\n            ".join(lines)
@@ -1295,7 +1295,7 @@ def write_osl_shader(
         for prop, val in properties.items():
             safe_prop = safe_string(prop)
             lines.append(
-                f'try (global {global_var} ; {global_var}.{safe_prop} = {val}; '
+                f'try (global {global_var} ; {global_var}.{safe_prop} = {safe_value(val)}; '
                 f'append okList "{safe_prop}") '
                 f'catch (append errList ("{safe_prop}: " + (getCurrentException())))'
             )
