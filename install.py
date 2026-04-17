@@ -50,14 +50,26 @@ def find_max() -> Path | None:
 
 
 def copy_elevated(src: Path, dst: Path) -> bool:
-    """Copy a file, elevating to admin if needed."""
+    """Copy a file atomically (write to .tmp then rename), elevating if needed.
+
+    Atomic rename prevents Max from reading a half-written script during
+    install — the cause of the historical 'global fn M' parse error when
+    install.py raced Max startup.
+    """
+    tmp = dst.with_name(dst.name + ".tmp")
     try:
-        shutil.copy2(src, dst)
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)  # atomic on same volume
         return True
     except PermissionError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         print(f"  Need admin rights for {dst.parent}")
-        cmd = f'copy /Y "{src}" "{dst}"'
-        result = subprocess.run(
+        # Elevated atomic copy: copy to .tmp, then move /Y (atomic on NTFS same volume)
+        cmd = f'copy /Y "{src}" "{tmp}" && move /Y "{tmp}" "{dst}"'
+        subprocess.run(
             ["powershell", "-Command",
              f'Start-Process -FilePath cmd.exe -ArgumentList \'/c {cmd}\' -Verb RunAs -Wait'],
             capture_output=True, timeout=30,

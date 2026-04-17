@@ -45,9 +45,17 @@ for _mod in _PLUGIN_MODULES:
     if _plugin_enabled.get(_mod, True):  # default: enabled if not in config
         try:
             importlib.import_module(f".tools.{_mod}", package=__package__)
-        except ImportError:
-            pass  # Plugin file doesn't exist yet
+        except ModuleNotFoundError as _exc:
+            # Genuine "file doesn't exist" — silent skip is correct.
+            # But missing transitive deps would also raise this; surface those.
+            _missing = _exc.name or ""
+            if _missing != f"{__package__}.tools.{_mod}":
+                logging.warning(
+                    "Plugin %s skipped — missing dependency %r: %s",
+                    _mod, _missing, _exc,
+                )
         except Exception as _exc:
+            # Syntax errors, import-time failures, etc. — never silent.
             logging.warning("Failed to load plugin %s: %s", _mod, _exc)
 
 

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3.1-fork] - 2026-04-17
+
+Bugfix release on top of v0.5.3+fork after a full trace of the server start/stop and MCP slot logic.
+
+### Fixed
+- **`pyproject.toml` PEP 440 compliance** (`9a571c7`) — version was `0.5.3-fork` which `uv` refused to parse (`-` is not a valid PEP 440 separator). Changed to `0.5.3.1+fork` (PEP 440 local-version segment uses `+`). Symptom was the Claude Code MCP entry showing "X failed" with no obvious error surface.
+- **`introspect_osl` backslash paths in verbatim strings** (`054f0ed`) — `safe_string()` was being applied to OSL paths before injection into MAXScript verbatim strings (`@"..."`), doubling backslashes. Windows paths like `C:\OSL\foo.osl` became `C:\\OSL\\foo.osl` and `OSLPath` would not resolve. Fix uses raw path with stray-quote stripping for the verbatim branch.
+- **`install.py` non-atomic file writes** — `copy_elevated()` now writes to a `.tmp` sibling then `os.replace()`s atomically, both for the local and the elevated path. Prevents Max from reading a half-written `mcp_autostart.ms` during install (the historical cause of the `global fn M` startup parse error).
+- **`server.py` plugin loading silently swallowed all `ImportError`** — now distinguishes a genuinely missing plugin module (silent skip, expected) from a missing transitive dependency or syntax error (warning logged). Prevents the silent feature-loss class of bug.
+- **TCP transport had no retry on `ConnectionRefusedError`** — `_send_via_tcp` now retries once after 500ms before raising. Handles the narrow race where Max is mid-restart (listener stopped but not yet rebound).
+
 ## [0.5.3-fork] - 2026-04-17
 
 Selective integration of upstream `cl0nazepamm/3dsmax-mcp` v0.5.3 (`abb87e5`) and v0.5.4 (`0dc3d65`). The fork is not a linear descendant of upstream — the cascade of deletions in upstream's v0.5.2 dropped modules this fork actively ships, so six upstream commits were skipped.

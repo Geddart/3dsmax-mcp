@@ -290,36 +290,52 @@ class MaxClient:
 
     # ── TCP transport (legacy) ───────────────────────────────────
     def _send_via_tcp(self, request: str, timeout: float) -> bytes:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
+        # One retry after 500ms on ConnectionRefusedError — handles the
+        # narrow window where Max is mid-restart (listener stopped but
+        # not yet rebound). Without this, a single MCP call during that
+        # window fails hard even though the next call would succeed.
+        deadline = time.perf_counter() + timeout
+        for attempt in range(2):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(max(0.5, deadline - time.perf_counter()))
+            try:
+                sock.connect((self.host, self.port))
+                sock.sendall((request + "\n").encode("utf-8"))
 
-        try:
-            sock.connect((self.host, self.port))
-            sock.sendall((request + "\n").encode("utf-8"))
+                response_data = b""
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    response_data += chunk
+                    if b"\n" in response_data:
+                        break
 
-            response_data = b""
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                response_data += chunk
-                if b"\n" in response_data:
-                    break
+                return response_data
 
-            return response_data
-
-        except socket.timeout:
-            raise TimeoutError(
-                f"3ds Max did not respond within {timeout}s. "
-                "Is the MCP TCP listener running in 3ds Max?"
-            )
-        except ConnectionRefusedError:
-            raise ConnectionError(
-                f"Could not connect to 3ds Max on {self.host}:{self.port}. "
-                "Is the MCP TCP listener running in 3ds Max?"
-            )
-        finally:
-            sock.close()
+            except socket.timeout:
+                raise TimeoutError(
+                    f"3ds Max did not respond within {timeout}s. "
+                    "Is the MCP TCP listener running in 3ds Max?"
+                )
+            except ConnectionRefusedError:
+                if attempt == 0 and time.perf_counter() + 0.5 < deadline:
+                    sock.close()
+                    time.sleep(0.5)
+                    continue
+                raise ConnectionError(
+                    f"Could not connect to 3ds Max on {self.host}:{self.port}. "
+                    "Is the MCP TCP listener running in 3ds Max?"
+                )
+            finally:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        # Unreachable — loop either returns or raises
+        raise ConnectionError(
+            f"Could not connect to 3ds Max on {self.host}:{self.port} after retry."
+        )
 
     # ── Response parsing (shared) ────────────────────────────────
     def _parse_response(
