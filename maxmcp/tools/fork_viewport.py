@@ -91,7 +91,3 @@ def _capture_fullscreen_to_file(capture_path: str, max_width: int = 0, max_heigh
 def capture_model() -> Image:
     """Backward-compatible alias for fast viewport-only capture."""
     return capture_viewport()
-
-
-
-
