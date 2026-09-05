@@ -1,7 +1,7 @@
 # 1.5.5 fork update
 
 Merged upstream `32af329` (1.5.5) with fork `72b454f` (0.5.3.1+fork).
-The active updated checkout is `.updates/1.5.5`, branch `codex/update-1.5.5`.
+The prepared updated checkout is `.updates/1.5.5`, branch `codex/update-1.5.5`.
 The original checkout, environment, untracked files and local edits remain available for rollback.
 
 ## Preserved and updated
@@ -20,6 +20,7 @@ The original checkout, environment, untracked files and local edits remain avail
 ## Verification
 
 465 Python tests pass (430 upstream, 30 preserved fork tests and 5 new compatibility checks).
+Progressive discovery of fork extension schemas also passed a real stdio MCP handshake.
 The full tool catalog contains every prior tool name. Import dependencies in the restored workflows resolve.
 The native Max 2025 build succeeds. No render or scene edit is part of deployment verification.
 Live scene behavior still requires a running Max instance and cannot be established by mocked tests alone.
@@ -35,3 +36,9 @@ Do not publish backups: client settings may contain credentials.
 Both client registrations should point to this checkout's `.venv/Scripts/3dsmax-mcp.exe` with
 `MCP_TOOL_PROFILE=full`. Restart the clients to reload their tool catalogs after deployment.
 A rollback requires restoring both the prior native bridge/startup files and the corresponding client configurations.
+
+## Current installation status
+
+Deployment is pending Windows administrator approval. Elevation was canceled during the first attempt.
+The new bundle manifest was renamed to `PackageContents.xml.pending-1.5.5`, and Codex was restored to its original launcher.
+The old Max 2025 bridge remains in place. Re-run the deployment script with Windows administrator approval to complete installation; it updates both Claude and Codex only after replacing the bridge.

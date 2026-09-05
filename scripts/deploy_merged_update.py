@@ -54,6 +54,8 @@ for p,cfg in configs.items():
     cfg.setdefault('mcpServers',{})['3dsmax-mcp']=dict(entry,**({'type':'stdio'} if p.name=='.claude.json' else {}))
     p.write_text(json.dumps(cfg,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
 subprocess.run([sys.executable,str(ROOT/'scripts/build_skill.py'),'--target','both'],check=True)
+codex=shutil.which('codex') or str(USER/'AppData/Roaming/npm/codex.cmd')
+subprocess.run(subprocess.list2cmdline([codex,'mcp','add','3dsmax-mcp','--env','MCP_TOOL_PROFILE=full','--',entry['command']]),shell=True,check=True)
 print('DEPLOYED',package)
 print('BACKUP',BACKUP)
 print('CLAUDE_CONFIGS',len(configs))
