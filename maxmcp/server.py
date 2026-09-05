@@ -6,7 +6,7 @@ from importlib import import_module
 from functools import lru_cache
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
-from .max_client import MaxClient
+from .max_client import MaxClientManager
 from .tool_discovery import register_progressive_tools
 from .tool_response import make_structured_tool
 
@@ -17,7 +17,7 @@ mcp = FastMCP("3dsmax-mcp")
 # is never run, so its tools remain callable without being advertised by the
 # public MCP list_tools surface.
 _progressive_mcp = FastMCP("3dsmax-mcp-progressive-hidden")
-client = MaxClient()
+client = MaxClientManager()
 
 if __name__ == "__main__" and __spec__ is not None:
     sys.modules.setdefault(__spec__.name, sys.modules[__name__])
@@ -251,6 +251,8 @@ SPECIALTY_TOOL_MODULES = (
     "wire_params",
 )
 
+
+SPECIALTY_TOOL_MODULES += ('redshift', 'rpmanager', 'forest_pack', 'instances', 'fork_build', 'fork_grid', 'fork_modifiers', 'fork_plugin_workflows', 'fork_scene', 'fork_scene_query', 'fork_snapshots', 'fork_verification', 'fork_viewport', 'fork_workflows')
 
 def _tool_profile() -> str:
     value = os.environ.get("MCP_TOOL_PROFILE") or os.environ.get("THREEDSMAX_MCP_TOOL_PROFILE")

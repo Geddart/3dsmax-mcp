@@ -14,6 +14,8 @@ DEFAULT_PORT = 8765
 DEFAULT_TIMEOUT = 120.0
 DEFAULT_PIPE_NAME = r"\\.\pipe\3dsmax-mcp"
 MCP_PIPE_ENV = "MCP_MAX_PIPE"
+BASE_PORT = 8765
+MAX_SLOTS = 3
 
 # Win32 constants for named pipe
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -425,36 +427,52 @@ class MaxClient:
 
     # ── TCP transport (legacy) ───────────────────────────────────
     def _send_via_tcp(self, request: str, timeout: float) -> bytes:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
+        # One retry after 500ms on ConnectionRefusedError — handles the
+        # narrow window where Max is mid-restart (listener stopped but
+        # not yet rebound). Without this, a single MCP call during that
+        # window fails hard even though the next call would succeed.
+        deadline = time.perf_counter() + timeout
+        for attempt in range(2):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(max(0.5, deadline - time.perf_counter()))
+            try:
+                sock.connect((self.host, self.port))
+                sock.sendall((request + "\n").encode("utf-8"))
 
-        try:
-            sock.connect((self.host, self.port))
-            sock.sendall((request + "\n").encode("utf-8"))
+                response_data = b""
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    response_data += chunk
+                    if b"\n" in response_data:
+                        break
 
-            response_data = b""
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                response_data += chunk
-                if b"\n" in response_data:
-                    break
+                return response_data
 
-            return response_data
-
-        except socket.timeout:
-            raise TimeoutError(
-                f"3ds Max did not respond within {timeout}s. "
-                "Is the MCP TCP listener running in 3ds Max?"
-            )
-        except ConnectionRefusedError:
-            raise ConnectionError(
-                f"Could not connect to 3ds Max on {self.host}:{self.port}. "
-                "Is the MCP TCP listener running in 3ds Max?"
-            )
-        finally:
-            sock.close()
+            except socket.timeout:
+                raise TimeoutError(
+                    f"3ds Max did not respond within {timeout}s. "
+                    "Is the MCP TCP listener running in 3ds Max?"
+                )
+            except ConnectionRefusedError:
+                if attempt == 0 and time.perf_counter() + 0.5 < deadline:
+                    sock.close()
+                    time.sleep(0.5)
+                    continue
+                raise ConnectionError(
+                    f"Could not connect to 3ds Max on {self.host}:{self.port}. "
+                    "Is the MCP TCP listener running in 3ds Max?"
+                )
+            finally:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        # Unreachable — loop either returns or raises
+        raise ConnectionError(
+            f"Could not connect to 3ds Max on {self.host}:{self.port} after retry."
+        )
 
     # ── Response parsing (shared) ────────────────────────────────
     def _parse_response(
@@ -490,3 +508,67 @@ class MaxClient:
             raise MaxBridgeError(str(error_msg), response)
 
         return response
+
+
+class MaxClientManager(MaxClient):
+    """Default to native instance discovery; retain explicitly selected legacy slots."""
+    max_slots = 3
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._active_slot = None
+        self._slot_pipes = {}
+        self._slot_clients = {}
+
+    def list_instances(self):
+        for item in sorted(self._live_instances(), key=lambda x: int(x.get("pid", 0))):
+            if item["pipe"] not in self._slot_pipes.values():
+                free = next((i for i in range(1, self.max_slots + 1) if i not in self._slot_pipes), None)
+                if free is not None:
+                    self._slot_pipes[free] = item["pipe"]
+        return [dict(self.ping_slot(i), active=i == self._active_slot) for i in range(1, self.max_slots + 1)]
+
+    def _slot_client(self, slot):
+        if not 1 <= slot <= self.max_slots:
+            raise ValueError("Slot must be 1-3")
+        pipe = self._slot_pipes.get(slot)
+        key = (slot, pipe)
+        if key not in self._slot_clients:
+            self._slot_clients[key] = MaxClient(host=self.host, port=BASE_PORT + slot - 1,
+                timeout=self.timeout, transport="pipe" if pipe else "tcp", pipe_name=pipe or DEFAULT_PIPE_NAME)
+        return self._slot_clients[key]
+
+    def ping_slot(self, slot, timeout=2.0):
+        c = self._slot_client(slot)
+        try:
+            resp = c.send_command('(dotNetClass "System.Diagnostics.Process").GetCurrentProcess().Id as string', timeout=timeout)
+            return dict(slot=slot, port=c.port, pipe=self._slot_pipes.get(slot), status="running", pid=resp.get("result"))
+        except (ConnectionError, TimeoutError, OSError, RuntimeError, MaxBridgeError):
+            return dict(slot=slot, port=c.port, pipe=self._slot_pipes.get(slot), status="offline", pid=None)
+
+    @property
+    def active_slot(self):
+        return self._active_slot
+
+    @active_slot.setter
+    def active_slot(self, slot):
+        self._slot_client(slot)
+        self._active_slot = slot
+
+    @property
+    def native_available(self):
+        if self._active_slot is not None:
+            return self._slot_client(self._active_slot).native_available
+        return super().native_available
+
+    def send_command(self, command, cmd_type="maxscript", timeout=None, slot=None):
+        target = slot if slot is not None else self._active_slot
+        if target is None:
+            return super().send_command(command, cmd_type=cmd_type, timeout=timeout)
+        c = self._slot_client(target)
+        c.clear_last_response()
+        try:
+            return c.send_command(command, cmd_type=cmd_type, timeout=timeout)
+        finally:
+            self._local.last_response = getattr(c._local, "last_response", None)
+            self._local.last_error = getattr(c._local, "last_error", None)

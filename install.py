@@ -274,7 +274,9 @@ def remove_legacy_installations(extra_dirs: list[Path] | None = None) -> bool:
 def package_contents_xml(app_version: str) -> str:
     if PACKAGE_CONTENTS_TEMPLATE.exists():
         text = PACKAGE_CONTENTS_TEMPLATE.read_text(encoding="utf-8")
-        return text.replace(APP_VERSION_PLACEHOLDER, app_version)
+        return text.replace(APP_VERSION_PLACEHOLDER, app_version).replace(
+            f'AppVersion="{app_version}"', f'AppVersion="{app_version.split("+", 1)[0]}"'
+        )
     raise FileNotFoundError(f"Missing bundle template: {PACKAGE_CONTENTS_TEMPLATE}")
 
 

@@ -222,3 +222,10 @@ Experimental in-Max chat (Customize UI → MCP → MCP Chat). Prefer external MC
 - Same tools and `safe_mode` as external MCP
 - Call `query_scene` / `inspect_object` for scene state — not auto-injected by default
 - Slash commands: `/reload`, `/clear`, `/help`
+
+## Fork extensions
+
+This build preserves custom Redshift, RPManager, Forest Pack, RailClone and legacy tools. See [fork-reference.md](fork-reference.md) for plugin-specific lessons; the current guide takes precedence for transport, profiles and upstream tools.
+
+- When upgrading this fork, preserve removed legacy native operations through their MAXScript paths; tool-name retention alone does not establish compatibility.
+- Progressive discovery requires every enabled fork module to be included in its toolset map, and referenced fork guide files must be bundled by build_skill.py.

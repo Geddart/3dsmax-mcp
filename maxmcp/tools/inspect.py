@@ -251,7 +251,23 @@ def introspect_osl(
     osl_file: str = "",
     sub_material_index: int = 0,
 ) -> str:
-    """Inspect the API surface of any material, texturemap, or modifier class."""
+    """Inspect the API surface of any material, texturemap, or modifier class.
+
+    Returns classOf, superClassOf, all properties with types, interfaces with
+    methods, and output channels. Lightweight MAXScript reflection — bounded
+    output, no 600K blowups.
+
+    Use this instead of introspect_class when you need a quick property/interface
+    dump for materials, texturemaps, or OSLMaps.
+
+    Args:
+        class_name: Class to inspect (e.g. "OSLMap", "PhysicalMaterial",
+                    "Bitmaptexture", "TurboSmooth"). Creates a temp instance.
+        name: Object name — inspects its material instead of creating temp.
+        osl_file: For OSLMap: .osl filename (e.g. "UberBitmap2") or full path.
+                  Short names resolve to (getDir #maxRoot)/OSL/<name>.osl
+        sub_material_index: Sub-material slot (1-based). 0 = top material.
+    """
     if not class_name and not name:
         return '{"error":"Provide class_name or name"}'
 
@@ -279,11 +295,13 @@ def introspect_osl(
     else:
         target_setup = f'local m = {safe_class}()'
 
-    # OSL setup
+    # OSL setup — verbatim @"..." preserves backslashes literally,
+    # so do NOT apply safe_string (which escapes \ → \\) for that branch.
     osl_setup = ""
     if osl_file and class_name.lower() in ("oslmap", "osl_map", "osl"):
         if "\\" in osl_file or "/" in osl_file:
-            osl_setup = f'm.OSLPath = @"{safe_osl}"\nm.OSLAutoUpdate = true'
+            raw_path = osl_file.replace('"', '')  # strip stray quotes that would terminate verbatim string
+            osl_setup = f'm.OSLPath = @"{raw_path}"\nm.OSLAutoUpdate = true'
         else:
             osl_setup = f'm.OSLPath = (getDir #maxRoot) + "OSL\\\\{safe_osl}.osl"\nm.OSLAutoUpdate = true'
 

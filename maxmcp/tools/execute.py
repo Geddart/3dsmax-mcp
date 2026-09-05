@@ -8,7 +8,7 @@ _MAXSCRIPT_ERROR_SENTINEL = "__MCP_MS_ERR__:"
 
 
 @mcp.tool()
-def execute_maxscript(code: str = "", command: str = "") -> str:
+def execute_maxscript(code: str = "", command: str = "", slot: int | None = None) -> str:
     """Execute arbitrary MAXScript in 3ds Max and return the result.
 
     Use when: no dedicated MCP tool covers the operation (custom one-offs, rare APIs).
@@ -18,7 +18,7 @@ def execute_maxscript(code: str = "", command: str = "") -> str:
     script = code or command
     if not script:
         return "Error: provide MAXScript code in the 'code' parameter"
-    response = client.send_command(script, cmd_type="maxscript")
+    response = client.send_command(script, cmd_type="maxscript", **({"slot": slot} if slot is not None else {}))
     result = response.get("result", "")
 
     if isinstance(result, str) and result.startswith(_MAXSCRIPT_ERROR_SENTINEL):

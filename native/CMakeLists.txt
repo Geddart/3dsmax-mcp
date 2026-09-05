@@ -17,7 +17,8 @@ message(STATUS "mcp_bridge version: ${MCP_BRIDGE_VERSION}")
 set(MAX_VERSION "2026" CACHE STRING "Target 3ds Max version (2023, 2024, 2025, 2026, 2027)")
 message(STATUS "Building for 3ds Max ${MAX_VERSION}")
 
-project(mcp_bridge VERSION ${MCP_BRIDGE_VERSION} LANGUAGES CXX)
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" MCP_CMAKE_VERSION "${MCP_BRIDGE_VERSION}")
+project(mcp_bridge VERSION ${MCP_CMAKE_VERSION} LANGUAGES CXX)
 
 # 3ds Max 2027 SDK requires C++20; earlier versions use C++17.
 if(MAX_VERSION GREATER_EQUAL 2027)

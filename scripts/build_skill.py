@@ -23,7 +23,7 @@ MCP server for AI agents to control 3ds Max. This file is auto-generated from `s
 ## Skill scope
 
 - `skills/3dsmax-mcp-dev/SKILL.md` and its bundled references are exclusively for agent-facing 3ds Max usage: tool selection, scene workflows, and runtime usage pitfalls.
-- Never record software-development bugs, implementation details, build failures, bridge internals, code discoveries, or postmortem lessons in skill files.
+- Record new MAXScript/3ds Max/MCP pitfalls in the relevant skill section, one line per lesson after checking for duplicates.
 - Keep development knowledge in the relevant code, tests, development documentation, issue, or commit instead.
 
 ## Project Structure
@@ -62,7 +62,9 @@ def generate_agents_md():
     """
     # Bundled references are intentionally not inlined; agents read them only
     # when the core skill routes the current task there.
-    parts = [AGENTS_HEADER, "", "---", ""]
+    header_source = ROOT / ".claude" / "CLAUDE.md"
+    header = header_source.read_text("utf-8") if header_source.exists() else AGENTS_HEADER
+    parts = [header, "", "---", ""]
 
     if SKILL_SRC.exists():
         # Strip frontmatter from SKILL.md
@@ -71,7 +73,7 @@ def generate_agents_md():
             end = skill_text.find("---", 3)
             if end != -1:
                 skill_text = skill_text[end + 3:].lstrip("\n")
-        for ref in ("procedural-graphs.md", "tyflow-graphs.md"):
+        for ref in ("procedural-graphs.md", "tyflow-graphs.md", "fork-reference.md"):
             skill_text = skill_text.replace(
                 f"]({ref})",
                 f"](skills/3dsmax-mcp-dev/{ref})",
@@ -85,7 +87,7 @@ def generate_agents_md():
 def collect_skill_files():
     """Collect the core skill and its bundled reference files."""
     files = [SKILL_SRC, PROCEDURAL_GRAPHS_REF]
-    for ref in ("tyflow-graphs.md",):
+    for ref in ("tyflow-graphs.md", "fork-reference.md"):
         path = SKILL_DIR / ref
         if path.exists():
             files.append(path)

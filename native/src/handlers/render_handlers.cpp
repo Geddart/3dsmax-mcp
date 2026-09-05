@@ -25,7 +25,7 @@ std::string NativeHandlers::RenderScene(const std::string& params, MCPBridgeGUP*
         // and MAXScript's render() function handles all the boilerplate
         std::string script = "render outputWidth:" + std::to_string(width) +
                              " outputHeight:" + std::to_string(height) +
-                             " vfb:true";
+                             " vfb:false";
 
         if (!outputPath.empty()) {
             script += " outputFile:\"" + JsonEscape(outputPath) + "\"";

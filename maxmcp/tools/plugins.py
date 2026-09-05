@@ -1184,7 +1184,25 @@ def discover_plugin_classes(
 def introspect_class(
     class_name: str,
 ) -> str:
-    """Deep C++ SDK introspection of a class — returns the COMPLETE API surface."""
+    """Deep C++ SDK introspection of a class — returns the COMPLETE API surface.
+
+    Enumerates all ParamBlock2 parameters (names, types, defaults, ranges,
+    animatable flags) and all FPInterface functions and properties directly
+    from the class descriptor. Works on ANY class — built-in or third-party plugin.
+
+    This goes deeper than inspect_plugin_class (MAXScript reflection). Use it
+    when you need parameter defaults, ranges, function signatures, or when
+    MAXScript reflection is incomplete.
+
+    Requires the native C++ bridge plugin.
+
+    For OSLMap / OSL classes, use introspect_osl instead — OSLMap has dynamic
+    params that produce unbounded output through the C++ path.
+
+    Args:
+        class_name: The class to introspect (e.g. "TurboSmooth", "Forest_Pro",
+                    "PhysicalMaterial", "tyFlow").
+    """
     blocked = {"oslmap", "osl_map", "osl"}
     if class_name.strip().lower() in blocked:
         return json.dumps({"error": f"OSLMap has dynamic params that produce unbounded output. Use introspect_osl instead.", "redirect": "introspect_osl"})

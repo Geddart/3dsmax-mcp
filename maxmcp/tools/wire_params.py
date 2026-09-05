@@ -21,7 +21,39 @@ def list_wireable_params(
     max_ms: int = 5000,
     max_fanout: int = 200,
 ) -> str:
-    """Discover sub-anim parameters on an object that can be wired."""
+    """Discover sub-anim parameters on an object that can be wired.
+
+    Walks the sub-anim tree to find leaf parameters with controllers
+    (wireable). The walk is bounded on visits, results, time, and per-node
+    fan-out so it stays responsive on rigs (Skin/biped/CAT), Multi/Sub
+    materials, and particle systems where a naive walk would explore
+    100k+ animatables.
+
+    Args:
+        name: Object name (e.g. "Box001").
+        filter: Optional case-insensitive substring to filter param names
+                (e.g. "radius", "position", "bend"). Always pass this
+                when you know what you're looking for — it's the cheapest
+                way to keep the call fast.
+        depth: Max recursion depth (default 3, max 5).
+        max_visits: Hard cap on Animatables visited (default 20000).
+        max_results: Hard cap on returned entries (default 500).
+        max_ms: Wall-clock time budget in ms (default 5000).
+        max_fanout: Per-node child cap — protects against bone tables
+                    and Multi/Sub material slots (default 200).
+
+    Returns:
+        JSON array of {path, value, type, is_wireable} entries.
+        If any cap trips, the LAST entry has path="__truncated__" and
+        type="warning" with a `value` describing which cap and how to
+        refine the query. Existing array consumers stay valid.
+
+    Example paths returned:
+        "baseObject[#radius]" — sphere radius
+        "baseObject[#length]" — box length
+        "modifiers[#Bend][#angle]" — bend modifier angle
+        "position.controller[#X_Position]" — X position track
+    """
     if client.native_available:
         payload = _json.dumps({
             "name": name,

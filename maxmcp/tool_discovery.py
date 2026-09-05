@@ -149,6 +149,8 @@ TOOLSET_SPECS = (
 )
 
 
+TOOLSET_SPECS += (ToolsetSpec("fork_extensions", "Custom Redshift, RPManager, Forest Pack, instance selection and verified legacy workflows.", ('redshift', 'rpmanager', 'forest_pack', 'instances', 'fork_build', 'fork_grid', 'fork_modifiers', 'fork_plugin_workflows', 'fork_scene', 'fork_scene_query', 'fork_snapshots', 'fork_verification', 'fork_viewport', 'fork_workflows')),)
+
 def _decorated_tool_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     """Return the registered MCP name without importing a tool module."""
     for decorator in node.decorator_list:

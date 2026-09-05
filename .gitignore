@@ -40,3 +40,12 @@ bundle/Contents/scripts/
 dev.bat
 native/dev.bat
 native/deploy.bat
+
+# Local update verification and rollback artifacts
+.*test-results.txt
+.native-build.txt
+.deployment-backup/
+
+.staged-bundle/
+
+.deployment-log.txt

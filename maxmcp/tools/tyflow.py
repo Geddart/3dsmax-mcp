@@ -169,6 +169,12 @@ def _assignment_lines(values: dict[str, Any], var_name: str, raw_strings: bool =
     return "\n".join(lines), names
 
 
+def _sa_name(name: str) -> str:
+    """Format a name for SubAnim access -- replace spaces with underscores."""
+    safe = safe_string(name).replace(" ", "_")
+    return f"#{safe}"
+
+
 @mcp.tool()
 def list_tyflow_operator_types() -> str:
     """Return available and unavailable tyFlow operator names for this installation."""
@@ -1006,51 +1012,729 @@ if targets.count == 0 then (
 
 
 @mcp.tool()
+def set_tyflow_global_event(
+    tyflow_name: str,
+    event_name: str,
+    enabled: bool = True,
+    affect_mode: int = 0,
+    include_events: str | None = None,
+    exclude_events: str | None = None,
+) -> str:
+    """Mark a tyFlow event as global so its operators are auto-inserted into other events.
+
+    Adds or configures a Global operator in the specified event. Requires tyFlow 2.0+.
+    """
+    sa_evt = _sa_name(event_name)
+
+    lines: list[str] = []
+    lines.append(f'local tfObj = getNodeByName "{safe_string(tyflow_name)}"')
+    lines.append('if tfObj == undefined then (')
+    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"')
+    lines.append(') else (')
+    lines.append('  local evRef = undefined')
+    lines.append(f'  try (evRef = tfObj.baseobject[{sa_evt}]) catch ()')
+    lines.append('  if evRef == undefined then (')
+    lines.append(f'    "{{\\"error\\":\\"Event \\\\\\"{safe_string(event_name)}\\\\\\" not found\\"}}"')
+    lines.append('  ) else (')
+    lines.append('    local globalOp = undefined')
+    lines.append('    try (globalOp = evRef[#Global]) catch ()')
+    lines.append('    if globalOp == undefined do (')
+    lines.append('      try (globalOp = evRef.addOperator "Global" -1) catch ()')
+    lines.append('    )')
+    lines.append('    if globalOp == undefined then (')
+    lines.append('      "{\\"error\\":\\"Could not add Global operator. Requires tyFlow 2.0+.\\"}"')
+    lines.append('    ) else (')
+    lines.append(f'      try (globalOp.setEnabled {_mxs_value(enabled)}) catch ()')
+    lines.append(f'      try (globalOp.affectEvents = {affect_mode}) catch ()')
+    if include_events is not None:
+        lines.append(f'      try (globalOp.includeEventNames = "{safe_string(include_events)}") catch ()')
+    if exclude_events is not None:
+        lines.append(f'      try (globalOp.excludeEventNames = "{safe_string(exclude_events)}") catch ()')
+    lines.append(f'      "{{\\"success\\":true,\\"event\\":\\"{safe_string(event_name)}\\",\\"global\\":{_mxs_value(enabled)}}}"')
+    lines.append('    )')
+    lines.append('  )')
+    lines.append(')')
+
+    ms = "(\n    " + "\n    ".join(lines) + "\n)"
+    return json.dumps(_send_json(ms, {"error": "Could not parse set_tyflow_global_event response."}))
+
+
+@mcp.tool()
+def export_tyflow_cache(
+    tyflow_name: str,
+    event_name: str = "Event_001",
+    operator_name: str = "Export Particles",
+    output_path: str | None = None,
+    create_tycache_object: bool = True,
+    only_if_not_created: bool = True,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
+) -> str:
+    """Export a tyFlow particle system to tyCache files.
+
+    Calls ``exportTyCache()`` on an Export Particles operator. Optionally
+    configures the output path, frame range, and whether a tyCache scene
+    object is created automatically. The export runs synchronously.
+    """
+    sa_evt = _sa_name(event_name)
+    sa_op = _sa_name(operator_name)
+
+    lines: list[str] = []
+    lines.append(f'local tfObj = getNodeByName "{safe_string(tyflow_name)}"')
+    lines.append('if tfObj == undefined then (')
+    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"')
+    lines.append(') else (')
+    lines.append('  local opRef = undefined')
+    lines.append(f'  try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()')
+    lines.append('  if opRef == undefined then (')
+    lines.append(f'    "{{\\"error\\":\\"Operator \\\\\\"{safe_string(operator_name)}\\\\\\" not found in event \\\\\\"{safe_string(event_name)}\\\\\\"\\"}}"')
+    lines.append('  ) else (')
+    lines.append('    try (opRef.exportMode = 2) catch ()  -- tyCache mode')
+    if output_path is not None:
+        lines.append(f'    try (opRef.tyCacheFilename = "{safe_string(output_path)}") catch ()')
+    lines.append(f'    try (opRef.tycacheCreateObject = {_mxs_value(create_tycache_object)}) catch ()')
+    lines.append(f'    try (opRef.tycacheCreateObjectIfNotCreated = {_mxs_value(only_if_not_created)}) catch ()')
+    if frame_start is not None:
+        lines.append(f'    try (opRef.frameStart = {int(frame_start)}) catch ()')
+    if frame_end is not None:
+        lines.append(f'    try (opRef.frameEnd = {int(frame_end)}) catch ()')
+    lines.append('    local exportResult = opRef.exportTyCache()')
+    lines.append('    local cachePath = try (opRef.tyCacheFilename) catch ("")')
+    lines.append(f'    "{{\\"success\\":true,\\"tyflow\\":\\"{safe_string(tyflow_name)}\\",\\"cachePath\\":\\"" + (substituteString cachePath "\\\\" "/") + "\\"}}"')
+    lines.append('  )')
+    lines.append(')')
+
+    ms = "(\n    " + "\n    ".join(lines) + "\n)"
+    return json.dumps(_send_json(ms, {"error": "Could not parse export_tyflow_cache response."}))
+
+
+# ---------------------------------------------------------------------------
+# Inferno / preset tools (ported from local branch)
+# ---------------------------------------------------------------------------
+
+INFERNO_OPERATORS: list[str] = [
+    "Birth Inferno",
+    "Inferno Emitter",
+    "Inferno Bounds",
+    "Inferno Display",
+    "Inferno Collider",
+    "Inferno Color",
+    "Inferno Spawn",
+    "Inferno Properties",
+    "Inferno Recall",
+    "Export Inferno",
+    "Inferno Force",
+    "Inferno Temperature",
+    "Inferno Density",
+    "Inferno Vorticity",
+    "Inferno Scale",
+]
+
+
+_INFERNO_PRESETS: dict[str, dict] = {
+    "fire": {
+        "voxelSize": 2.0,
+        "temperatureKelvin": 1500.0,
+        "temperatureBuoyancy": 1.0,
+        "temperatureCooling": 0.5,
+        "dissipation": 0.02,
+        "vorticity": 0.5,
+        "fuelEnabled": True,
+        "fuel": 1.0,
+        "fuelBurnTemperatureKelvin": 800.0,
+        "fuelIgnitionTemperatureKelvin": 400.0,
+        "densityEnabled": True,
+        "density": 0.5,
+        "emissionThickness": 1.0,
+    },
+    "smoke": {
+        "voxelSize": 3.0,
+        "temperatureKelvin": 400.0,
+        "temperatureBuoyancy": 0.5,
+        "temperatureCooling": 0.8,
+        "dissipation": 0.01,
+        "vorticity": 0.3,
+        "fuelEnabled": False,
+        "fuel": 0.0,
+        "densityEnabled": True,
+        "density": 1.0,
+        "emissionThickness": 2.0,
+    },
+    "explosion_smoke": {
+        "voxelSize": 2.5,
+        "temperatureKelvin": 2500.0,
+        "temperatureBuoyancy": 2.0,
+        "temperatureCooling": 0.3,
+        "dissipation": 0.05,
+        "vorticity": 0.8,
+        "fuelEnabled": True,
+        "fuel": 2.0,
+        "fuelBurnTemperatureKelvin": 1200.0,
+        "fuelIgnitionTemperatureKelvin": 600.0,
+        "densityEnabled": True,
+        "density": 1.5,
+        "emissionThickness": 3.0,
+    },
+    "campfire": {
+        "voxelSize": 1.5,
+        "temperatureKelvin": 1000.0,
+        "temperatureBuoyancy": 0.8,
+        "temperatureCooling": 0.6,
+        "dissipation": 0.03,
+        "vorticity": 0.4,
+        "fuelEnabled": True,
+        "fuel": 0.8,
+        "fuelBurnTemperatureKelvin": 700.0,
+        "fuelIgnitionTemperatureKelvin": 350.0,
+        "densityEnabled": True,
+        "density": 0.3,
+        "emissionThickness": 0.5,
+    },
+}
+
+
+@mcp.tool()
 def create_tyflow_preset(
     preset: str,
     name: str = "",
     position: FloatList | None = None,
-    amount: int = 100,
-    speed: float = 120.0,
+    particle_count: int | None = None,
+    shape: str | None = None,
+    scale: float = 100.0,
+    speed: float | None = None,
+    lifetime_frames: int | None = None,
 ) -> str:
-    """Create common tyFlow presets: rain, snow, fountain, burst, debris."""
-    key = preset.strip().lower()
-    if key not in {"rain", "snow", "fountain", "burst", "debris"}:
-        return json.dumps({"error": "Unsupported preset. Use rain|snow|fountain|burst|debris"})
+    """Create a tyFlow with a preset particle effect configuration.
 
-    if key == "snow":
-        shape, force_z, speed_v = "quad", -50.0, max(5.0, speed * 0.2)
-    elif key == "rain":
-        shape, force_z, speed_v = "sphere", -300.0, max(50.0, speed * 1.5)
-    elif key == "fountain":
-        shape, force_z, speed_v = "sphere", -150.0, max(80.0, speed * 1.2)
-    elif key == "burst":
-        shape, force_z, speed_v = "sphere", -30.0, max(100.0, speed * 2.0)
+    Presets: fountain, rain, explosion, snow, debris, confetti, sparks, smoke.
+    Each preset builds appropriate events, operators, and settings for the
+    named effect. Override individual parameters to customize.
+    """
+    pos = position or [0.0, 0.0, 0.0]
+    actual_name = name or f"ty_{preset.lower()}"
+    safe = safe_string(actual_name)
+    p = preset.lower()
+
+    _defaults: dict[str, dict] = {
+        "fountain": {
+            "count": 1000, "birth_mode": 1, "birth_per_frame": 30.0,
+            "speed_mag": 500.0, "speed_var": 20.0, "speed_dir": 0, "speed_reverse": False,
+            "gravity": -1.0, "shape_id": SHAPE_3D_IDS.get("sphere", 4),
+            "shape_name": "sphere", "shape_scale": 20.0, "shape_scale_var": 10.0,
+            "has_spin": False, "has_kill_age": False, "kill_age": 100,
+        },
+        "rain": {
+            "count": 2000, "birth_mode": 1, "birth_per_frame": 50.0,
+            "speed_mag": 500.0, "speed_var": 10.0, "speed_dir": 0, "speed_reverse": True,
+            "gravity": -0.5, "shape_id": SHAPE_3D_IDS.get("quad", 2),
+            "shape_name": "quad", "shape_scale": 5.0, "shape_scale_var": 10.0,
+            "has_spin": False, "has_kill_age": True, "kill_age": 60,
+        },
+        "explosion": {
+            "count": 500, "birth_mode": 0, "birth_per_frame": 0.0,
+            "speed_mag": 800.0, "speed_var": 40.0, "speed_dir": 3, "speed_reverse": False,
+            "gravity": -1.0, "shape_id": SHAPE_3D_IDS.get("geosphere_low", 8),
+            "shape_name": "geosphere_low", "shape_scale": 30.0, "shape_scale_var": 50.0,
+            "has_spin": True, "has_kill_age": False, "kill_age": 100,
+        },
+        "snow": {
+            "count": 1000, "birth_mode": 1, "birth_per_frame": 20.0,
+            "speed_mag": 100.0, "speed_var": 30.0, "speed_dir": 0, "speed_reverse": True,
+            "gravity": -0.2, "shape_id": SHAPE_3D_IDS.get("quad", 2),
+            "shape_name": "quad", "shape_scale": 10.0, "shape_scale_var": 20.0,
+            "has_spin": True, "has_kill_age": True, "kill_age": 200,
+        },
+        "debris": {
+            "count": 200, "birth_mode": 0, "birth_per_frame": 0.0,
+            "speed_mag": 400.0, "speed_var": 50.0, "speed_dir": 3, "speed_reverse": False,
+            "gravity": -1.0, "shape_id": SHAPE_3D_IDS.get("cube", 6),
+            "shape_name": "cube", "shape_scale": 50.0, "shape_scale_var": 60.0,
+            "has_spin": True, "has_kill_age": False, "kill_age": 100,
+        },
+        "confetti": {
+            "count": 300, "birth_mode": 1, "birth_per_frame": 10.0,
+            "speed_mag": 100.0, "speed_var": 50.0, "speed_dir": 3, "speed_reverse": False,
+            "gravity": -0.3, "shape_id": SHAPE_3D_IDS.get("quad", 2),
+            "shape_name": "quad", "shape_scale": 15.0, "shape_scale_var": 30.0,
+            "has_spin": True, "has_kill_age": True, "kill_age": 150,
+        },
+        "sparks": {
+            "count": 500, "birth_mode": 0, "birth_per_frame": 0.0,
+            "speed_mag": 1200.0, "speed_var": 40.0, "speed_dir": 3, "speed_reverse": False,
+            "gravity": -1.5, "shape_id": SHAPE_3D_IDS.get("sphere", 4),
+            "shape_name": "sphere", "shape_scale": 3.0, "shape_scale_var": 20.0,
+            "has_spin": False, "has_kill_age": True, "kill_age": 30,
+        },
+        "smoke": {
+            "count": 200, "birth_mode": 1, "birth_per_frame": 5.0,
+            "speed_mag": 50.0, "speed_var": 30.0, "speed_dir": 0, "speed_reverse": False,
+            "gravity": 0.0, "shape_id": SHAPE_3D_IDS.get("sphere", 4),
+            "shape_name": "sphere", "shape_scale": 80.0, "shape_scale_var": 30.0,
+            "has_spin": True, "has_kill_age": True, "kill_age": 120,
+        },
+    }
+
+    if p not in _defaults:
+        available = ", ".join(sorted(_defaults.keys()))
+        return json.dumps({"error": f"Unknown preset: {preset}. Available: {available}"})
+
+    d = _defaults[p]
+    count = particle_count if particle_count is not None else d["count"]
+    spd = speed if speed is not None else d["speed_mag"]
+    lifetime = lifetime_frames if lifetime_frames is not None else d["kill_age"]
+
+    if shape:
+        shape_lower = shape.lower()
+        shape_id = SHAPE_3D_IDS.get(shape_lower, d["shape_id"])
     else:
-        shape, force_z, speed_v = "box", -980.0, max(30.0, speed)
+        shape_id = d["shape_id"]
 
-    flow_name = name or f"ty_{key}"
-    return create_tyflow(
-        name=flow_name,
-        position=position or [0.0, 0.0, 0.0],
-        event_name=key.capitalize(),
-        event_position=[0, 0],
-        operators=[
-            {"type": "Birth", "name": "Birth", "position": 0, "properties": {"birthMode": 0, "birthTotal": int(amount)}},
-            {"type": "Speed", "name": "Speed", "position": 1, "properties": {"magnitude": float(speed_v), "directionMode": 3}},
-            {"type": "Force", "name": "Force", "position": 2, "properties": {"gravityStrength": float(force_z)}},
-            {
-                "type": "Shape",
-                "name": "Shape",
-                "position": 3,
-                "properties": {
-                    "shape_type_tab": [1],
-                    "type_3d_ID_tab": [SHAPE_3D_IDS[shape]],
-                    "frequency_tab": [100.0],
-                    "scaleVal_tab": [100.0],
-                },
-            },
-            {"type": "Display", "name": "Display", "position": 4, "properties": {"displayMode": 2}},
-        ],
-        select_created=True,
+    shape_scale = scale if scale != 100.0 else d["shape_scale"]
+    shape_scale_var = d["shape_scale_var"]
+
+    # Build operator list and delegate to create_tyflow
+    ops: list[dict] = []
+    op_pos = 0
+
+    # Birth
+    birth_props: dict[str, object] = {"birthStart": 0}
+    if d["birth_mode"] == 0:
+        birth_props.update({"birthMode": 0, "birthTotal": count, "birthEndEnable": True, "birthEnd": 2})
+    else:
+        birth_props.update({"birthMode": 1, "birthPerFrame": d["birth_per_frame"]})
+    ops.append({"type": "Birth", "name": "Birth", "position": op_pos, "properties": birth_props})
+    op_pos += 1
+
+    # Speed
+    speed_props: dict[str, object] = {
+        "magnitude": spd, "magnitudeVariation": d["speed_var"], "directionMode": d["speed_dir"],
+    }
+    if d.get("speed_reverse"):
+        speed_props["directionReverse"] = True
+    ops.append({"type": "Speed", "name": "Speed", "position": op_pos, "properties": speed_props})
+    op_pos += 1
+
+    # Force (optional)
+    if d["gravity"] != 0.0:
+        force_props: dict[str, object] = {"gravityStrength": d["gravity"]}
+        if p in ("snow", "confetti"):
+            force_props["windStrength"] = 30.0
+        if p == "smoke":
+            force_props["windStrength"] = 20.0
+        ops.append({"type": "Force", "name": "Force", "position": op_pos, "properties": force_props})
+        op_pos += 1
+
+    # Spin (optional)
+    if d.get("has_spin"):
+        spin_props: dict[str, object] = {}
+        if p in ("confetti", "snow"):
+            spin_props = {"spinX": 50.0, "spinY": 50.0, "spinZ": 50.0}
+        ops.append({"type": "Spin", "name": "Spin", "position": op_pos, "properties": spin_props})
+        op_pos += 1
+
+    # Kill Age (optional)
+    if d.get("has_kill_age"):
+        ops.append({"type": "Kill Age", "name": "Kill Age", "position": op_pos, "properties": {"age": lifetime, "ageVariation": 20}})
+        op_pos += 1
+
+    # Shape
+    ops.append({
+        "type": "Shape", "name": "Shape", "position": op_pos,
+        "properties": {
+            "shape_type_tab": [1], "type_3d_ID_tab": [shape_id],
+            "frequency_tab": [100.0], "scaleVal_tab": [shape_scale], "scaleVariation_tab": [shape_scale_var],
+        },
+    })
+    op_pos += 1
+
+    # Display
+    ops.append({"type": "Display", "name": "Display", "position": op_pos, "properties": {"displayMode": 2}})
+    op_pos += 1
+
+    return create_tyflow(name=actual_name, position=pos, operators=ops)
+
+
+@mcp.tool()
+def create_tyflow_inferno(
+    name: str = "tyInferno001",
+    preset: str | None = None,
+    position: FloatList | None = None,
+    emitter_objects: StrList | None = None,
+    voxel_size: float = 2.0,
+    temperature: float = 1500.0,
+    buoyancy: float = 1.0,
+    cooling: float = 0.5,
+    dissipation: float = 0.02,
+    vorticity: float = 0.5,
+    enable_collision: bool = False,
+    collision_objects: StrList | None = None,
+    enable_ground: bool = False,
+    ground_height: float = 0.0,
+    enable_export: bool = False,
+    export_path: str | None = None,
+    reset_simulation: bool = True,
+    open_editor: bool = False,
+) -> str:
+    """Create a tyFlow Inferno (Zenith) smoke/fire simulation.
+
+    Builds a complete Inferno event with Birth Inferno, Emitter, Bounds,
+    Display, and optional Collider/Export operators. Requires tyFlow 2.0+.
+    """
+    safe = safe_string(name)
+
+    # Apply preset defaults
+    if preset and preset in _INFERNO_PRESETS:
+        p = _INFERNO_PRESETS[preset]
+        voxel_size = p.get("voxelSize", voxel_size)
+        temperature = p.get("temperatureKelvin", temperature)
+        buoyancy = p.get("temperatureBuoyancy", buoyancy)
+        cooling = p.get("temperatureCooling", cooling)
+        dissipation = p.get("dissipation", dissipation)
+        vorticity = p.get("vorticity", vorticity)
+
+    lines: list[str] = []
+    lines.append('local tfObj = tyflow()')
+    lines.append(f'tfObj.name = "{safe}"')
+
+    if position:
+        x, y, z = float(position[0]), float(position[1]), float(position[2])
+        lines.append(f'tfObj.pos = [{x:.4f},{y:.4f},{z:.4f}]')
+
+    # Create Inferno event
+    lines.append('local ev1 = tfObj.addEvent()')
+    lines.append('ev1.setName "Inferno"')
+    lines.append('local opIdx = 1')
+
+    # Birth Inferno -- version check
+    lines.append('local birthOp = undefined')
+    lines.append('try (birthOp = ev1.addOperator "Birth Inferno" opIdx) catch ()')
+    lines.append('if birthOp == undefined then (')
+    lines.append('  delete tfObj')
+    lines.append('  "{\\"error\\":\\"Inferno operators require tyFlow 2.0 (Zenith). Your version does not support them.\\"}"')
+    lines.append(') else (')
+    lines.append('  opIdx += 1')
+
+    # Configure Birth Inferno solver
+    lines.append(f'  try (birthOp.voxelSize = {voxel_size:.4f}) catch ()')
+    lines.append(f'  try (birthOp.temperatureBuoyancy = {buoyancy:.6f}) catch ()')
+    lines.append(f'  try (birthOp.temperatureCooling = {cooling:.6f}) catch ()')
+    lines.append(f'  try (birthOp.dissipation = {dissipation:.6f}) catch ()')
+    lines.append(f'  try (birthOp.vorticity = {vorticity:.6f}) catch ()')
+
+    # Fuel settings from preset
+    if preset and preset in _INFERNO_PRESETS:
+        p = _INFERNO_PRESETS[preset]
+        if p.get("fuelBurnTemperatureKelvin"):
+            lines.append(f'  try (birthOp.fuelBurnTemperatureKelvin = {p["fuelBurnTemperatureKelvin"]:.4f}) catch ()')
+        if p.get("fuelIgnitionTemperatureKelvin"):
+            lines.append(f'  try (birthOp.fuelIgnitionTemperatureKelvin = {p["fuelIgnitionTemperatureKelvin"]:.4f}) catch ()')
+
+    # Inferno Emitter
+    lines.append('  local emitterOp = ev1.addOperator "Inferno Emitter" opIdx')
+    lines.append('  opIdx += 1')
+    lines.append('  try (emitterOp.densityEnabled = true) catch ()')
+
+    if preset and preset in _INFERNO_PRESETS:
+        p = _INFERNO_PRESETS[preset]
+        lines.append(f'  try (emitterOp.density = {p.get("density", 1.0):.4f}) catch ()')
+        lines.append(f'  try (emitterOp.emissionThickness = {p.get("emissionThickness", 1.0):.4f}) catch ()')
+        if p.get("fuelEnabled"):
+            lines.append('  try (emitterOp.fuelEnabled = true) catch ()')
+            lines.append(f'  try (emitterOp.fuel = {p.get("fuel", 1.0):.4f}) catch ()')
+
+    lines.append('  try (emitterOp.temperatureEnabled = true) catch ()')
+    lines.append(f'  try (emitterOp.temperatureKelvin = {temperature:.4f}) catch ()')
+
+    # Assign emitter objects
+    if emitter_objects:
+        obj_refs = " ".join(f'(getNodeByName "{safe_string(o)}")' for o in emitter_objects)
+        lines.append(f'  try (emitterOp.objectList = #({obj_refs})) catch ()')
+
+    # Inferno Bounds
+    lines.append('  local boundsOp = ev1.addOperator "Inferno Bounds" opIdx')
+    lines.append('  opIdx += 1')
+
+    # Inferno Display
+    lines.append('  local displayOp = ev1.addOperator "Inferno Display" opIdx')
+    lines.append('  opIdx += 1')
+    lines.append('  try (displayOp.showSmoke = true) catch ()')
+    lines.append('  try (displayOp.showFire = true) catch ()')
+
+    # Inferno Collider (optional)
+    if enable_collision or collision_objects or enable_ground:
+        lines.append('  local colliderOp = ev1.addOperator "Inferno Collider" opIdx')
+        lines.append('  opIdx += 1')
+        if collision_objects:
+            obj_refs = " ".join(f'(getNodeByName "{safe_string(o)}")' for o in collision_objects)
+            lines.append(f'  try (colliderOp.objectList = #({obj_refs})) catch ()')
+        if enable_ground:
+            lines.append('  try (colliderOp.builtinGround = true) catch ()')
+            lines.append(f'  try (colliderOp.builtinGroundHeight = {ground_height:.4f}) catch ()')
+
+    # Export Inferno (optional)
+    if enable_export:
+        lines.append('  local exportOp = ev1.addOperator "Export Inferno" opIdx')
+        lines.append('  opIdx += 1')
+        if export_path:
+            lines.append(f'  try (exportOp.filenameSolver = "{safe_string(export_path)}") catch ()')
+        lines.append('  try (exportOp.gridDensity = true) catch ()')
+        lines.append('  try (exportOp.gridTemperature = true) catch ()')
+        lines.append('  try (exportOp.gridVelocity = true) catch ()')
+
+    # Reset simulation
+    if reset_simulation:
+        lines.append('  tfObj.reset_simulation()')
+
+    # Open editor
+    if open_editor:
+        lines.append('  tfObj.openEditor()')
+
+    # JSON response
+    lines.append('  local json = "{\\"name\\":\\"" + tfObj.name + "\\",\\"preset\\":\\"' + (preset or "custom") + '\\""')
+    lines.append(f'  json += ",\\"voxelSize\\":{voxel_size:.4f}"')
+    lines.append(f'  json += ",\\"temperatureKelvin\\":{temperature:.4f}"')
+    lines.append('  local evCount = tfObj.baseobject.numsubs')
+    lines.append('  json += ",\\"eventCount\\":" + (evCount as string)')
+    lines.append('  json += ",\\"operatorCount\\":" + ((opIdx - 1) as string)')
+    lines.append('  json += "}"')
+    lines.append('  json')
+    lines.append(')')
+
+    ms = "(\n    " + "\n    ".join(lines) + "\n)"
+    return json.dumps(_send_json(ms, {"error": "Could not parse create_tyflow_inferno response."}))
+
+
+@mcp.tool()
+def set_tyflow_inferno_display(
+    tyflow_name: str,
+    event_name: str,
+    operator_name: str = "Inferno Display",
+    show_smoke: bool | None = None,
+    show_fire: bool | None = None,
+    smoke_opacity: float | None = None,
+    fire_color_intensity: float | None = None,
+    fire_opacity_intensity: float | None = None,
+    overall_opacity: float | None = None,
+    temperature_blur: float | None = None,
+    ao_strength: float | None = None,
+    ao_distance: float | None = None,
+    shadow_strength: float | None = None,
+    light_intensity: float | None = None,
+    ambient_strength: float | None = None,
+    glow_enable: bool | None = None,
+    glow_intensity: float | None = None,
+    glow_scale: float | None = None,
+    motion_blur: bool | None = None,
+    camera_step_size: float | None = None,
+) -> str:
+    """Configure an Inferno Display operator's viewport ray marching settings.
+
+    Only specified (non-None) parameters are applied. Requires tyFlow 2.0+.
+    """
+    sa_evt = _sa_name(event_name)
+    sa_op = _sa_name(operator_name)
+
+    prop_lines: list[str] = []
+    props = {
+        "showSmoke": show_smoke,
+        "showFire": show_fire,
+        "smokeOpacity": smoke_opacity,
+        "fireColorIntensity": fire_color_intensity,
+        "fireOpacityIntensity": fire_opacity_intensity,
+        "overallOpacity": overall_opacity,
+        "temperatureBlur": temperature_blur,
+        "aoStrength": ao_strength,
+        "aoDistance": ao_distance,
+        "shadowStrength": shadow_strength,
+        "lightIntensity": light_intensity,
+        "ambientStrength": ambient_strength,
+        "glowEnable": glow_enable,
+        "glowIntensity": glow_intensity,
+        "glowScale": glow_scale,
+        "motionBlurMode": motion_blur,
+        "cameraStepSize": camera_step_size,
+    }
+    set_props = {k: v for k, v in props.items() if v is not None}
+    if not set_props:
+        return json.dumps({"error": "No properties specified to change."})
+
+    for prop_name, prop_val in set_props.items():
+        prop_lines.append(f'  try (opRef.{prop_name} = {_mxs_value(prop_val)}) catch ()')
+
+    modified_json = ", ".join(f'\\"{k}\\"' for k in set_props)
+
+    ms = f"""(
+    local tfObj = getNodeByName "{safe_string(tyflow_name)}"
+    if tfObj == undefined then (
+        "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"
+    ) else (
+        local opRef = undefined
+        try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()
+        if opRef == undefined then (
+            "{{\\"error\\":\\"Operator \\\\\\"{safe_string(operator_name)}\\\\\\" not found in event \\\\\\"{safe_string(event_name)}\\\\\\"\\"}}"
+        ) else (
+{chr(10).join(prop_lines)}
+            "{{\\"success\\":true,\\"modified\\":[{modified_json}]}}"
+        )
     )
+)"""
+    return json.dumps(_send_json(ms, {"error": "Could not parse set_tyflow_inferno_display response."}))
+
+
+@mcp.tool()
+def export_tyflow_inferno_vdb(
+    tyflow_name: str,
+    event_name: str,
+    output_path: str,
+    operator_name: str = "Export Inferno",
+    export_density: bool = True,
+    export_temperature: bool = True,
+    export_velocity: bool = True,
+    export_color: bool = False,
+    export_fuel: bool = False,
+    velocity_mask_with_density: bool = True,
+    temperature_units_enabled: bool = True,
+    temperature_units: int = 3,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
+) -> str:
+    """Configure an Export Inferno operator for VDB output.
+
+    Sets the export path, channel selection, and frame range on an existing
+    Export Inferno operator. Does NOT trigger the export -- use the tyFlow
+    editor or simulate to generate output.
+    """
+    sa_evt = _sa_name(event_name)
+    sa_op = _sa_name(operator_name)
+
+    lines: list[str] = []
+    lines.append(f'local tfObj = getNodeByName "{safe_string(tyflow_name)}"')
+    lines.append('if tfObj == undefined then (')
+    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"')
+    lines.append(') else (')
+    lines.append('  local opRef = undefined')
+    lines.append(f'  try (opRef = tfObj.baseobject[{sa_evt}][{sa_op}]) catch ()')
+    lines.append('  if opRef == undefined then (')
+    lines.append(f'    "{{\\"error\\":\\"Operator \\\\\\"{safe_string(operator_name)}\\\\\\" not found in event \\\\\\"{safe_string(event_name)}\\\\\\"\\"}}"')
+    lines.append('  ) else (')
+    lines.append(f'    try (opRef.filenameSolver = "{safe_string(output_path)}") catch ()')
+    lines.append(f'    try (opRef.gridDensity = {_mxs_value(export_density)}) catch ()')
+    lines.append(f'    try (opRef.gridTemperature = {_mxs_value(export_temperature)}) catch ()')
+    lines.append(f'    try (opRef.gridVelocity = {_mxs_value(export_velocity)}) catch ()')
+    lines.append(f'    try (opRef.gridColor = {_mxs_value(export_color)}) catch ()')
+    lines.append(f'    try (opRef.gridFuel = {_mxs_value(export_fuel)}) catch ()')
+    lines.append(f'    try (opRef.gridVelocityMaskWithDensity = {_mxs_value(velocity_mask_with_density)}) catch ()')
+    lines.append(f'    try (opRef.gridTemperatureUnitsEnabled = {_mxs_value(temperature_units_enabled)}) catch ()')
+    lines.append(f'    try (opRef.gridTemperatureUnits = {temperature_units}) catch ()')
+    if frame_start is not None:
+        lines.append(f'    try (opRef.frameStart = {int(frame_start)}) catch ()')
+    if frame_end is not None:
+        lines.append(f'    try (opRef.frameEnd = {int(frame_end)}) catch ()')
+    lines.append(f'    "{{\\"success\\":true,\\"path\\":\\"{safe_string(output_path)}\\",\\"channels\\":[\\"density\\",\\"temperature\\",\\"velocity\\"]}}"')
+    lines.append('  )')
+    lines.append(')')
+
+    ms = "(\n    " + "\n    ".join(lines) + "\n)"
+    return json.dumps(_send_json(ms, {"error": "Could not parse export_tyflow_inferno_vdb response."}))
+
+
+@mcp.tool()
+def get_tyflow_volume_data(
+    tyflow_name: str,
+    positions: list[list[float]],
+    scalar_types: StrList | None = None,
+    vector_types: StrList | None = None,
+    temperature_units: str = "kelvin",
+) -> str:
+    """Sample scalar/vector data from a tyFlow Inferno fluid grid at world-space positions.
+
+    Requires tyFlow 2.0+ with an active Inferno simulation. Calls
+    updateVolumes() / releaseVolumes() to safely access GPU volume data.
+    """
+    scalar_map = {"density": 0, "fuel": 1, "temperature": 2}
+    vector_map = {"color": 0, "velocity": 1}
+    temp_unit_map = {"celsius": 1, "fahrenheit": 2, "kelvin": 3}
+
+    scalars = scalar_types or []
+    vectors = vector_types or []
+    temp_unit = temp_unit_map.get(temperature_units, 3)
+
+    lines: list[str] = []
+    lines.append(f'local tfObj = getNodeByName "{safe_string(tyflow_name)}"')
+    lines.append('if tfObj == undefined then (')
+    lines.append(f'  "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"')
+    lines.append(') else (')
+    lines.append('  tfObj.updateVolumes()')
+    lines.append('  local json = "{\\"samples\\":["')
+
+    for i, pos in enumerate(positions):
+        x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+        lines.append(f'  local p{i} = [{x:.4f},{y:.4f},{z:.4f}]')
+        if i > 0:
+            lines.append('  json += ","')
+        lines.append(f'  json += "{{\\"pos\\":[{x:.4f},{y:.4f},{z:.4f}]"')
+
+        for stype in scalars:
+            sid = scalar_map.get(stype)
+            if sid is None:
+                continue
+            lines.append(f'  local s{i}_{stype} = try (tfObj.getVolumeScalar p{i} {sid}) catch (0.0)')
+            if stype == "temperature":
+                lines.append(f'  s{i}_{stype} = try (tfObj.convertVolumeTemperature s{i}_{stype} {temp_unit}) catch (s{i}_{stype})')
+            lines.append(f'  json += ",\\"{stype}\\":" + (s{i}_{stype} as string)')
+
+        for vtype in vectors:
+            vid = vector_map.get(vtype)
+            if vid is None:
+                continue
+            lines.append(f'  local v{i}_{vtype} = try (tfObj.getVolumeVector p{i} {vid}) catch ([0,0,0])')
+            lines.append(f'  json += ",\\"{vtype}\\":[" + (v{i}_{vtype}.x as string) + "," + (v{i}_{vtype}.y as string) + "," + (v{i}_{vtype}.z as string) + "]"')
+
+        lines.append('  json += "}"')
+
+    lines.append('  json += "]}"')
+    lines.append('  tfObj.releaseVolumes()')
+    lines.append('  json')
+    lines.append(')')
+
+    ms = "(\n    " + "\n    ".join(lines) + "\n)"
+    return json.dumps(_send_json(ms, {"error": "Could not parse get_tyflow_volume_data response."}))
+
+
+@mcp.tool()
+def convert_tyflow_temperature(
+    tyflow_name: str,
+    temperature: float,
+    from_units: str,
+    to_units: str,
+) -> str:
+    """Convert a temperature value between units using tyFlow's built-in converter.
+
+    Uses the tyFlow volume API's convertVolumeTemperature function to ensure
+    consistency with Inferno simulation temperature values.
+    """
+    unit_map = {"celsius": 1, "fahrenheit": 2, "kelvin": 3}
+    from_id = unit_map.get(from_units)
+    to_id = unit_map.get(to_units)
+    if from_id is None or to_id is None:
+        return json.dumps({"error": "Invalid units. Use celsius, fahrenheit, or kelvin."})
+
+    ms = f"""(
+    local tfObj = getNodeByName "{safe_string(tyflow_name)}"
+    if tfObj == undefined then (
+        "{{\\"error\\":\\"tyFlow \\\\\\"{safe_string(tyflow_name)}\\\\\\" not found\\"}}"
+    ) else (
+        local normalized = try (tfObj.convertVolumeTemperature {temperature:.6f} {from_id}) catch (undefined)
+        if normalized == undefined then (
+            "{{\\"error\\":\\"convertVolumeTemperature failed -- is tyFlow 2.0+ installed?\\"}}"
+        ) else (
+            local result = try (tfObj.convertVolumeTemperature normalized {to_id}) catch (undefined)
+            if result == undefined then (
+                "{{\\"error\\":\\"Temperature conversion failed\\"}}"
+            ) else (
+                "{{\\"from_value\\":" + ({temperature:.6f} as string) + ",\\"from_units\\":\\"{from_units}\\",\\"to_value\\":" + (result as string) + ",\\"to_units\\":\\"{to_units}\\"}}"
+            )
+        )
+    )
+)"""
+    return json.dumps(_send_json(ms, {"error": "Could not parse convert_tyflow_temperature response."}))
