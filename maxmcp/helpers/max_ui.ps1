@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing, System.Windows.Forms
-Add-Type @'
+$helperSource = @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -44,6 +44,30 @@ public static class MaxWindowApi {
  }
 }
 '@
+# Compiling this shim costs 1-2 s per call, so it is compiled once and cached in a
+# file keyed by the hash of the source above; editing the source produces a new key.
+if (-not ('MaxWindowApi' -as [type])) {
+ $cacheRoot = $env:LOCALAPPDATA
+ if ([string]::IsNullOrWhiteSpace($cacheRoot)) { $cacheRoot = $env:TEMP }
+ $cacheDir = Join-Path $cacheRoot '3dsmax-mcp'
+ $digest = [Security.Cryptography.SHA256]::Create()
+ try { $key = [BitConverter]::ToString($digest.ComputeHash([Text.Encoding]::UTF8.GetBytes($helperSource))).Replace('-','').Substring(0,16) }
+ finally { $digest.Dispose() }
+ $assembly = Join-Path $cacheDir "max_ui_helper_$key.dll"
+ if (Test-Path -LiteralPath $assembly) { try { Add-Type -Path $assembly } catch { } }
+ if (-not ('MaxWindowApi' -as [type])) {
+  try {
+   New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+   # Compile beside the target and swap it in; a concurrent helper may hold the loaded file open.
+   $staging = Join-Path $cacheDir ("max_ui_helper_$key." + [Guid]::NewGuid().ToString('N') + '.dll')
+   Add-Type -TypeDefinition $helperSource -OutputAssembly $staging
+   try { Move-Item -LiteralPath $staging -Destination $assembly -Force }
+   catch { Remove-Item -LiteralPath $staging -Force -ErrorAction SilentlyContinue }
+   Add-Type -Path $assembly
+  } catch { }
+ }
+ if (-not ('MaxWindowApi' -as [type])) { Add-Type -TypeDefinition $helperSource }
+}
 $targetProcess = Get-Process -Id ([int]$request.process_id)
 if ($targetProcess.ProcessName -ne '3dsmax') { throw 'Target must be 3dsmax.exe' }
 $birth = $targetProcess.StartTime.ToUniversalTime().Ticks.ToString()
@@ -75,6 +99,16 @@ function Describe($element, $root, $hwnd, $depth) {
           patterns=$patterns;depth=$depth;native_handle=$current.NativeWindowHandle;
           native_set_value=($current.ClassName -eq 'Edit');native_invoke=($current.ClassName -in 'Button','CustButton')}
 }
+function Get-OwnedChildren($element) {
+ # Only children still owned by the target process are ever visited.
+ $owned = [Collections.Generic.List[object]]::new()
+ $child = $walker.GetFirstChild($element)
+ while ($null -ne $child) {
+  if ($child.Current.ProcessId -eq $targetId) { $owned.Add($child) }
+  $child = $walker.GetNextSibling($child)
+ }
+ return ,$owned
+}
 function Resolve-Control($token) {
  $root = Root-From-Token $token
  $queue = [Collections.Generic.Queue[object]]::new()
@@ -91,6 +125,23 @@ function Resolve-Control($token) {
   }
  }
  throw 'Control no longer exists or exceeds search bound; inspect again'
+}
+function Set-ControlFocus($element, $hwnd) {
+ [void][MaxWindowApi]::SetForegroundWindow([IntPtr]([long]$hwnd))
+ $nativeFocus = $false
+ try { $element.SetFocus() } catch {
+  $handle = [IntPtr]$element.Current.NativeWindowHandle
+  [uint32]$owner = 0; [void][MaxWindowApi]::GetWindowThreadProcessId($handle,[ref]$owner)
+  if ($handle -eq [IntPtr]::Zero -or $owner -ne $targetId) { throw 'Control cannot receive focus' }
+  $nativeFocus = [MaxWindowApi]::FocusNative($handle)
+ }
+ if (-not $nativeFocus) {
+  $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+  if ($null -eq $focused -or (($focused.GetRuntimeId() -join ',') -ne ($element.GetRuntimeId() -join ','))) { throw 'Requested control did not gain focus; input rejected' }
+ }
+ [uint32]$foregroundPid = 0
+ [void][MaxWindowApi]::GetWindowThreadProcessId([MaxWindowApi]::GetForegroundWindow(),[ref]$foregroundPid)
+ if ($foregroundPid -ne $targetId) { throw 'Max is not foreground; input rejected' }
 }
 
 switch ($request.action) {
@@ -111,24 +162,28 @@ switch ($request.action) {
  }
  'inspect' {
   $root = Root-From-Token $request.window
-  $truncated=$false
+  $elementLimit = [int]$request.max_elements
+  $depthLimit = [int]$request.max_depth
+  $pendingLimit = 1000
   $rows = [Collections.Generic.List[object]]::new()
-  $queue = [Collections.Generic.Queue[object]]::new(); $queue.Enqueue(@($root,0))
-  while ($queue.Count -and $rows.Count -lt $request.max_elements) {
-   $entry=$queue.Dequeue(); $element=$entry[0]; $depth=$entry[1]
-   $rows.Add((Describe $element $root $request.window.hwnd $depth))
-   if ($depth -lt $request.max_depth) {
-    $child=$walker.GetFirstChild($element)
-    while ($null -ne $child -and $queue.Count -lt 1000) {
-     if ($child.Current.ProcessId -eq $targetId) { $queue.Enqueue(@($child,($depth+1))) }
-     $child=$walker.GetNextSibling($child)
-    }
-    if ($null -ne $child) { $truncated=$true }
-   } elseif ($null -ne $walker.GetFirstChild($element)) {
-    $truncated=$true
+  $pending = [Collections.Generic.Queue[object]]::new()
+  $pending.Enqueue([pscustomobject]@{Element=$root;Depth=0})
+  $truncated = $false
+  while ($pending.Count -gt 0 -and $rows.Count -lt $elementLimit) {
+   $node = $pending.Dequeue()
+   $rows.Add((Describe $node.Element $root $request.window.hwnd $node.Depth))
+   $children = Get-OwnedChildren $node.Element
+   if ($node.Depth -ge $depthLimit) {
+    if ($children.Count -gt 0) { $truncated = $true }
+    continue
+   }
+   $childDepth = $node.Depth + 1
+   foreach ($child in $children) {
+    if ($pending.Count -ge $pendingLimit) { $truncated = $true; break }
+    $pending.Enqueue([pscustomobject]@{Element=$child;Depth=$childDepth})
    }
   }
-  @{elements=@($rows.ToArray());truncated=($truncated -or $queue.Count -gt 0)} | ConvertTo-Json -Depth 12 -Compress
+  @{elements=@($rows.ToArray());truncated=($truncated -or $pending.Count -gt 0)} | ConvertTo-Json -Depth 12 -Compress
  }
  'capture' {
   $root=Root-From-Token $request.window; $bounds=$root.Current.BoundingRectangle
@@ -148,6 +203,7 @@ switch ($request.action) {
   Assert-Owner $element
   if ($element.Current.IsPassword -or -not $element.Current.IsEnabled) { throw 'Password or disabled control rejected' }
   if ($element.Current.ClassName -eq 'Edit' -and ([MaxWindowApi]::GetWindowLong([IntPtr]$element.Current.NativeWindowHandle,-16) -band 0x20)) { throw 'Password edit rejected' }
+  $committed=$null; $commitError=$null
   switch ($request.action) {
    'invoke' {
     $pattern=$null
@@ -184,30 +240,34 @@ switch ($request.action) {
      if ([MaxWindowApi]::ReadText($handle,0xD,[IntPtr]$text.Capacity,$text,2,2000,[ref]$nativeResult) -eq [IntPtr]::Zero) { throw 'Text readback timed out; re-inspect' }
      $readback=$text.ToString()
     } else { throw 'Control does not support ValuePattern or a standard native Edit' }
-    if ($readback -cne [string]$request.value) { throw 'Control value differs from requested text; re-inspect before retrying' }
+    # The write already happened. A control that normalises text ("1" -> "1.0") is
+    # reported through matches=false, never thrown: the caller must not be told a
+    # completed write failed.
+    if ($request.commit) {
+     # WM_SETTEXT on an Edit fallback does not fire a MAXScript rollout 'on entered'.
+     $committed=$false
+     try {
+      Set-ControlFocus $element $request.element.hwnd
+      [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+      $committed=$true
+     } catch { $commitError=$_.Exception.Message }
+    }
    }
    'send_keys' {
     if ($request.keys.Contains('%') -or $request.keys -match '(?i)\{(LWIN|RWIN|APPS|PRTSC|BREAK)' -or ($request.keys.Contains('^') -and $request.keys -match '(?i)\{ESC')) { throw 'Alt and global shortcuts rejected' }
-    [void][MaxWindowApi]::SetForegroundWindow([IntPtr]([long]$request.element.hwnd))
-    $nativeFocus=$false
-    try { $element.SetFocus() } catch {
-     $handle=[IntPtr]$element.Current.NativeWindowHandle
-     [uint32]$owner=0; [void][MaxWindowApi]::GetWindowThreadProcessId($handle,[ref]$owner)
-     if ($handle -eq [IntPtr]::Zero -or $owner -ne $targetId) { throw 'Control cannot receive focus' }
-     $nativeFocus=[MaxWindowApi]::FocusNative($handle)
-    }
-    if (-not $nativeFocus) {
-     $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
-     if ($null -eq $focused -or (($focused.GetRuntimeId() -join ',') -ne ($element.GetRuntimeId() -join ','))) { throw 'Requested control did not gain focus; input rejected' }
-    }
-    [uint32]$foregroundPid=0
-    [void][MaxWindowApi]::GetWindowThreadProcessId([MaxWindowApi]::GetForegroundWindow(),[ref]$foregroundPid)
-    if ($foregroundPid -ne $targetId) { throw 'Max is not foreground; input rejected' }
+    Set-ControlFocus $element $request.element.hwnd
     [Windows.Forms.SendKeys]::SendWait([string]$request.keys)
    }
   }
   $answer=@{action=$request.action;completed=$true;reinspect=$true}
-  if ($request.action -eq 'set_value') { $answer.value=$readback }
+  if ($request.action -eq 'set_value') {
+   $answer.value_written=[string]$request.value
+   $answer.readback=$readback
+   $answer.matches=($readback -ceq [string]$request.value)
+   $answer.value=$readback
+   if ($null -ne $committed) { $answer.committed=$committed }
+   if ($null -ne $commitError) { $answer.commit_error=$commitError }
+  }
   if ($request.action -eq 'invoke') { $answer.completed=$false; $answer.dispatched=$true }
   $answer | ConvertTo-Json -Compress
  }

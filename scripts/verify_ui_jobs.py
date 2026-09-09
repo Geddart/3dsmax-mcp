@@ -3,6 +3,7 @@
 Run from the checkout with Max already running: python scripts/verify_ui_jobs.py PID
 """
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -11,16 +12,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from maxmcp.max_client import MaxClient
 from maxmcp.server import client
 from maxmcp.tools import jobs, max_ui
+from maxmcp.tools.routing import get_selected_max_instance, list_max_instances, release_max_instance, select_max_instance
+
+
+def selected_instance_pid():
+    """The PID this process is currently pinned to, for later restoration."""
+    current = get_selected_max_instance()
+    return current['target_pid'] if current.get('pinned') else None
+
+
+def restore_selection(previous):
+    """Re-pin the PID we started on, or drop the pin if there was none."""
+    if previous:
+        select_max_instance(previous)
+    else:
+        release_max_instance()
+
+
+def wait_until_gone(pid, title, seconds=10):
+    """A queued click is dispatched, not completed: give the dialog time to close."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not any(w['title'] == title for w in max_ui.max_ui_windows(pid)['windows']):
+            return True
+        time.sleep(.2)
+    return False
 
 
 def main(pid):
-    pipe = rf'\\.\pipe\3dsmax-mcp-{pid}'
     # Resolve using the installed discovery record rather than guessing pipe names.
-    import os
     record = Path(os.environ['LOCALAPPDATA'])/'3dsmax-mcp/instances'/f'pid-{pid}.json'
     pipe = json.loads(record.read_text())['pipe']
-    from maxmcp.tools.routing import list_max_instances, select_max_instance
     available = list_max_instances()['instances']
+    previous = selected_instance_pid()
     select_max_instance(pid)
     assert client._resolve_pipe_name() == pipe
     c = MaxClient(transport='pipe', pipe_name=pipe)
@@ -33,7 +57,9 @@ def main(pid):
         print('UI_CONTROLS', [(e['name'],e['class_name'],e['control_type'],e['patterns']) for e in controls], flush=True)
         edit = next(e['token'] for e in controls if e['native_set_value'])
         changed = max_ui.max_ui_set_value(pid, edit, 'verified')
-        assert changed['value'] == 'verified', changed
+        # A control may legitimately normalise text; the readback is reported, not thrown.
+        assert changed['readback'] == 'verified' and changed['matches'], changed
+        assert changed['pid'] == pid, changed
         max_ui.max_ui_send_keys(pid, edit, '{END}')
         capture = max_ui.max_ui_capture(pid, window)
         print('UI_CAPTURE', capture, flush=True)
@@ -48,11 +74,14 @@ def main(pid):
         assert state['state']=='running', state
         others = [item for item in available if item['pipe'] != pipe]
         if others:
-            select_max_instance(others[0]['pid'])
-            other_pid = client.send_command('((dotNetClass "System.Diagnostics.Process").GetCurrentProcess()).Id as string')['result']
-            assert int(other_pid) == others[0]['pid']
-            assert jobs.max_job_status(jid)['target'] == pipe, 'Job was redirected by target switch'
-            select_max_instance(pid)
+            # Never leave the session pinned to a foreign instance, even on failure.
+            try:
+                select_max_instance(others[0]['pid'])
+                other_pid = client.send_command('((dotNetClass "System.Diagnostics.Process").GetCurrentProcess()).Id as string')['result']
+                assert int(other_pid) == others[0]['pid']
+                assert jobs.max_job_status(jid)['target'] == pipe, 'Job was redirected by target switch'
+            finally:
+                select_max_instance(pid)
         start = time.monotonic()
         assert jobs.max_job_status(jid)['state']=='running'
         assert time.monotonic()-start < .2, 'poll blocked'
@@ -79,7 +108,7 @@ def main(pid):
         controls = max_ui.max_ui_inspect(pid, window)['elements']
         button = next(e['token'] for e in controls if e['name']=='Finish' and e['native_invoke'])
         max_ui.max_ui_invoke(pid, button)
-        assert not any(w['title']==title for w in max_ui.max_ui_windows(pid)['windows'])
+        assert wait_until_gone(pid, title), 'Finish click did not close the acceptance dialog'
         print('PASS: UI read/write/invoke/capture, detached job, responsive status, cooperative cancel', flush=True)
     finally:
         # Destroy only our test dialog; no scene reset or object changes.
@@ -88,6 +117,7 @@ def main(pid):
                 jobs.max_job_cancel(pending['job_id'])
                 jobs.max_job_wait(pending['job_id'],20)
         c.send_command('try(destroyDialog mcpAcceptance)catch(); "cleaned"')
+        restore_selection(previous)
 
 
 if __name__=='__main__': main(int(sys.argv[1]))
