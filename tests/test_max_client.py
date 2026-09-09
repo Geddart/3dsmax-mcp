@@ -10,6 +10,7 @@ from maxmcp.max_client import (
     MaxBridgeError,
     MaxClient,
     NoMaxInstanceError,
+    PipeNotConnectedError,
     ProtectedMaxInstanceError,
     _process_alive,
 )
@@ -56,7 +57,7 @@ class MaxClientTests(unittest.TestCase):
         client = MaxClient(pipe_name='pipe-A')
         client._pipe_lock.acquire()
         try:
-            with self.assertRaisesRegex(TimeoutError, 'lock'):
+            with self.assertRaisesRegex(PipeNotConnectedError, 'lock'):
                 client._send_via_pipe('{}', .01)
         finally:
             client._pipe_lock.release()
@@ -275,7 +276,7 @@ class MaxClientTests(unittest.TestCase):
             config = Path(tmp) / "3dsmax-mcp"
             (config / "active_instance.json").write_text(json.dumps(_instance(111)), "utf-8")
             (config / "protected_pids.json").write_text(
-                json.dumps({"pids": [111, 999], "max_versions": [27000]}), "utf-8")
+                json.dumps({"pids": [111, 999]}), "utf-8")
             with (
                 patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
                 patch("maxmcp.max_client._process_alive", return_value=True),
@@ -287,24 +288,31 @@ class MaxClientTests(unittest.TestCase):
                 listed = client.list_max_instances()
                 # PID 999 was fenced before a restart recycled it: say so.
                 self.assertEqual(listed["protected_fence"]["lapsed_pids"], [999])
-                self.assertEqual(listed["protected_fence"]["max_versions"], ["27000"])
+                self.assertNotIn("max_versions", listed["protected_fence"])
 
-    def test_max_version_fence_survives_a_pid_change(self) -> None:
+    def test_same_max_version_does_not_fence_the_second_instance(self) -> None:
+        """Only the listed PID is fenced: max_version is shared by every Max of a release."""
         with tempfile.TemporaryDirectory() as tmp:
             instances = Path(tmp) / "3dsmax-mcp" / "instances"
             instances.mkdir(parents=True)
-            (instances / "pid-4312.json").write_text(
-                json.dumps(_instance(4312, max_version=27000)), "utf-8")
+            for pid in (111, 222):
+                (instances / f"pid-{pid}.json").write_text(
+                    json.dumps(_instance(pid, max_version=27000)), "utf-8")
             (Path(tmp) / "3dsmax-mcp" / "protected_pids.json").write_text(
-                json.dumps({"max_versions": [27000]}), "utf-8")
+                json.dumps({"pids": [111]}), "utf-8")
             with (
                 patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
                 patch("maxmcp.max_client._process_alive", return_value=True),
                 patch.object(MaxClient, "_probe_pipe_available", return_value=True),
             ):
                 client = MaxClient()
-                with self.assertRaisesRegex(ProtectedMaxInstanceError, "max_version"):
-                    client._resolve_target()
+                target = client._resolve_target()
+                self.assertEqual(target["target_pid"], 222)
+                self.assertEqual(
+                    [item["protected"] for item in client.list_max_instances()["instances"]],
+                    [True, False],
+                )
+                self.assertEqual(client.select_max_instance(222)["target_pid"], 222)
 
     def test_unprotected_instance_still_routes_beside_a_protected_one(self) -> None:
         with _instance_dir(111, 222) as tmp:
@@ -330,6 +338,19 @@ class MaxClientTests(unittest.TestCase):
         finished = subprocess.Popen([sys.executable, "-c", "pass"])
         finished.wait(timeout=30)
         self.assertFalse(_process_alive(finished.pid))
+
+    def test_select_refuses_a_pid_with_no_live_instance_record(self) -> None:
+        """No synthesised pipe: without a record there is nothing to pin to."""
+        with _instance_dir(111) as tmp:
+            with (
+                patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
+                patch("maxmcp.max_client._process_alive", return_value=True),
+                patch.object(MaxClient, "_probe_pipe_available", return_value=True),
+            ):
+                client = MaxClient()
+                with self.assertRaisesRegex(NoMaxInstanceError, "list_max_instances"):
+                    client.select_max_instance(222)
+                self.assertIsNone(client._bound_target)
 
     def test_select_rejects_dead_or_invalid_pids(self) -> None:
         client = MaxClient()

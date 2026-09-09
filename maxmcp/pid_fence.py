@@ -6,15 +6,17 @@ here rather than inside one tool family, because a fence that only covers the
 the native transport router. Both `maxmcp.max_ui` (before any input is sent) and
 `maxmcp.max_client` (before any command is routed) consult this module.
 
-A bare PID is recycled by Windows, so an entry naming only a PID lapses the
-moment the protected Max restarts. The file therefore also accepts
-``max_versions``: the value compared is the ``max_version`` field the native
-bridge writes into each instance record, which survives a restart.
+The fence is per-PID and nothing more. A bare PID is recycled by Windows, so an
+entry lapses the moment the protected Max restarts and must be renewed:
 
-    {"pids": [9876], "max_versions": [27000]}
+    {"pids": [9876]}
 
 `unmatched_pids()` reports fence entries that match no live instance, so a
 lapsed entry is visible in `list_max_instances` instead of failing silently.
+A fence that survived a restart would need the bridge to publish a stable
+identity (scene path or operator label) per instance; the compile-time
+`max_version` is not one — it is identical for every Max of that release, so
+fencing on it would fence the dev Max too. That is future work.
 """
 import json
 import os
@@ -68,14 +70,6 @@ def denied_pids() -> set[int]:
     return denied
 
 
-def denied_max_versions() -> set[str]:
-    """Bridge `max_version` values fenced off; unlike a PID these survive a restart."""
-    entries = _fence_document().get('max_versions')
-    if not isinstance(entries, list):
-        return set()
-    return {str(item).strip() for item in entries if str(item).strip()}
-
-
 def fence_reason(pid=None, record=None) -> str | None:
     """Why this instance must not be targeted, or None when it may be."""
     if pid is None and isinstance(record, dict):
@@ -83,10 +77,6 @@ def fence_reason(pid=None, record=None) -> str | None:
     pid = _coerce_pid(pid)
     if pid is not None and pid in denied_pids():
         return f'PID {pid} is listed in {DENY_ENV} or {PROTECTED_FILE}'
-    if isinstance(record, dict):
-        version = record.get('max_version')
-        if version is not None and str(version).strip() in denied_max_versions():
-            return f'max_version {version} is listed in {PROTECTED_FILE}'
     return None
 
 

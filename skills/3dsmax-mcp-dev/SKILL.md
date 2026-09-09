@@ -213,7 +213,9 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 - An async job stuck in `unknown` blocks its Max until `max_job_forget(job_id, force=True)` — only after verifying in Max that nothing is running.
 - Native build: keep the CMake build dir on a SHORT path. MSBuild FileTracker fails with `FTK1011` when build-dir + `.tlog` names exceed MAX_PATH, e.g. building from a deep temp worktree.
 - Python-side: MAXScript-adjacent Windows paths must be raw strings or use doubled backslashes — in `'%LOCALAPPDATA%\3dsmax-mcp\...'` Python reads `\3` as an octal escape and stores a literal `\x03` (ETX) byte; write `r'%LOCALAPPDATA%\3dsmax-mcp\...'` instead, and grep new lessons for control bytes before committing.
-- `protected_pids.json` / `MCP_UI_DENY_PIDS` fence every route, not just `max_ui_*`: a fenced Max is skipped by claim/single resolution and refused by `select_max_instance`. A bare PID lapses on restart, so fence `max_versions` too and watch `protected_fence.lapsed_pids` in `list_max_instances`.
+- `protected_pids.json` / `MCP_UI_DENY_PIDS` fence every route, not just `max_ui_*`: a fenced Max is skipped by claim/single resolution and refused by `select_max_instance`. The fence is per-PID and lapses when that Max restarts — renew it and watch `protected_fence.lapsed_pids` in `list_max_instances`.
+- Never fence on the bridge's `max_version`: it is the compile-time `MAX_SDK_VERSION`, identical for every Max of a release, so it would fence the dev Max too. A restart-proof fence needs a stable published identity (scene path / operator label) — not yet available.
+- Classify "did this request reach Max?" on exception type, not message text: `PipeNotConnectedError` (maxmcp/max_client.py) is raised only before the first `WriteFile`; message markers overlap ('timed out waiting for named pipe' is a prefix of the read-timeout text).
 - `SendKeys` is desktop-global, not PID-scoped: `max_ui_set_value(commit=True)` and `max_ui_send_keys` re-read the foreground PID after injecting and report `foreground_changed` — treat that as an unknown outcome, never as a completed write.
 
 ### OSL

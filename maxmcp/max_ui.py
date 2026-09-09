@@ -6,7 +6,6 @@ the live native-bridge instance registry and must not be protected. A wrong PID
 would click inside somebody's production Max, so resolution fails closed before
 any PowerShell process is spawned.
 """
-import ctypes
 import json
 import os
 from pathlib import Path
@@ -14,16 +13,8 @@ import subprocess
 import tempfile
 from uuid import uuid4
 
-from .pid_fence import (
-    DENY_ENV,
-    PROTECTED_FILE,
-    config_dir,
-    denied_max_versions,
-    denied_pids,
-)
-
-_STILL_ACTIVE = 259
-_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+from . import max_client
+from .pid_fence import DENY_ENV, PROTECTED_FILE, config_dir, denied_pids
 
 
 class UIReadTimeout(TimeoutError):
@@ -35,20 +26,18 @@ class UITargetError(ValueError):
 
 
 def _process_is_live(pid):
-    """True only for a currently running process; never signals or touches it."""
+    """True only for a currently running process; never signals or touches it.
+
+    Liveness has one policy for the whole server: `maxmcp.max_client` owns it,
+    so an access-denied probe is not mistaken for a dead Max here while the
+    router still considers it alive.
+    """
     if os.name != 'nt':
         return False
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
-    if not handle:
-        return False
     try:
-        code = ctypes.c_ulong()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-            return False
-        return code.value == _STILL_ACTIVE
-    finally:
-        kernel32.CloseHandle(handle)
+        return max_client._process_alive(int(pid))
+    except (TypeError, ValueError):
+        return False
 
 
 def registered_instances():
@@ -119,20 +108,12 @@ def resolve_pid(pid=None):
             raise UITargetError(
                 f'PID {pid} is not a live registered 3ds Max MCP instance; '
                 f'registered PIDs: {listed}')
+    # The fence is per-PID: it lapses when the protected Max restarts and must
+    # be renewed. list_max_instances reports lapsed entries.
     if pid in denied_pids():
         raise UITargetError(
             f'PID {pid} is protected against UI automation '
             f'({DENY_ENV} or {PROTECTED_FILE}); refusing before any input is sent')
-    # A bare PID is recycled across a Max restart; max_versions survives one.
-    fenced_versions = denied_max_versions()
-    if fenced_versions:
-        record = registered_instances().get(pid) or {}
-        version = record.get('max_version')
-        if version is not None and str(version).strip() in fenced_versions:
-            raise UITargetError(
-                f'PID {pid} runs a 3ds Max version protected against UI automation '
-                f'(max_version {version} in {PROTECTED_FILE}); '
-                'refusing before any input is sent')
     return pid
 
 

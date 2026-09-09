@@ -69,7 +69,7 @@ def max_ui_invoke(pid: int | None = None, element: dict | None = None) -> dict:
 @mcp.tool()
 @run_in_thread
 def max_ui_set_value(pid: int | None = None, element: dict | None = None,
-                     value: str = '', commit: bool = False) -> dict:
+                     value: str | None = None, commit: bool = False) -> dict:
     """Set an observed editable Max control, then read it back without asserting equality.
 
     Omit pid to use this session's pinned instance. Returns value_written,
@@ -86,6 +86,10 @@ def max_ui_set_value(pid: int | None = None, element: dict | None = None,
     """
     if element is None:
         raise ValueError('element must be a token from max_ui_inspect')
+    if value is None:
+        # pid is optional and comes first, so an omitted value must not be
+        # silently written as an empty string.
+        raise ValueError('value is required')
     if len(value) > 16000 or '\x00' in value:
         raise ValueError('value must be at most 16000 characters without NUL')
     return request('set_value', pid, element=element, value=value, commit=bool(commit))
@@ -135,8 +139,12 @@ def max_ui_wait(pid: int | None = None, title: str = '', timeout_seconds: float 
         if probed and remaining <= 0:
             return {'windows': [], 'timed_out': True, 'pid': target}
         try:
+            # The ORIGINAL pid argument is passed on every probe: handing the
+            # resolved int back to request() would re-authorise it through the
+            # explicit-pid branch, which demands registry membership that a
+            # session-resolved pid need not have.
             # A short deadline must not starve the provider of its startup cost.
-            result = request('windows', target, timeout=min(12, max(remaining, _PROVIDER_FLOOR_SECONDS)))
+            result = request('windows', pid, timeout=min(12, max(remaining, _PROVIDER_FLOOR_SECONDS)))
         except UIReadTimeout:
             return {'windows': [], 'timed_out': True, 'pid': target}
         probed = True

@@ -35,9 +35,12 @@ class JobNotSentError(Exception):
     """Raised by a scheduler that can prove its request never reached Max."""
 
 
-# Failures that prove nothing was written to the bridge. These mirror the raise
-# sites in maxmcp/max_client.py: both the connection lock and _ensure_pipe_handle
-# fail before the first WriteFile, so such a job is terminal, not uncertain.
+# Proof that nothing was written to the bridge is carried by the exception TYPE:
+# every raise site in maxmcp/max_client.py that fires before the first WriteFile
+# raises PipeNotConnectedError, so such a job is terminal, not uncertain. The
+# markers below are only a fallback for a caller that re-raises a plain error,
+# and message text alone can be ambiguous ('timed out waiting for named pipe' is
+# a prefix of the read-timeout message), so ambiguity still wins over them.
 _UNSENT_MARKERS = (
     'request not sent',                    # connection lock timeout
     'is the mcp bridge plugin loaded',     # CreateFileW: pipe does not exist
@@ -59,7 +62,8 @@ _AMBIGUOUS_MARKERS = (
 
 def is_provably_unsent(exc: BaseException) -> bool:
     """True only when the scheduling request demonstrably never left this process."""
-    if isinstance(exc, JobNotSentError):
+    from .max_client import PipeNotConnectedError
+    if isinstance(exc, (JobNotSentError, PipeNotConnectedError)):
         return True
     text = str(exc).lower()
     if any(marker in text for marker in _AMBIGUOUS_MARKERS):

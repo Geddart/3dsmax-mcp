@@ -68,6 +68,12 @@ class MaxUITests(unittest.TestCase):
             with self.assertRaises(ValueError): max_ui.max_ui_set_value(42, {}, 'a\x00b')
             write.assert_not_called()
 
+    def test_omitted_value_is_refused_rather_than_written_as_empty(self):
+        with patch('maxmcp.tools.max_ui.request') as write:
+            with self.assertRaisesRegex(ValueError, 'value is required'):
+                max_ui.max_ui_set_value(42, {'hwnd': '1'})
+            write.assert_not_called()
+
     def test_grouped_and_mixed_case_global_shortcuts_rejected(self):
         with patch('maxmcp.tools.max_ui.request') as send:
             for keys in ('%({TAB})', '%{tab}', '^+{ESC}', '^({esc})', '{LWIN}'):
@@ -127,23 +133,35 @@ class MaxUITargetBindingTests(unittest.TestCase):
              patch('maxmcp.pid_fence.config_dir', return_value=directory):
             self.assertEqual(max_ui_core.denied_pids(), {77, 78})
 
-    def test_max_version_fence_refuses_a_restarted_max(self):
-        """A recycled PID lapses the fence; the bridge's max_version does not."""
+    def test_only_the_listed_pid_is_fenced_among_same_version_instances(self):
+        """max_version is shared by every Max of a release; fencing is per-PID."""
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         instances = directory / 'instances'
         instances.mkdir()
-        (instances / 'pid-4312.json').write_text(
-            json.dumps({'pid': 4312, 'pipe': 'x', 'max_version': 27000}), encoding='utf-8')
+        for pid in (4312, 4313):
+            (instances / f'pid-{pid}.json').write_text(
+                json.dumps({'pid': pid, 'pipe': 'x', 'max_version': 27000}), encoding='utf-8')
         (directory / max_ui_core.PROTECTED_FILE).write_text(
-            json.dumps({'max_versions': [27000]}), encoding='utf-8')
-        with patch('maxmcp.max_ui.config_dir', return_value=directory), \
+            json.dumps({'pids': [4312]}), encoding='utf-8')
+        environment = {key: value for key, value in os.environ.items() if key != max_ui_core.DENY_ENV}
+        with patch.dict(os.environ, environment, clear=True), \
+             patch('maxmcp.max_ui.config_dir', return_value=directory), \
              patch('maxmcp.pid_fence.config_dir', return_value=directory), \
              patch('maxmcp.max_ui._process_is_live', return_value=True), \
              patch('maxmcp.max_ui.subprocess.run') as run:
             with self.assertRaisesRegex(UITargetError, 'protected'):
                 request('invoke', 4312)
             run.assert_not_called()
+            self.assertEqual(resolve_pid(4313), 4313)
+
+    def test_liveness_uses_the_single_max_client_policy(self):
+        """One policy: an access-denied probe must not read as death only here."""
+        with patch('maxmcp.max_client._process_alive', return_value=True) as alive:
+            self.assertTrue(max_ui_core._process_is_live(4312))
+            alive.assert_called_once_with(4312)
+        self.assertTrue(max_ui_core._process_is_live(os.getpid()))
+        self.assertFalse(max_ui_core._process_is_live(0))
 
     def test_registry_only_reports_live_recorded_instances(self):
         directory = Path(tempfile.mkdtemp())
@@ -205,6 +223,21 @@ class MaxUIWaitTests(unittest.TestCase):
         with registered(42), patch('maxmcp.tools.max_ui.request', return_value=self._windows()) as read:
             max_ui.max_ui_wait(42, 'absent', .01)
             self.assertGreaterEqual(read.call_args.kwargs['timeout'], 4)
+
+    def test_session_pid_outside_the_registry_waits_like_the_other_tools(self):
+        """max_ui_wait must not re-authorise its resolved pid as an explicit one."""
+        with patch('maxmcp.max_ui._session_client', return_value=FakeClient(4321)), \
+             patch('maxmcp.max_ui.registered_pids', return_value=set()), \
+             patch('maxmcp.max_ui.denied_pids', return_value=set()), \
+             patch('maxmcp.max_ui.subprocess.run',
+                   return_value=subprocess.CompletedProcess([], 0, '{"windows":[]}', '')) as run:
+            # The same unregistered session pid works for a plain UI tool ...
+            self.assertEqual(max_ui.max_ui_windows()['pid'], 4321)
+            # ... so the wait loop must accept it too.
+            answer = max_ui.max_ui_wait(None, 'absent', 0)
+            self.assertTrue(answer['timed_out'])
+            self.assertEqual(answer['pid'], 4321)
+            self.assertEqual(json.loads(run.call_args.kwargs['input'])['process_id'], 4321)
 
     def test_provider_timeout_is_reported_not_raised(self):
         from maxmcp.max_ui import UIReadTimeout

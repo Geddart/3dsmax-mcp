@@ -23,9 +23,12 @@ live, the call fails with "No live 3ds Max instance with the native bridge
 found" instead of reaching whatever listens on the old `\\.\pipe\3dsmax-mcp`
 name — which may be a production Max running the old fork bridge.
 
-Routing is reported on every response, success or error, in both tripback
-modes: `target_pid`, `target_pipe` and `target_source` (`selected` | `claimed` |
-`single` | `explicit`) appear under `transport`. `MCP_TRIPBACK_MODE=full` adds
+Routing is reported on every response that reached Max, success or error, in
+both tripback modes: `target_pid`, `target_pipe` and `target_source`
+(`selected` | `claimed` | `single` | `explicit`) appear under `transport`.
+Tools that never send a bridge command — `list_max_instances`, `max_job_*`,
+`max_ui_*` — carry no `transport` block; the `max_ui_*` results name their
+target in their own `pid` field instead. `MCP_TRIPBACK_MODE=full` adds
 the diagnostic transport fields and `elapsed_ms`; `MaxClient.selected_pid()`
 resolves the bound PID without sending anything to Max.
 
@@ -74,16 +77,22 @@ to "the single live instance"), and `select_max_instance(pid)` refuses it. Only
 an explicit `MCP_MAX_PIPE` / constructor pipe still overrides the fence, and
 `get_selected_max_instance()` reports `protected` so that override is visible.
 
-A bare PID is recycled by Windows, so a fence entry naming only a PID lapses
-when the protected Max restarts. `protected_pids.json` therefore also accepts
-`max_versions`, matched against the `max_version` the bridge writes into each
-instance record, and `list_max_instances` returns `protected` per instance plus
-a `protected_fence` block whose `lapsed_pids` names entries that match nothing
-live:
+**The fence is per-PID, and it lapses when the protected Max restarts** —
+Windows recycles the number, so the entry must be renewed against the new PID.
+`list_max_instances` returns `protected` per instance plus a `protected_fence`
+block whose `lapsed_pids` names entries that match nothing live, so a lapse is
+visible instead of silently protecting nothing:
 
 ```json
-{"pids": [9876], "max_versions": [27000]}
+{"pids": [9876]}
 ```
+
+A fence that survived a restart would need the bridge to publish a stable
+per-instance identity (the open scene path, or an operator-set label). The
+bridge's `max_version` is **not** that: it is the compile-time
+`MAX_SDK_VERSION` (`native/src/bridge_gup.cpp`), identical for every Max of
+that release, so fencing on it would fence the dev Max as well and wedge
+routing entirely. Publishing a durable identity is future work.
 
 `max_ui_wait` compares titles after normalisation: surrounding whitespace and
 the trailing `*` Max appends to a modified scene are ignored. `match="contains"`

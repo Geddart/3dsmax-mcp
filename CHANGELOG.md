@@ -80,14 +80,14 @@ review round on PR #2.
   ran inside it with `target_source='single'` and no refusal. The fence now lives in
   `maxmcp/pid_fence.py` and is enforced in `MaxClient._default_target()` (claimed *and* single
   branches) and `select_max_instance()`, raising the new `ProtectedMaxInstanceError`.
-- **A fence entry lapsed silently across a Max restart** — a bare PID is recycled by Windows, so
-  the protection quietly protected nothing (and could start refusing an unrelated dev Max that
-  inherited the number). `protected_pids.json` now also accepts `max_versions`, matched against
-  the `max_version` the bridge writes into each instance record, and `list_max_instances` reports
-  `protected` per instance plus a `protected_fence` block whose `lapsed_pids` names entries that
-  match nothing live.
+- **A fence entry lapsing across a Max restart was at least made visible** — a bare PID is
+  recycled by Windows, so the protection can quietly protect nothing (and can start refusing an
+  unrelated dev Max that inherited the number). `list_max_instances` now reports `protected` per
+  instance plus a `protected_fence` block whose `lapsed_pids` names entries that match nothing
+  live, so the lapse is seen rather than assumed away. The fence itself stays per-PID and must be
+  renewed after a restart.
 - **Routing metadata was stripped from every response in the default tripback mode** — the docs
-  promised `target_pid` / `target_pipe` / `target_source` on every response, but minimal mode
+  promised `target_pid` / `target_pipe` / `target_source` on every response that reaches Max, but minimal mode
   attached transport only on errors and `_slim_transport` copied just `transport` and the dead
   `fallback_error`. Slim transport now carries the three routing keys and is attached on the
   minimal-mode success path too; the `fallback_error` branch (whose only producer this round
@@ -105,6 +105,45 @@ review round on PR #2.
   an octal escape and written into the file, erasing both the trigger and the symptom of the very
   pitfall the line documents. `SKILL.md` is served verbatim as an MCP resource, so every agent
   loading the skill received the control character. Rewritten, and the file is control-byte clean.
+
+#### PR #2 review round 2
+
+- **`max_versions` fencing removed entirely** — the key compared against the bridge's
+  `max_version`, which is the compile-time `MAX_SDK_VERSION` written by
+  `native/src/bridge_gup.cpp`, identical for every Max of a release. `{"max_versions": [27000]}`
+  therefore fenced the production *and* the dev Max 2025 and wedged routing completely.
+  `denied_max_versions()`, its checks in `_default_target` / `select_max_instance` /
+  `resolve_pid`, and the `protected_fence.max_versions` field are gone. The fence is per-PID,
+  lapses on restart, and `protected_fence.lapsed_pids` makes that visible; a restart-proof fence
+  needs the bridge to publish a stable identity (scene path / operator label) and is future work.
+- **`max_ui_wait` authorised its target differently from the other six UI tools** — it resolved
+  `pid` to an int once and then fed that int back into `request()`, which re-authorised it
+  through the explicit-pid branch (registry membership required). A session-resolved PID that is
+  not in the registry worked everywhere except in `max_ui_wait`. The original `pid` argument is
+  now passed on every probe; the resolved target is used only for the reported `pid`.
+- **Two process-liveness policies disagreed** — `maxmcp/max_ui._process_is_live` treated any
+  `OpenProcess` failure as death (an access-denied Max looked dead), while
+  `maxmcp/max_client._process_alive` counts only `ERROR_INVALID_PARAMETER` as proof. `max_ui`
+  now delegates to `max_client`, so there is a single policy.
+- **`max_ui_set_value` could silently write an empty string** — `value` had defaulted to `''`
+  once `pid` became optional and moved ahead of it, so an omitted value was a valid empty write.
+  It is now `None` by default and raises `ValueError('value is required')`.
+- **"Did this request reach Max?" was decided by string matching** — `is_provably_unsent` parsed
+  message text, where `'timed out waiting for named pipe'` is a prefix of the ambiguous
+  read-timeout message and only marker ordering kept the two apart. `maxmcp/max_client` now
+  raises the new `PipeNotConnectedError(ConnectionError)` at every raise site that fires before
+  the first `WriteFile` (pipe not found, open failed, wait timed out, pipe vanished, connection
+  lock timeout), and classification is by type; the markers remain as a fallback only.
+- **`select_max_instance` could pin a PID with no instance record** — it synthesised
+  `\.\pipe\3dsmax-mcp-pid-<pid>` and pinned whenever the process was alive and something
+  answered that name. Selection now refuses outright with `NoMaxInstanceError` naming
+  `list_max_instances`.
+- **Docs overpromised routing metadata** — "reported on every response" is now "every response
+  that reached Max"; `list_max_instances`, `max_job_*` and `max_ui_*` never call
+  `send_command` and emit no transport block (the `max_ui_*` results carry their own `pid`).
+- **Known / follow-up:** `MaxClient.native_available` resolves the target twice per call
+  (`_resolve_pipe_name()` then the probe). Harmless but wasteful; caching it is deliberately not
+  done in this round.
 
 <!-- native -->
 ### Fixed (native bridge)

@@ -10,12 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 from .pipe_io import transfer
-from .pid_fence import (
-    denied_max_versions,
-    denied_pids,
-    fence_reason,
-    unmatched_pids,
-)
+from .pid_fence import denied_pids, fence_reason, unmatched_pids
 
 DEFAULT_TIMEOUT = 120.0
 MCP_PIPE_ENV = "MCP_MAX_PIPE"
@@ -92,6 +87,15 @@ def _process_alive(pid: int) -> bool:
         return code.value == _STILL_ACTIVE
     finally:
         _kernel32.CloseHandle(handle)
+
+
+class PipeNotConnectedError(ConnectionError):
+    """Raised before a single byte of the request was written to the pipe.
+
+    Every raise site below the first `WriteFile` uses a different exception, so
+    callers such as `maxmcp.async_jobs.is_provably_unsent` can classify on type
+    instead of parsing message text.
+    """
 
 
 class AmbiguousMaxInstanceError(ConnectionError):
@@ -349,12 +353,11 @@ class MaxClient:
                 }
                 for item in instances
             ],
-            # Surfaced so an entry that lapsed across a Max restart (Windows
-            # recycles the PID; the fence keeps the old number) stays visible
-            # instead of silently protecting nothing.
+            # The fence is per-PID and lapses when the protected Max restarts
+            # (Windows recycles the number). `lapsed_pids` surfaces entries that
+            # match nothing live, so the lapse is visible rather than silent.
             "protected_fence": {
                 "pids": sorted(denied_pids()),
-                "max_versions": sorted(denied_max_versions()),
                 "lapsed_pids": unmatched_pids(item.get("pid") for item in instances),
             },
         }
@@ -389,7 +392,12 @@ class MaxClient:
             (item for item in self._live_instances() if self._instance_pid(item) == pid),
             None,
         )
-        pipe = record["pipe"] if record else f"{PIPE_PREFIX}{pid}"
+        if record is None:
+            raise NoMaxInstanceError(
+                f"3ds Max PID {pid} is not a live registered MCP instance; "
+                "selection was not changed. Call list_max_instances for live PIDs."
+            )
+        pipe = record["pipe"]
         reason = fence_reason(pid, record)
         if reason:
             raise ProtectedMaxInstanceError(
@@ -456,16 +464,16 @@ class MaxClient:
                 if time.perf_counter() < connect_grace:
                     time.sleep(.01)
                     continue
-                raise ConnectionError(
+                raise PipeNotConnectedError(
                     f"Named pipe {pipe_name} not found. "
                     "Is the MCP Bridge plugin loaded in 3ds Max?"
                 )
             if err != _ERROR_PIPE_BUSY:
-                raise ConnectionError(f"Failed to open pipe: Win32 error {err}")
+                raise PipeNotConnectedError(f"Failed to open pipe: Win32 error {err}")
 
             remaining_ms = int((deadline - time.perf_counter()) * 1000)
             if remaining_ms <= 0:
-                raise TimeoutError(
+                raise PipeNotConnectedError(
                     f"Timed out waiting for named pipe {pipe_name} after "
                     f"{self.timeout}s."
                 )
@@ -478,12 +486,12 @@ class MaxClient:
                 if time.perf_counter() < connect_grace:
                     time.sleep(.01)
                     continue
-                raise ConnectionError(
+                raise PipeNotConnectedError(
                     f"Named pipe {pipe_name} disappeared while waiting."
                 )
             if wait_err in (_ERROR_SEM_TIMEOUT, _ERROR_PIPE_BUSY):
                 continue
-            raise ConnectionError(
+            raise PipeNotConnectedError(
                 f"Failed waiting for named pipe {self.pipe_name}: "
                 f"Win32 error {wait_err}"
             )
@@ -547,7 +555,8 @@ class MaxClient:
         pipe_name = pipe_name or self._resolve_pipe_name()
 
         if not self._pipe_lock.acquire(timeout=max(0, deadline-time.perf_counter())):
-            raise TimeoutError('Timed out waiting for the MCP connection lock; request not sent')
+            raise PipeNotConnectedError(
+                'Timed out waiting for the MCP connection lock; request not sent')
         try:
             if self._selected_pipe_name != pipe_name:
                 self._close_pipe_handle()

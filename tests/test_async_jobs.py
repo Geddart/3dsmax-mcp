@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from maxmcp.async_jobs import BLOCKED_COMMANDS, JobNotSentError, JobStore, bootstrap, is_provably_unsent
 from maxmcp.tool_response import make_structured_tool, run_in_thread
-from maxmcp.max_client import MaxClient
+from maxmcp.max_client import MaxClient, PipeNotConnectedError
 
 
 class JobTests(unittest.TestCase):
@@ -151,10 +151,12 @@ class SchedulingFailureTests(unittest.TestCase):
 
     def test_unsent_failures_are_terminal_and_release_the_instance(self):
         from maxmcp.async_jobs import busy_job
-        for exc in (TimeoutError('Timed out waiting for the MCP connection lock; request not sent'),
-                    ConnectionError('Named pipe pipe-A not found. Is the MCP Bridge plugin loaded in 3ds Max?'),
-                    ConnectionError('Named pipe pipe-A disappeared while waiting.'),
-                    TimeoutError('Timed out waiting for named pipe pipe-A after 30s.'),
+        # The type is the proof: max_client raises PipeNotConnectedError only at
+        # sites that fire before the first WriteFile.
+        for exc in (PipeNotConnectedError('Timed out waiting for the MCP connection lock; request not sent'),
+                    PipeNotConnectedError('Named pipe pipe-A not found. Is the MCP Bridge plugin loaded in 3ds Max?'),
+                    PipeNotConnectedError('Named pipe pipe-A disappeared while waiting.'),
+                    PipeNotConnectedError('Timed out waiting for named pipe pipe-A after 30s.'),
                     JobNotSentError('probe said no')):
             jid = self.submit(self.raiser(exc))
             self.settle(jid, 'failed')
@@ -201,6 +203,15 @@ class SchedulingFailureTests(unittest.TestCase):
         self.store._advance(jid, 'succeeded')
         self.store._advance(jid, 'failed')
         self.assertEqual(self.store.jobs[jid]['state'], 'succeeded')
+
+    def test_unsent_is_classified_by_exception_type(self):
+        # A pre-write failure is proven by its type, whatever the message says.
+        self.assertTrue(is_provably_unsent(PipeNotConnectedError('anything at all')))
+        self.assertTrue(is_provably_unsent(JobNotSentError('probe said no')))
+        self.assertFalse(is_provably_unsent(ConnectionError('anything at all')))
+        # A read timeout is never unsent, even though its text starts like the
+        # pre-connect one ('timed out waiting for named pipe ...').
+        self.assertFalse(is_provably_unsent(TimeoutError('Timed out waiting for named pipe response after 30s.')))
 
     def test_ambiguity_markers_win_over_unsent_markers(self):
         self.assertFalse(is_provably_unsent(RuntimeError('Scheduling was not acknowledged: {}')))
