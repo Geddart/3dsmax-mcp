@@ -29,17 +29,45 @@ depend on it even though they communicate over native pipes.
 
 ## Real dialog tools
 
-`max_ui_windows(pid)` finds only visible windows in that Max process.
-Pass a returned **token** to `max_ui_inspect(pid, window=token)`, then use an
+`max_ui_windows()` finds only visible windows in one Max process.
+Pass a returned **token** to `max_ui_inspect(window=token)`, then use an
 element token with `max_ui_invoke`, `max_ui_set_value`, or `max_ui_send_keys`.
-Re-inspect after an action. `max_ui_wait` searches for an exact window title;
+Re-inspect after an action. `max_ui_wait` waits for a window title;
 `max_ui_capture` saves a window-only PNG (no rendering).
 
+**`pid` is optional and should normally be omitted.** It then resolves to the
+instance this session is pinned to (`set_active_instance`, via the client's
+`selected_pid()`); an unpinned session refuses rather than guessing. A pid that
+*is* passed must appear in the live native-bridge instance registry
+(`%LOCALAPPDATA%\3dsmax-mcp\instances\pid-*.json`, process still running), so a
+typo cannot drive an unrelated Max. PIDs listed in `MCP_UI_DENY_PIDS`
+(comma-separated) or in `%LOCALAPPDATA%\3dsmax-mcp\protected_pids.json` are
+refused outright — that is how a production Max is fenced off. Both checks run
+before the helper process is spawned, and every result reports the `pid` it
+actually targeted.
+
+`max_ui_wait` compares titles after normalisation: surrounding whitespace and
+the trailing `*` Max appends to a modified scene are ignored. `match="contains"`
+opts into a case-insensitive substring match. `timeout_seconds=0` still probes
+once, and a short timeout still allows the helper its startup cost instead of
+guaranteeing a miss.
+
+`max_ui_set_value` returns `value_written`, `readback` and `matches`. Controls
+legitimately normalise text (a spinner turns `1` into `1.0`), so a differing
+readback is reported rather than raised; only a failed write raises. The native
+Edit fallback uses `WM_SETTEXT`, which does **not** fire a MAXScript rollout
+`on entered` handler — pass `commit=true` to send `{ENTER}` through the focused
+control afterwards (Max must be foreground; a failed commit comes back as
+`committed=false` with `commit_error`, the written value stands either way).
+
 UI operations run in a bounded hidden helper process, not on the MCP or Max
-request thread. Tokens check PID, process start time, window/runtime identity
-and element ownership. Password/disabled controls are rejected. UIA patterns
-are preferred; Max's standard Edit and CustButton controls have narrow Win32
-fallbacks. Actions report dispatch, not proof that a dialog completed its work.
+request thread. Its Win32 shim is compiled once into
+`%LOCALAPPDATA%\3dsmax-mcp\max_ui_helper_<source-hash>.dll` and reused, so a
+call no longer pays the C# compile on every invocation. Tokens check PID,
+process start time, window/runtime identity and element ownership.
+Password/disabled controls are rejected. UIA patterns are preferred; Max's
+standard Edit and CustButton controls have narrow Win32 fallbacks. Actions
+report dispatch, not proof that a dialog completed its work.
 
 A hung provider may time out, and GPU/custom windows may capture blank. Input
 focus can race user input: prefer value/invoke patterns over SendKeys. A timeout
