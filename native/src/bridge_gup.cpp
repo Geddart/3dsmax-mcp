@@ -302,6 +302,18 @@ DWORD MCPBridgeGUP::Start() {
 }
 
 void MCPBridgeGUP::Stop() {
+    // FIRST: close the executor gate and fail everything already queued.
+    // Every teardown step below either joins background threads (chat turns,
+    // StopPipe) or runs on the main thread — and a client thread sitting in
+    // CommandDispatcher::Dispatch -> ExecuteSync waits for a WM_MCP_EXECUTE
+    // that the main thread can no longer pump once it is inside join(). That
+    // stalls Max's exit for up to the executor timeout (120 s) per in-flight
+    // request. BeginShutdown wakes those waiters with an error immediately and
+    // makes later ExecuteSync calls from background threads fail fast, so the
+    // joins below return promptly. executor_.Shutdown() still runs last to
+    // destroy the window.
+    executor_.BeginShutdown();
+
     SceneJournal::Unregister();
     NativeHandlers::UnregisterRenderNotifications();
 

@@ -2,16 +2,29 @@
 
 #include <random>
 
+namespace {
+constexpr char kShutdownError[] = "MainThreadExecutor is shutting down";
+}
+
 thread_local bool MainThreadExecutor::tl_direct_mode_ = false;
 WPARAM MainThreadExecutor::s_execute_cookie_ = 0;
 bool MainThreadExecutor::s_executing_ = false;
 std::deque<std::shared_ptr<MainThreadExecutor::WorkItem>> MainThreadExecutor::s_deferred_;
+std::atomic<bool> MainThreadExecutor::s_shutting_down_{false};
+std::mutex MainThreadExecutor::s_submit_mutex_;
 
 MainThreadExecutor::~MainThreadExecutor() {
     Shutdown();
 }
 
 void MainThreadExecutor::Initialize() {
+    // A previous instance (or a previous Start/Stop cycle) may have closed the
+    // gate; re-open it before anything can post.
+    {
+        std::lock_guard<std::mutex> lock(s_submit_mutex_);
+        s_shutting_down_.store(false, std::memory_order_release);
+    }
+
     // Initialize() is called from GUP::Start on the Max main thread, so this is
     // the thread that owns hwnd_ and pumps WM_MCP_EXECUTE. ExecuteSync uses it
     // to detect re-entrant calls already on the main thread.
@@ -49,7 +62,41 @@ void MainThreadExecutor::Initialize() {
     );
 }
 
+void MainThreadExecutor::BeginShutdown() {
+    // Close the gate first: from here on ExecuteSync throws instead of posting,
+    // so the drain below cannot race a fresh submission into the queue.
+    {
+        std::lock_guard<std::mutex> lock(s_submit_mutex_);
+        s_shutting_down_.store(true, std::memory_order_release);
+    }
+    DrainPendingWork();
+}
+
+void MainThreadExecutor::DrainPendingWork() {
+    // Items parked by the re-entrancy guard never reach the message queue.
+    while (!s_deferred_.empty()) {
+        auto item = std::move(s_deferred_.front());
+        s_deferred_.pop_front();
+        FailWorkItem(item, kShutdownError);
+    }
+
+    if (!hwnd_) return;
+
+    // Everything still queued for our window. Each message owns a heap
+    // shared_ptr<WorkItem>; DestroyWindow discards the message, leaking it and
+    // stranding a client thread in cv::wait_for for the full timeout.
+    MSG message;
+    while (PeekMessage(&message, hwnd_, WM_MCP_EXECUTE, WM_MCP_EXECUTE, PM_REMOVE)) {
+        if (message.wParam != s_execute_cookie_ || message.lParam == 0) continue;
+        auto* raw = reinterpret_cast<std::shared_ptr<WorkItem>*>(message.lParam);
+        auto item = *raw;
+        delete raw;
+        FailWorkItem(item, kShutdownError);
+    }
+}
+
 void MainThreadExecutor::Shutdown() {
+    BeginShutdown();
     if (hwnd_) {
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -71,6 +118,15 @@ std::string MainThreadExecutor::ExecuteSync(
         return work();
     }
 
+    // Shutting down: the main thread is tearing the bridge down and is about to
+    // block joining this very thread, so nothing will ever pump our message.
+    // Fail fast rather than sleep out timeout_ms and hang Max's exit. Checked
+    // after the main-thread path so teardown code running inline still works,
+    // and before direct mode so no background thread touches a dying scene.
+    if (s_shutting_down_.load(std::memory_order_acquire)) {
+        throw std::runtime_error(kShutdownError);
+    }
+
     // Direct mode: run on calling thread, skip main-thread roundtrip.
     // Used for read-only handlers on pipe worker threads.
     if (tl_direct_mode_) {
@@ -87,9 +143,19 @@ std::string MainThreadExecutor::ExecuteSync(
     // prevent shared_ptr from dying before main thread processes it
     auto* raw = new std::shared_ptr<WorkItem>(item);
 
-    if (!PostMessage(hwnd_, WM_MCP_EXECUTE, s_execute_cookie_, reinterpret_cast<LPARAM>(raw))) {
-        delete raw;
-        throw std::runtime_error("Failed to post work to main thread");
+    {
+        // Re-check under the submit lock: BeginShutdown sets the flag while
+        // holding it, so either our PostMessage lands before its drain runs or
+        // we see the flag here and never post at all.
+        std::lock_guard<std::mutex> lock(s_submit_mutex_);
+        if (s_shutting_down_.load(std::memory_order_acquire)) {
+            delete raw;
+            throw std::runtime_error(kShutdownError);
+        }
+        if (!PostMessage(hwnd_, WM_MCP_EXECUTE, s_execute_cookie_, reinterpret_cast<LPARAM>(raw))) {
+            delete raw;
+            throw std::runtime_error("Failed to post work to main thread");
+        }
     }
 
     // Wait for main thread to complete the work
@@ -141,6 +207,13 @@ LRESULT CALLBACK MainThreadExecutor::WndProc(
         auto item = *raw;
         delete raw;
 
+        // Raced the shutdown drain (or arrived from a nested pump during it).
+        // Never start new scene work while the bridge is being torn down.
+        if (s_shutting_down_.load(std::memory_order_acquire)) {
+            FailWorkItem(item, kShutdownError);
+            return 0;
+        }
+
         // Delivered by a nested message pump while another item is running
         // (SDK work can pump: progress UI, redraws, deferred plugin loads).
         // Running it here would interleave theHold transactions on the global
@@ -176,6 +249,19 @@ void MainThreadExecutor::RunWorkItem(const std::shared_ptr<WorkItem>& item) {
             item->error = true;
             item->error_message = "Unknown exception on main thread";
         }
+        item->completed = true;
+    }
+    item->cv.notify_all();
+}
+
+void MainThreadExecutor::FailWorkItem(const std::shared_ptr<WorkItem>& item,
+                                      const char* message) {
+    {
+        std::lock_guard<std::mutex> lock(item->mutex);
+        if (item->completed) return; // already ran, or the caller timed out
+        item->error = true;
+        item->error_message = message;
+        item->work = {};
         item->completed = true;
     }
     item->cv.notify_all();
