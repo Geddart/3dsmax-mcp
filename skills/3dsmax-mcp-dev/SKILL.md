@@ -5,6 +5,11 @@ description: Tool choices, workflows, and MAXScript pitfalls for controlling 3ds
 
 # 3ds Max MCP — Agent Guide
 
+> **STOP — plugin work.** Before touching **Redshift, RPManager, tyFlow, Forest Pack or
+> RailClone**, read [fork-reference.md](fork-reference.md) completely. The must-know rules are
+> repeated under [Plugin Pitfalls](#plugin-pitfalls-redshift--rpmanager--tyflow--forest-pack--railclone)
+> below; fork-reference.md carries the full long tail and wins on anything not listed here.
+
 ## Tool Profile Routing
 
 - **Full/core:** Operational tools such as `query_scene` and `create_object` are advertised directly; call the matching tool by name.
@@ -208,6 +213,54 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 - Use `introspect_osl` before wiring — not `introspect_class` on OSLMap (massive output)
 - Shader function name must match `shader_name`; use unique names (cache reuse)
 - OSLMap lowercases param names
+
+## Plugin Pitfalls (Redshift / RPManager / tyFlow / Forest Pack / RailClone)
+
+These are the rules that break scenes silently. The full list lives in
+[fork-reference.md](fork-reference.md) — read it before any non-trivial plugin work.
+
+### Redshift
+- `RS_Bump_Map` (underscores!) — `RS_BumpMap` does NOT exist, silently fails
+- `RS_Normal_Map.tex0_filename` — set directly, do NOT wire an RS_Bitmap into `.tex0`
+- `RS_Displacement.texMap_map` — wire an RS_Bitmap child node here
+- `RS_Bitmap` — use `.tex0_filename` and `.tex0_colorSpace` ("sRGB"/"Raw"/"ACEScg")
+- `RS_Material` is the Redshift standard material class — `Redshift_Material` is undefined
+- Map slots need `setProperty mat #slot_name texNode`, then enable the companion
+  `#<slot>_mapenable` flag — direct property assignment does not wire the slot
+- `Sphere mapcoords = false` by default — textures render BLACK. Always set `mapcoords = true`
+- `render ... vfb:false` — otherwise Redshift fires two passes per `render()` call
+- `renderers.current = Redshift_Renderer()` explicitly: Max defaults to Arnold after a fresh start
+- Standard Max `OSLMap` is not supported by Redshift — use `RS_OSL_Map`
+- `RS_OSL_Map` file mode (`oslSource=0`) does not load shader code — use text mode (`oslSource=1`)
+
+### RPManager
+- `fRefresh()` crashes — use `try(RPMdata.rmrefresh())catch()` instead
+- **NEVER call `addPassSetup()`** — it triggers a modal dialog and wedges the bridge
+- `SetPassOutputPath` silently fails unless `RMopenFloater()` opened the UI first
+  (`RPMdata.AddPass()` likewise needs the UI open in a fresh scene)
+- Orphan vis sets raise a blocking modal — check ALL vis set names before touching passes
+- Per-pass layer states and Redshift properties: before/after scripts are the ONLY reliable path
+- `GetPassCamera` returns a node reference, not a string — use `.name`
+
+### tyFlow
+- Shape `_tab` arrays are the ONLY writable path; single-item props are READ-ONLY
+- SubAnim access: spaces become underscores (`#PhysX_Shape`, NOT `#'PhysX Shape'`)
+- Temperature props use `Celcius` (misspelled in tyFlow)
+- Volume API: `updateVolumes()` / `releaseVolumes()` must be paired (GPU memory)
+- tyFlow 2.0 (Zenith): the operator is `Export Inferno`, NOT `Inferno Export`
+- `displayMaterial = true` on the Display operator is required for materials to render
+- Per-particle vertex color or UVW overrides BREAK GPU instancing — only transforms stay light
+
+### Forest Pack
+- Area lists are 7 parallel arrays — write them **atomically, all seven together**, or the
+  object desynchronizes
+- ForestColor texmap is NOT supported by Redshift; assign RS materials to the **source
+  geometry** or populate `fp.matlist`. Materials on the FP object itself are viewport-only
+- `fp.rmesh = 0` (Automatic) is the correct Redshift setting — do not wrap sources in RedshiftProxy
+
+### RailClone
+- The style graph **cannot** be built via MAXScript. Load a pre-built style from the library
+  (`$.railclone.loadLibraryItemByPath ...`), then drive only the exposed parameters
 
 ## MAXScript Reference (bundled)
 
