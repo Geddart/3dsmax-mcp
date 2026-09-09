@@ -1,9 +1,7 @@
----
-name: 3dsmax-mcp-dev
-description: Rules, tool choices, and workflow patterns for AI agents working with 3ds Max via MCP. Covers the native C++ bridge, plugin introspection, scene organization, material workflows, and MAXScript pitfalls.
----
+# 3dsmax-mcp Fork Reference
 
-# 3dsmax-mcp Skill Guide
+Long-tail plugin lessons for this fork. The agent-facing summary lives in
+[SKILL.md](SKILL.md); anything not repeated there is authoritative here.
 
 Principles:
 - Prefer dedicated tools over raw MAXScript

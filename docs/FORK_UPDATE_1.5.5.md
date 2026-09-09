@@ -14,6 +14,7 @@ The original checkout, environment, untracked files and local edits remain avail
 - Upstream structured results, atomic operations and progressive discovery are retained. The installed full profile exposes all custom tools directly; progressive discovery also indexes the extensions.
 - The Redshift `vfb:false` fix is preserved in the rendering tool and native source.
 - The Max 2025 native bridge was rebuilt with the installed SDK. Other Max-year binaries are the upstream builds; the Python render path keeps the fix across versions.
+- The transport/executor fixes from the PR #2 review round are present only in the binaries rebuilt in that round (2025, plus any further version the native build reports - TODO for the integrator to confirm before release). Any other shipped `.gup` still predates them; rebuild it against the matching SDK before use.
 - Compatible dependencies were refreshed in the isolated environment, including MCP 1.29.1. MCP remains pinned below 2 as required by the upstream API.
 - Upstream skill guidance and the fork reference are bundled for both Claude and Codex.
 

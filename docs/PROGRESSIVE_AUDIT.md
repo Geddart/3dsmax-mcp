@@ -3,7 +3,7 @@
 ## Configuration and discovery
 
 Codex's `mcp_servers.3dsmax-mcp.env.MCP_TOOL_PROFILE` is now `progressive`.
-The previous config was backed up beside `C:/Users/sasch/.codex/config.toml`.
+The previous config was backed up beside the Codex config (`~/.codex/config.toml`).
 The fork deployment script also selects progressive, so rerunning it no longer
 silently restores full mode. Existing Claude configurations were not changed.
 

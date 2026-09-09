@@ -5,9 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.5+fork] - Unreleased
+
+Integration of upstream **1.5.5** (`32af329`) on top of fork `72b454f` (0.5.3.1+fork), plus the
+review round on PR #2.
+
+> **Native binaries in this round:** only `native/bin/mcp_bridge_2025.gup` was rebuilt (Max 2025 is
+> the only SDK installed on the build machine). `mcp_bridge_2023/2024/2026/2027.gup` are unchanged
+> and predate both the `vfb:false` render fix and the overlapped-I/O transport — rebuild each
+> against its matching SDK before shipping to those Max versions.
+
+### Added
+- **Progressive tool discovery** — the `progressive` profile advertises only `list_toolsets`,
+  `describe_toolset` and `call_tool`; operational tools are described on demand. Schemas are
+  byte-identical to the full profile (see `docs/PROGRESSIVE_AUDIT.md` for the measurements).
+- **Async job handles** — `max_job_submit` / `max_job_status` / `max_job_result` / `max_job_list` /
+  `max_job_wait` / `max_job_cancel` / `max_job_forget` schedule one-shot main-thread callbacks and
+  return immediately. Job scripts can call `mcpJobProgress` and `mcpJobCheckCancel()`;
+  cancellation is cooperative and an unknown outcome is never reported as completion.
+- **Process-scoped UI automation** — `max_ui_windows`, `max_ui_inspect`, `max_ui_invoke`,
+  `max_ui_set_value`, `max_ui_send_keys`, `max_ui_wait`, `max_ui_capture`, each bound to a
+  specific Max PID, with native fallbacks for rollout controls that expose no UIA patterns.
+- Upstream 1.5.5 structured results, atomic scene edits and OpenPBR material defaults.
+
+### Changed
+- **TCP transport and numbered slots removed** in favour of upstream's per-process native
+  instance routing (deliberate, approved decision). Instances are now selected by native
+  discovery id (`pid-<pid>`) via `list_instances` / `set_active_instance`; the old
+  slot/port macros and toolbar scripts are retired. Named pipes are the only transport.
+- All 188 previously advertised tool names are retained; removed upstream native operations fall
+  back to their preserved MAXScript paths.
+- `skills/3dsmax-mcp-dev/` split into `SKILL.md` (served to agents) plus `fork-reference.md`
+  (long-tail plugin lessons).
+- `scripts/verify_feature_catalog.py` is parametrized (argparse + environment variables) and
+  compares against a **git ref** (default `master`) instead of a hardcoded sibling checkout.
 
 ### Fixed
+- **Plain-pipe fallback removed** — the unauthenticated/unframed fallback path could talk to a
+  half-initialized bridge; discovery now probes named pipes without opening throwaway
+  connections.
+- **Job-registry wedge** — a terminal job state is published only after the Max reservation is
+  released, completed state is latched, elapsed time freezes, transient sharing violations are
+  tolerated and non-finite progress values are discarded.
+- **UI tools bound to the wrong process** — every UI call now resolves and verifies its target
+  PID, waits pass their remaining deadline to the provider process, and keyboard input requires
+  the exact observed control to hold focus.
+- **`safe_value()` regression in `set_texture_map_properties`** — `maxmcp/tools/material_ops.py`
+  emitted the raw property value into MAXScript, so a Windows path (`"C:\tex\normal.png"`) had
+  its backslash escapes eaten (`\t` became a tab) and the texture silently failed to load. The value is
+  wrapped with `safe_value()` again, matching every other assignment site; covered by
+  `tests/test_material_ops.py`.
+- **SKILL.md restored** — the must-know Redshift / RPManager / tyFlow / Forest Pack / RailClone
+  rules are back in `SKILL.md` (what `resource://3dsmax-mcp/skill` and the `max_assistant` prompt
+  actually serve) instead of living only in `fork-reference.md`, which now carries the long tail
+  and is pointed at loudly from the top of `SKILL.md`.
+- **Native shutdown fixes** — overlapped I/O with proper `OVERLAPPED` pointers, idle client I/O
+  observing shutdown, connect cancellation completing before its event is freed, and expired
+  queued main-thread work being skipped rather than executed against a dead caller stack.
+- **Native binary rebuilt for Max 2025 only** — `native/bin/mcp_bridge_2025.gup` is a true Release
+  build carrying the transport/executor fixes above and the `vfb:false` render fix
+  (4 593 664 -> 2 135 552 bytes). `mcp_bridge_2023.gup`, `mcp_bridge_2024.gup`,
+  `mcp_bridge_2026.gup` and `mcp_bridge_2027.gup` were **not** rebuilt (no matching SDK on the
+  build machine): they still contain `vfb:true` and lack `GetOverlappedResult`, so anyone on those
+  Max versions runs a stale bridge until it is rebuilt against its own SDK.
 - **`render_scene` native handler double-pass with Redshift** — `native/src/handlers/render_handlers.cpp` was issuing `render … vfb:true …`, which on a Redshift renderer caused two full render passes per call: one into the VFB display buffer, then a second to satisfy the `outputFile:` save. Doubled render cost per tool call and doubled the window in which `RSScene is locked` / Scene.cpp:402 crashes could fire. Changed to `vfb:false` to match the Python fallback in `src/tools/render.py` (which was already correct). Reproduced in 822 HeissluftBallon envelope work 2026-04-20. Rebuild `mcp_bridge.gup` from `native/` (see README "Building from source") to pick up the fix.
 
 <!-- native -->
