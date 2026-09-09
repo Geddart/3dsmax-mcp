@@ -89,14 +89,19 @@ def tripback_mode() -> str:
     return value if value in {"minimal", "full"} else "minimal"
 
 
+# Routing is the one piece of transport metadata that is not diagnostics: with
+# several Max instances live it is the only answer to "which Max got this write".
+_SLIM_TRANSPORT_KEYS = ("transport", "target_pid", "target_pipe", "target_source")
+
+
 def _slim_transport(transport: dict[str, Any] | None) -> dict[str, Any] | None:
     if not transport:
         return None
-    slim: dict[str, Any] = {}
-    if transport.get("transport"):
-        slim["transport"] = transport["transport"]
-    if transport.get("fallback_error"):
-        slim["fallback_error"] = transport["fallback_error"]
+    slim: dict[str, Any] = {
+        key: transport[key]
+        for key in _SLIM_TRANSPORT_KEYS
+        if transport.get(key) is not None
+    }
     return slim or None
 
 
@@ -441,6 +446,9 @@ def envelope_result(
             if warnings:
                 payload["warnings"] = warnings
             _attach_hint(payload, result, tool_name=tool_name, error=None, script=script)
+            slim = _slim_transport(transport)
+            if slim:
+                payload["transport"] = slim
             return _finalize_envelope(payload)
 
         payload = {"ok": False, "error": error}

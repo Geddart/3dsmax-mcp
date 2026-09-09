@@ -71,6 +71,41 @@ review round on PR #2.
   Max versions runs a stale bridge until it is rebuilt against its own SDK.
 - **`render_scene` native handler double-pass with Redshift** — `native/src/handlers/render_handlers.cpp` was issuing `render … vfb:true …`, which on a Redshift renderer caused two full render passes per call: one into the VFB display buffer, then a second to satisfy the `outputFile:` save. Doubled render cost per tool call and doubled the window in which `RSScene is locked` / Scene.cpp:402 crashes could fire. Changed to `vfb:false` to match the Python fallback in `src/tools/render.py` (which was already correct). Reproduced in 822 HeissluftBallon envelope work 2026-04-20. Rebuild `mcp_bridge.gup` from `native/` (see README "Building from source") to pick up the fix.
 
+#### PR #2 review round
+
+- **The instance fence covered only the `max_ui_*` tools** — `protected_pids.json` /
+  `MCP_UI_DENY_PIDS` were read exclusively by `maxmcp/max_ui.py`, so every MAXScript tool routed
+  around them. Fencing the production Max and then closing the dev Max made the production one
+  "the single live instance", and the next `execute_maxscript` / `scene_patch` / `max_job_render`
+  ran inside it with `target_source='single'` and no refusal. The fence now lives in
+  `maxmcp/pid_fence.py` and is enforced in `MaxClient._default_target()` (claimed *and* single
+  branches) and `select_max_instance()`, raising the new `ProtectedMaxInstanceError`.
+- **A fence entry lapsed silently across a Max restart** — a bare PID is recycled by Windows, so
+  the protection quietly protected nothing (and could start refusing an unrelated dev Max that
+  inherited the number). `protected_pids.json` now also accepts `max_versions`, matched against
+  the `max_version` the bridge writes into each instance record, and `list_max_instances` reports
+  `protected` per instance plus a `protected_fence` block whose `lapsed_pids` names entries that
+  match nothing live.
+- **Routing metadata was stripped from every response in the default tripback mode** — the docs
+  promised `target_pid` / `target_pipe` / `target_source` on every response, but minimal mode
+  attached transport only on errors and `_slim_transport` copied just `transport` and the dead
+  `fallback_error`. Slim transport now carries the three routing keys and is attached on the
+  minimal-mode success path too; the `fallback_error` branch (whose only producer this round
+  deleted) is gone.
+- **`scripts/verify_ui_jobs.py` auto-drove a second Max** — the acceptance script picked
+  `others[0]` from the live instance list and executed MAXScript in it, which on this workstation
+  is the production Max, possibly mid-render. The isolation check is now opt-in via
+  `--other-pid N` and refuses a protected PID.
+- **A racing foreground could swallow `SendKeys` input and still be reported as committed** —
+  `SendWait` injects into the input desktop, not into a PID-scoped window, so a dialog that stole
+  focus after `Set-ControlFocus` received the keystroke. `max_ui_set_value(commit=True)` and
+  `max_ui_send_keys` now re-read the foreground PID after the injection and report
+  `foreground_changed` (with `committed=false` / `completed=false`) instead of claiming success.
+- **A SKILL.md lesson contained raw `0x03` bytes** — the `\3` in `\3dsmax-mcp` was interpreted as
+  an octal escape and written into the file, erasing both the trigger and the symptom of the very
+  pitfall the line documents. `SKILL.md` is served verbatim as an MCP resource, so every agent
+  loading the skill received the control character. Rewritten, and the file is control-byte clean.
+
 <!-- native -->
 ### Fixed (native bridge)
 - **Max hung on exit for up to 120 s per in-flight request** — `MCPBridgeGUP::Stop()` joined the pipe client threads (`StopPipe()`) *before* shutting the executor down. A client thread inside `CommandDispatcher::Dispatch` -> `MainThreadExecutor::ExecuteSync` was waiting for a `WM_MCP_EXECUTE` that the main thread could no longer pump, because it was blocked in `std::thread::join()` on that same thread. New `MainThreadExecutor::BeginShutdown()` is now the first thing `Stop()` calls: it closes a submission gate (later `ExecuteSync` calls from background threads throw immediately instead of posting) and completes every queued/deferred work item with an error, so the joins below it return at once.

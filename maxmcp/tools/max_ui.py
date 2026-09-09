@@ -77,8 +77,11 @@ def max_ui_set_value(pid: int | None = None, element: dict | None = None,
     "1.0"), so a differing readback is reported, not raised; only a failed write
     raises. A native Edit fallback uses WM_SETTEXT, which does NOT fire a
     MAXScript rollout 'on entered' handler — pass commit=True to send {ENTER}
-    through the focused control afterwards (needs Max in the foreground; a failed
-    commit is reported as committed=false with commit_error).
+    through the focused control afterwards. That {ENTER} goes through SendKeys,
+    which is desktop-global: the foreground process is checked before and again
+    after the injection, and a window that stole focus in between comes back as
+    committed=false with foreground_changed and commit_error, meaning the
+    keystroke may have landed elsewhere. The written value stands either way.
     Rejects password, disabled, and read-only controls. No clipboard or shell use.
     """
     if element is None:
@@ -94,8 +97,10 @@ def max_ui_send_keys(pid: int | None = None, element: dict | None = None, keys: 
     """Focus an observed Max control and send a short Windows Forms SendKeys sequence.
 
     Omit pid to use this session's pinned instance. Verify the resulting state.
-    Prefer invoke/set_value. Foreground process is checked immediately before
-    input, but the user can still race global input. Alt/global shortcuts and
+    Prefer invoke/set_value. The foreground process is checked immediately before
+    input and re-read afterwards, but SendKeys is desktop-global: a window that
+    stole focus in between comes back as completed=false with foreground_changed,
+    an unknown outcome, not a failure. Alt/global shortcuts and
     password controls are rejected. Prefer set_value for text.
     """
     if element is None:

@@ -212,7 +212,9 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 - Never replay a written scene command on a lost response, and retain `MCP_Server.escapeJsonString` when removing the old listener because custom and upstream fallback tools still use it.
 - An async job stuck in `unknown` blocks its Max until `max_job_forget(job_id, force=True)` — only after verifying in Max that nothing is running.
 - Native build: keep the CMake build dir on a SHORT path. MSBuild FileTracker fails with `FTK1011` when build-dir + `.tlog` names exceed MAX_PATH, e.g. building from a deep temp worktree.
-- Python-side: MAXScript-adjacent error strings must be raw strings — `'%LOCALAPPDATA%dsmax-mcp\...'` silently becomes an `` octal escape.
+- Python-side: MAXScript-adjacent Windows paths must be raw strings or use doubled backslashes — in `'%LOCALAPPDATA%\3dsmax-mcp\...'` Python reads `\3` as an octal escape and stores a literal `\x03` (ETX) byte; write `r'%LOCALAPPDATA%\3dsmax-mcp\...'` instead, and grep new lessons for control bytes before committing.
+- `protected_pids.json` / `MCP_UI_DENY_PIDS` fence every route, not just `max_ui_*`: a fenced Max is skipped by claim/single resolution and refused by `select_max_instance`. A bare PID lapses on restart, so fence `max_versions` too and watch `protected_fence.lapsed_pids` in `list_max_instances`.
+- `SendKeys` is desktop-global, not PID-scoped: `max_ui_set_value(commit=True)` and `max_ui_send_keys` re-read the foreground PID after injecting and report `foreground_changed` — treat that as an unknown outcome, never as a completed write.
 
 ### OSL
 - Use `write_osl_shader` for file I/O and compilation

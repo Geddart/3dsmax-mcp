@@ -1,6 +1,10 @@
 """Explicit live acceptance check: temporary dialog and short sleep job, no render.
 
 Run from the checkout with Max already running: python scripts/verify_ui_jobs.py PID
+
+The cross-instance isolation check drives a SECOND Max, so it never picks one on
+its own: pass `--other-pid N` to opt in, and only for a Max you are willing to
+have MAXScript executed in. A protected PID is refused outright.
 """
 import json
 import os
@@ -10,6 +14,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from maxmcp.max_client import MaxClient
+from maxmcp.pid_fence import fence_reason
 from maxmcp.server import client
 from maxmcp.tools import jobs, max_ui
 from maxmcp.tools.routing import get_selected_max_instance, list_max_instances, release_max_instance, select_max_instance
@@ -39,7 +44,7 @@ def wait_until_gone(pid, title, seconds=10):
     return False
 
 
-def main(pid):
+def main(pid, other_pid=None):
     # Resolve using the installed discovery record rather than guessing pipe names.
     record = Path(os.environ['LOCALAPPDATA'])/'3dsmax-mcp/instances'/f'pid-{pid}.json'
     pipe = json.loads(record.read_text())['pipe']
@@ -72,13 +77,23 @@ def main(pid):
             time.sleep(.05)
         state = jobs.max_job_status(jid)
         assert state['state']=='running', state
-        others = [item for item in available if item['pipe'] != pipe]
-        if others:
+        # Opt-in only: this block executes MAXScript in a second Max. Auto-picking
+        # one would run it in whichever other Max happens to be open, which on a
+        # workstation is the production instance.
+        if other_pid is None:
+            print('SKIP isolation check: pass --other-pid N to run it in a second Max', flush=True)
+        else:
+            other = next((item for item in available if item.get('pid') == other_pid), None)
+            assert other is not None and other['pipe'] != pipe, (
+                f'--other-pid {other_pid} is not a second live instance; '
+                f'live: {[item.get("pid") for item in available]}')
+            reason = fence_reason(other_pid, other)
+            assert reason is None, f'--other-pid {other_pid} is protected ({reason}); refusing to drive it'
             # Never leave the session pinned to a foreign instance, even on failure.
             try:
-                select_max_instance(others[0]['pid'])
-                other_pid = client.send_command('((dotNetClass "System.Diagnostics.Process").GetCurrentProcess()).Id as string')['result']
-                assert int(other_pid) == others[0]['pid']
+                select_max_instance(other_pid)
+                reported = client.send_command('((dotNetClass "System.Diagnostics.Process").GetCurrentProcess()).Id as string')['result']
+                assert int(reported) == other_pid
                 assert jobs.max_job_status(jid)['target'] == pipe, 'Job was redirected by target switch'
             finally:
                 select_max_instance(pid)
@@ -120,4 +135,18 @@ def main(pid):
         restore_selection(previous)
 
 
-if __name__=='__main__': main(int(sys.argv[1]))
+def parse_args(argv):
+    """PID, then an optional opt-in `--other-pid N` for the isolation check."""
+    if not argv:
+        raise SystemExit('usage: verify_ui_jobs.py PID [--other-pid N]')
+    other = None
+    if '--other-pid' in argv:
+        index = argv.index('--other-pid')
+        if index + 1 >= len(argv):
+            raise SystemExit('--other-pid needs a PID')
+        other = int(argv[index + 1])
+        argv = argv[:index] + argv[index + 2:]
+    return int(argv[0]), other
+
+
+if __name__=='__main__': main(*parse_args(sys.argv[1:]))

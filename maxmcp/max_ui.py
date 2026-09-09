@@ -14,8 +14,14 @@ import subprocess
 import tempfile
 from uuid import uuid4
 
-DENY_ENV = 'MCP_UI_DENY_PIDS'
-PROTECTED_FILE = 'protected_pids.json'
+from .pid_fence import (
+    DENY_ENV,
+    PROTECTED_FILE,
+    config_dir,
+    denied_max_versions,
+    denied_pids,
+)
+
 _STILL_ACTIVE = 259
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -26,13 +32,6 @@ class UIReadTimeout(TimeoutError):
 
 class UITargetError(ValueError):
     """The requested PID is not an addressable, permitted Max instance."""
-
-
-def config_dir():
-    root = os.environ.get('LOCALAPPDATA')
-    if root:
-        return Path(root) / '3dsmax-mcp'
-    return Path.home() / 'AppData' / 'Local' / '3dsmax-mcp'
 
 
 def _process_is_live(pid):
@@ -52,9 +51,9 @@ def _process_is_live(pid):
         kernel32.CloseHandle(handle)
 
 
-def registered_pids():
-    """Live PIDs advertised by the native bridge as pid-*.json instance records."""
-    found = set()
+def registered_instances():
+    """Live instance records advertised by the native bridge, keyed by PID."""
+    found = {}
     try:
         paths = sorted((config_dir() / 'instances').glob('pid-*.json'))
     except OSError:
@@ -71,30 +70,13 @@ def registered_pids():
         except (TypeError, ValueError):
             continue
         if pid > 0 and _process_is_live(pid):
-            found.add(pid)
+            found[pid] = data
     return found
 
 
-def denied_pids():
-    """PIDs the operator has fenced off: env deny list plus protected_pids.json."""
-    denied = set()
-    for chunk in (os.environ.get(DENY_ENV) or '').replace(';', ',').split(','):
-        chunk = chunk.strip()
-        if chunk.isdigit():
-            denied.add(int(chunk))
-    try:
-        data = json.loads((config_dir() / PROTECTED_FILE).read_text('utf-8'))
-    except (OSError, ValueError):
-        return denied
-    if isinstance(data, dict):
-        data = data.get('pids', [])
-    if isinstance(data, list):
-        for item in data:
-            try:
-                denied.add(int(item))
-            except (TypeError, ValueError):
-                continue
-    return denied
+def registered_pids():
+    """Live PIDs advertised by the native bridge as pid-*.json instance records."""
+    return set(registered_instances())
 
 
 def _session_client():
@@ -141,6 +123,16 @@ def resolve_pid(pid=None):
         raise UITargetError(
             f'PID {pid} is protected against UI automation '
             f'({DENY_ENV} or {PROTECTED_FILE}); refusing before any input is sent')
+    # A bare PID is recycled across a Max restart; max_versions survives one.
+    fenced_versions = denied_max_versions()
+    if fenced_versions:
+        record = registered_instances().get(pid) or {}
+        version = record.get('max_version')
+        if version is not None and str(version).strip() in fenced_versions:
+            raise UITargetError(
+                f'PID {pid} runs a 3ds Max version protected against UI automation '
+                f'(max_version {version} in {PROTECTED_FILE}); '
+                'refusing before any input is sent')
     return pid
 
 

@@ -117,15 +117,33 @@ class MaxUITargetBindingTests(unittest.TestCase):
 
     def test_deny_list_sources(self):
         with patch.dict(os.environ, {max_ui_core.DENY_ENV: '11, 12;13,bogus'}, clear=False), \
-             patch('maxmcp.max_ui.config_dir', return_value=Path(tempfile.gettempdir()) / 'absent-3dsmax-mcp'):
+             patch('maxmcp.pid_fence.config_dir', return_value=Path(tempfile.gettempdir()) / 'absent-3dsmax-mcp'):
             self.assertEqual(max_ui_core.denied_pids(), {11, 12, 13})
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         (directory / max_ui_core.PROTECTED_FILE).write_text(json.dumps({'pids': [77, '78']}), encoding='utf-8')
         environment = {key: value for key, value in os.environ.items() if key != max_ui_core.DENY_ENV}
         with patch.dict(os.environ, environment, clear=True), \
-             patch('maxmcp.max_ui.config_dir', return_value=directory):
+             patch('maxmcp.pid_fence.config_dir', return_value=directory):
             self.assertEqual(max_ui_core.denied_pids(), {77, 78})
+
+    def test_max_version_fence_refuses_a_restarted_max(self):
+        """A recycled PID lapses the fence; the bridge's max_version does not."""
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        instances = directory / 'instances'
+        instances.mkdir()
+        (instances / 'pid-4312.json').write_text(
+            json.dumps({'pid': 4312, 'pipe': 'x', 'max_version': 27000}), encoding='utf-8')
+        (directory / max_ui_core.PROTECTED_FILE).write_text(
+            json.dumps({'max_versions': [27000]}), encoding='utf-8')
+        with patch('maxmcp.max_ui.config_dir', return_value=directory), \
+             patch('maxmcp.pid_fence.config_dir', return_value=directory), \
+             patch('maxmcp.max_ui._process_is_live', return_value=True), \
+             patch('maxmcp.max_ui.subprocess.run') as run:
+            with self.assertRaisesRegex(UITargetError, 'protected'):
+                request('invoke', 4312)
+            run.assert_not_called()
 
     def test_registry_only_reports_live_recorded_instances(self):
         directory = Path(tempfile.mkdtemp())

@@ -23,10 +23,11 @@ live, the call fails with "No live 3ds Max instance with the native bridge
 found" instead of reaching whatever listens on the old `\\.\pipe\3dsmax-mcp`
 name — which may be a production Max running the old fork bridge.
 
-Routing is reported on every response: `target_pid`, `target_pipe` and
-`target_source` (`selected` | `claimed` | `single` | `explicit`) appear in the
-transport metadata, and `MaxClient.selected_pid()` resolves the bound PID
-without sending anything to Max.
+Routing is reported on every response, success or error, in both tripback
+modes: `target_pid`, `target_pipe` and `target_source` (`selected` | `claimed` |
+`single` | `explicit`) appear under `transport`. `MCP_TRIPBACK_MODE=full` adds
+the diagnostic transport fields and `elapsed_ms`; `MaxClient.selected_pid()`
+resolves the bound PID without sending anything to Max.
 
 Instance records for dead PIDs are ignored and their files deleted while
 enumerating `%LOCALAPPDATA%\3dsmax-mcp\instances`, so a crashed Max cannot
@@ -66,6 +67,24 @@ refused outright — that is how a production Max is fenced off. Both checks run
 before the helper process is spawned, and every result reports the `pid` it
 actually targeted.
 
+**The fence covers every tool, not only `max_ui_*`.** `maxmcp/pid_fence.py` is
+read by the transport router as well: a protected instance is skipped by
+claim/single resolution (so closing the dev Max cannot promote a protected one
+to "the single live instance"), and `select_max_instance(pid)` refuses it. Only
+an explicit `MCP_MAX_PIPE` / constructor pipe still overrides the fence, and
+`get_selected_max_instance()` reports `protected` so that override is visible.
+
+A bare PID is recycled by Windows, so a fence entry naming only a PID lapses
+when the protected Max restarts. `protected_pids.json` therefore also accepts
+`max_versions`, matched against the `max_version` the bridge writes into each
+instance record, and `list_max_instances` returns `protected` per instance plus
+a `protected_fence` block whose `lapsed_pids` names entries that match nothing
+live:
+
+```json
+{"pids": [9876], "max_versions": [27000]}
+```
+
 `max_ui_wait` compares titles after normalisation: surrounding whitespace and
 the trailing `*` Max appends to a modified scene are ignored. `match="contains"`
 opts into a case-insensitive substring match. `timeout_seconds=0` still probes
@@ -79,6 +98,11 @@ Edit fallback uses `WM_SETTEXT`, which does **not** fire a MAXScript rollout
 `on entered` handler — pass `commit=true` to send `{ENTER}` through the focused
 control afterwards (Max must be foreground; a failed commit comes back as
 `committed=false` with `commit_error`, the written value stands either way).
+`SendKeys` injects into the input desktop, not into a PID-scoped window, so a
+dialog that steals the foreground in the gap after the check receives the
+keystroke: both the commit path and `max_ui_send_keys` re-read the foreground
+PID afterwards and report `foreground_changed` with `committed=false` rather
+than claiming a completed commit.
 
 UI operations run in a bounded hidden helper process, not on the MCP or Max
 request thread. Its Win32 shim is compiled once into
@@ -152,8 +176,11 @@ target reservations, native routing and no replay after a written request.
 
 `scripts/verify_ui_jobs.py PID` explicitly creates a temporary rollout and a real
 modal message box, edits/reads a field, invokes buttons, captures a window, runs
-a short sleeping job, cancels a cooperative job, and checks target isolation.
+a short sleeping job, and cancels a cooperative job, all in `PID`.
 It cleans up its dialogs; it does not render or change scene geometry.
+The cross-instance isolation check executes MAXScript in a *second* Max, so it
+is opt-in: it is skipped unless you pass `--other-pid N`, and it refuses a
+protected PID.
 `scripts/verify_instance_panel.py PID` verifies the new instance UI and helper.
 
 Live checks passed in Max 2025 and 2027 for the initial dialog/job workflow and

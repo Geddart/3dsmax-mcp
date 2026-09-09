@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 from .pipe_io import transfer
+from .pid_fence import (
+    denied_max_versions,
+    denied_pids,
+    fence_reason,
+    unmatched_pids,
+)
 
 DEFAULT_TIMEOUT = 120.0
 MCP_PIPE_ENV = "MCP_MAX_PIPE"
@@ -94,6 +100,16 @@ class AmbiguousMaxInstanceError(ConnectionError):
 
 class NoMaxInstanceError(ConnectionError):
     """Raised when no live Max instance publishes a native bridge pipe."""
+
+
+class ProtectedMaxInstanceError(ConnectionError):
+    """Raised when the resolvable Max is fenced off by the operator.
+
+    The fence covers every tool, not just ``max_ui_*``: routing a scene
+    command into a production Max is exactly what protected_pids.json exists
+    to prevent, so resolution fails closed rather than picking that Max up as
+    the last instance standing.
+    """
 
 
 class MaxBridgeError(Exception):
@@ -239,13 +255,26 @@ class MaxClient:
         return sorted(live, key=lambda item: int(item.get("pid") or 0))
 
     def _default_target(self) -> dict[str, Any]:
-        """Resolve the routing target from claim file / live instances only."""
+        """Resolve the routing target from claim file / live instances only.
+
+        A protected instance is never routed to, including when it is the last
+        one running: closing the dev Max must not silently promote the
+        operator's production Max to "the single live instance".
+        """
         active = self._active_instance()
         active_pid = self._instance_pid(active)
         if active and active_pid and _process_alive(active_pid) and self._probe_pipe_available(active["pipe"]):
+            reason = fence_reason(active_pid, active)
+            if reason:
+                raise ProtectedMaxInstanceError(
+                    f"The claimed 3ds Max instance is protected: {reason}. "
+                    "Nothing was routed to it. Claim another Max, or remove the "
+                    "fence entry if this instance is no longer production."
+                )
             return self._target(active["pipe"], "claimed", active_pid)
 
-        live = self._live_instances()
+        all_live = self._live_instances()
+        live = [item for item in all_live if fence_reason(item.get("pid"), item) is None]
         if len(live) == 1:
             return self._target(live[0]["pipe"], "single", live[0].get("pid"))
         if len(live) > 1:
@@ -258,6 +287,18 @@ class MaxClient:
                 "Call select_max_instance(pid), or in the target 3ds Max window "
                 "run MCP > MCP Claim This Max. "
                 f"Available instances: {labels}"
+            )
+
+        protected = [item for item in all_live if fence_reason(item.get("pid"), item)]
+        if protected:
+            labels = ", ".join(
+                f"pid={item.get('pid', '?')} ({fence_reason(item.get('pid'), item)})"
+                for item in protected
+            )
+            raise ProtectedMaxInstanceError(
+                "The only live 3ds Max instances are protected and will not be "
+                f"routed to ({labels}). Start an unprotected Max, or remove the "
+                "entry from protected_pids.json / MCP_UI_DENY_PIDS."
             )
 
         raise NoMaxInstanceError(
@@ -297,15 +338,25 @@ class MaxClient:
         active = self._active_instance()
         claimed_pipe = active["pipe"] if active else None
         selected_pipe = self._bound_target["target_pipe"] if self._bound_target else None
+        instances = self._live_instances()
         return {
             "instances": [
                 {
                     **item,
                     "claimed": item["pipe"] == claimed_pipe,
                     "selected": item["pipe"] == selected_pipe,
+                    "protected": fence_reason(item.get("pid"), item) is not None,
                 }
-                for item in self._live_instances()
-            ]
+                for item in instances
+            ],
+            # Surfaced so an entry that lapsed across a Max restart (Windows
+            # recycles the PID; the fence keeps the old number) stays visible
+            # instead of silently protecting nothing.
+            "protected_fence": {
+                "pids": sorted(denied_pids()),
+                "max_versions": sorted(denied_max_versions()),
+                "lapsed_pids": unmatched_pids(item.get("pid") for item in instances),
+            },
         }
 
     def get_selected_max_instance(self) -> dict[str, Any]:
@@ -325,6 +376,9 @@ class MaxClient:
             **target,
             "pinned": self._bound_target is not None,
             "available": self._probe_pipe_available(target["target_pipe"]),
+            # An explicit pipe/env target bypasses fence-aware resolution on
+            # purpose; report the fence state so that override stays visible.
+            "protected": fence_reason(target.get("target_pid")) is not None,
         }
 
     def select_max_instance(self, pid: int) -> dict[str, Any]:
@@ -336,6 +390,12 @@ class MaxClient:
             None,
         )
         pipe = record["pipe"] if record else f"{PIPE_PREFIX}{pid}"
+        reason = fence_reason(pid, record)
+        if reason:
+            raise ProtectedMaxInstanceError(
+                f"3ds Max PID {pid} is protected: {reason}. Selection was not "
+                "changed and nothing was sent to it."
+            )
         if not _process_alive(pid) or not self._probe_pipe_available(pipe):
             raise ConnectionError(
                 f"3ds Max PID {pid} is unavailable; selection was not changed. "

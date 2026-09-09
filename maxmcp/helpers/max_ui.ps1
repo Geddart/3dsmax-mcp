@@ -126,6 +126,11 @@ function Resolve-Control($token) {
  }
  throw 'Control no longer exists or exceeds search bound; inspect again'
 }
+function Get-ForegroundPid {
+ [uint32]$owner = 0
+ [void][MaxWindowApi]::GetWindowThreadProcessId([MaxWindowApi]::GetForegroundWindow(),[ref]$owner)
+ return $owner
+}
 function Set-ControlFocus($element, $hwnd) {
  [void][MaxWindowApi]::SetForegroundWindow([IntPtr]([long]$hwnd))
  $nativeFocus = $false
@@ -139,9 +144,7 @@ function Set-ControlFocus($element, $hwnd) {
   $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
   if ($null -eq $focused -or (($focused.GetRuntimeId() -join ',') -ne ($element.GetRuntimeId() -join ','))) { throw 'Requested control did not gain focus; input rejected' }
  }
- [uint32]$foregroundPid = 0
- [void][MaxWindowApi]::GetWindowThreadProcessId([MaxWindowApi]::GetForegroundWindow(),[ref]$foregroundPid)
- if ($foregroundPid -ne $targetId) { throw 'Max is not foreground; input rejected' }
+ if ((Get-ForegroundPid) -ne $targetId) { throw 'Max is not foreground; input rejected' }
 }
 
 switch ($request.action) {
@@ -203,7 +206,7 @@ switch ($request.action) {
   Assert-Owner $element
   if ($element.Current.IsPassword -or -not $element.Current.IsEnabled) { throw 'Password or disabled control rejected' }
   if ($element.Current.ClassName -eq 'Edit' -and ([MaxWindowApi]::GetWindowLong([IntPtr]$element.Current.NativeWindowHandle,-16) -band 0x20)) { throw 'Password edit rejected' }
-  $committed=$null; $commitError=$null
+  $committed=$null; $commitError=$null; $foregroundChanged=$false; $keysWarning=$null
   switch ($request.action) {
    'invoke' {
     $pattern=$null
@@ -249,7 +252,14 @@ switch ($request.action) {
      try {
       Set-ControlFocus $element $request.element.hwnd
       [Windows.Forms.SendKeys]::SendWait('{ENTER}')
-      $committed=$true
+      # SendWait injects into the input desktop, not into a PID-scoped window:
+      # anything that stole the foreground between the check and the injection
+      # received the {ENTER}. Never report that as a completed commit.
+      $after=Get-ForegroundPid
+      if ($after -ne $targetId) {
+       $foregroundChanged=$true
+       $commitError="foreground_changed: pid $after took the foreground; the {ENTER} may have gone there and the commit is unconfirmed"
+      } else { $committed=$true }
      } catch { $commitError=$_.Exception.Message }
     }
    }
@@ -257,9 +267,15 @@ switch ($request.action) {
     if ($request.keys.Contains('%') -or $request.keys -match '(?i)\{(LWIN|RWIN|APPS|PRTSC|BREAK)' -or ($request.keys.Contains('^') -and $request.keys -match '(?i)\{ESC')) { throw 'Alt and global shortcuts rejected' }
     Set-ControlFocus $element $request.element.hwnd
     [Windows.Forms.SendKeys]::SendWait([string]$request.keys)
+    # Same desktop-global race as the commit path: a window that grabbed the
+    # foreground after the check is where these keystrokes landed.
+    $after=Get-ForegroundPid
+    if ($after -ne $targetId) { $foregroundChanged=$true; $keysWarning="foreground_changed: pid $after took the foreground; some keystrokes may have gone there" }
    }
   }
   $answer=@{action=$request.action;completed=$true;reinspect=$true}
+  if ($foregroundChanged) { $answer.foreground_changed=$true }
+  if ($null -ne $keysWarning) { $answer.completed=$false; $answer.warning=$keysWarning }
   if ($request.action -eq 'set_value') {
    $answer.value_written=[string]$request.value
    $answer.readback=$readback

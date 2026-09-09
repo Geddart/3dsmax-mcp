@@ -17,19 +17,32 @@ from maxmcp.tool_response import (
 
 
 class ToolResponseTests(unittest.TestCase):
-    def test_minimal_success_omits_transport_and_elapsed(self) -> None:
+    def test_minimal_success_reports_routing_and_omits_diagnostics(self) -> None:
+        """With several Max instances live, "which Max got this?" must be answerable."""
         with patch.dict(os.environ, {"MCP_TRIPBACK_MODE": "minimal"}, clear=False):
             payload = envelope_result(
                 '{"value": 3, "warnings": ["low"]}',
                 elapsed_ms=1.234,
-                transport={"transport": "namedpipe"},
+                transport={
+                    "transport": "namedpipe",
+                    "request_id": "abc",
+                    "client_round_trip_ms": 1.2,
+                    "target_pid": 1234,
+                    "target_pipe": r"\\.\pipe\3dsmax-mcp-pid-1234",
+                    "target_source": "claimed",
+                },
             )
 
         self.assertEqual(payload["ok"], True)
         self.assertEqual(payload["result"]["value"], 3)
         self.assertEqual(payload["warnings"], ["low"])
         self.assertNotIn("error", payload)
-        self.assertNotIn("transport", payload)
+        self.assertEqual(payload["transport"], {
+            "transport": "namedpipe",
+            "target_pid": 1234,
+            "target_pipe": r"\\.\pipe\3dsmax-mcp-pid-1234",
+            "target_source": "claimed",
+        })
         self.assertNotIn("elapsed_ms", payload)
 
     def test_full_success_includes_transport_and_elapsed(self) -> None:
