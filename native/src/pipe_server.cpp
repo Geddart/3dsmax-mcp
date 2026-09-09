@@ -146,9 +146,12 @@ void PipeServer::HandleClient(HANDLE pipe) {
 std::string PipeServer::ReadRequest(HANDLE pipe) {
     std::string data;
     char buf[4096];
+    // One event for the whole request, reset per chunk — a large request used to
+    // burn a CreateEvent/CloseHandle pair every 4 KB.
+    PipeIOEvent read;
+    if (!read.operation.hEvent) return {};
     while (running_.load()) {
-        PipeIOEvent read;
-        if (!read.operation.hEvent) return {};
+        read.Reset();
         DWORD bytes_read = 0;
         BOOL ok = ReadFile(pipe, buf, sizeof(buf), &bytes_read, &read.operation);
         const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
@@ -175,9 +178,10 @@ bool PipeServer::WriteResponse(HANDLE pipe, const std::string& response) {
     DWORD total = static_cast<DWORD>(out.size());
     const char* ptr = out.c_str();
 
+    PipeIOEvent write;
+    if (!write.operation.hEvent) return false;
     while (total > 0) {
-        PipeIOEvent write;
-        if (!write.operation.hEvent) return false;
+        write.Reset();
         written = 0;
         BOOL ok = WriteFile(pipe, ptr, total, &written, &write.operation);
         const DWORD error = ok ? ERROR_SUCCESS : GetLastError();

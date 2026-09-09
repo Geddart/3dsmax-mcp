@@ -190,3 +190,14 @@ install(TARGETS mcp_bridge
     RUNTIME DESTINATION "${MAX_PLUGINS_DIR}"
     LIBRARY DESTINATION "${MAX_PLUGINS_DIR}"
 )
+
+# ── Tests ────────────────────────────────────────────────────────
+# native/tests still configures standalone (it needs no Max SDK):
+#   cmake -S native/tests -B build-tests && cmake --build build-tests --config Release
+# Turn this on to build and register them alongside the plugin instead:
+#   cmake -S native -B build-2025 -DMCP_BUILD_TESTS=ON  &&  ctest --test-dir build-2025 -C Release
+option(MCP_BUILD_TESTS "Build the native transport regression tests" OFF)
+if(MCP_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

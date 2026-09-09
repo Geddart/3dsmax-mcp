@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **`render_scene` native handler double-pass with Redshift** — `native/src/handlers/render_handlers.cpp` was issuing `render … vfb:true …`, which on a Redshift renderer caused two full render passes per call: one into the VFB display buffer, then a second to satisfy the `outputFile:` save. Doubled render cost per tool call and doubled the window in which `RSScene is locked` / Scene.cpp:402 crashes could fire. Changed to `vfb:false` to match the Python fallback in `src/tools/render.py` (which was already correct). Reproduced in 822 HeissluftBallon envelope work 2026-04-20. Rebuild `mcp_bridge.gup` from `native/` (see README "Building from source") to pick up the fix.
 
+<!-- native -->
+### Fixed (native bridge)
+- **Max hung on exit for up to 120 s per in-flight request** — `MCPBridgeGUP::Stop()` joined the pipe client threads (`StopPipe()`) *before* shutting the executor down. A client thread inside `CommandDispatcher::Dispatch` -> `MainThreadExecutor::ExecuteSync` was waiting for a `WM_MCP_EXECUTE` that the main thread could no longer pump, because it was blocked in `std::thread::join()` on that same thread. New `MainThreadExecutor::BeginShutdown()` is now the first thing `Stop()` calls: it closes a submission gate (later `ExecuteSync` calls from background threads throw immediately instead of posting) and completes every queued/deferred work item with an error, so the joins below it return at once.
+- **Leaked work items on shutdown** — `MainThreadExecutor::Shutdown()` called `DestroyWindow()` while `WM_MCP_EXECUTE` messages were still queued. Windows discards those messages, leaking the heap `shared_ptr<WorkItem>` each one owns and leaving its waiter to sleep out the full timeout. `DrainPendingWork()` now `PeekMessage`-drains the queue first, deletes the raw pointers and wakes each waiter with an error.
+- **`CompletePipeIO` swallowed real wait failures** — `WAIT_FAILED` (and a null shutdown event) were indistinguishable from "shutdown was signalled". Both are now reported via `OutputDebugString` (`LogPipeIOFailure`); the cancel-and-drain behaviour is unchanged.
+
+### Changed (native bridge)
+- `PipeIOEvent::Reset()` lets one event be reused across the chunks of a request/response. `PipeServer::ReadRequest`/`WriteResponse` no longer create and close a kernel event every 4 KB.
+- `native/CMakeLists.txt` gained `option(MCP_BUILD_TESTS OFF)`, which pulls `native/tests` in via `add_subdirectory` and registers it with CTest. `native/tests` still configures standalone.
+- `native/tests/transport_tests.cpp`: new coverage for shutdown waking a queued waiter promptly, `ExecuteSync` failing fast once shutting down, `Initialize()` reopening the gate, and the null-shutdown / event-reuse paths in `pipe_io.h`.
+- `native/bin/mcp_bridge_2025.gup` rebuilt from source as a true Release build (4 593 664 -> 2 135 552 bytes; the committed binary was an unoptimized link — 2x `.text`, 6x `.pdata`, extra `.idata`/`.tls`/`.00cfg` sections — and predated the overlapped-I/O transport entirely). Binaries for 2023/2024/2026/2027 were **not** rebuilt: only the Max 2025 SDK is installed on this machine.
+<!-- /native -->
+
 ## [0.5.3.1-fork] - 2026-04-17
 
 Bugfix release on top of v0.5.3+fork after a full trace of the server start/stop and MCP slot logic.
