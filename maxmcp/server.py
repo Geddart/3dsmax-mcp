@@ -197,7 +197,7 @@ def _install_structured_tool_results() -> None:
 _install_structured_tool_results()
 
 CORE_TOOL_MODULES = (
-    "instances",
+    "routing",
     "jobs",
     "max_ui",
     "execute",

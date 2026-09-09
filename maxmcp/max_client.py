@@ -3,6 +3,7 @@ import ctypes.wintypes as wintypes
 import json
 import math
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -11,8 +12,11 @@ from uuid import uuid4
 from .pipe_io import transfer
 
 DEFAULT_TIMEOUT = 120.0
-DEFAULT_PIPE_NAME = r"\\.\pipe\3dsmax-mcp"
 MCP_PIPE_ENV = "MCP_MAX_PIPE"
+# Per-process pipe published by the native bridge; the old shared
+# \\.\pipe\3dsmax-mcp name is never used, so a stale bridge in a production
+# Max can no longer catch commands meant for a selected instance.
+PIPE_PREFIX = r"\\.\pipe\3dsmax-mcp-pid-"
 
 # Win32 constants for named pipe
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -55,22 +59,41 @@ _kernel32.ReadFile.argtypes = [
     ctypes.POINTER(wintypes.DWORD),
     wintypes.LPVOID,
 ]
-_kernel32.PeekNamedPipe.restype = wintypes.BOOL
-_kernel32.PeekNamedPipe.argtypes = [
-    wintypes.HANDLE,
-    wintypes.LPVOID,
-    wintypes.DWORD,
-    ctypes.POINTER(wintypes.DWORD),
-    ctypes.POINTER(wintypes.DWORD),
-    ctypes.POINTER(wintypes.DWORD),
-]
 _kernel32.CloseHandle.restype = wintypes.BOOL
 _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel32.OpenProcess.restype = wintypes.HANDLE
+_kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+_kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
 _INVALID_HANDLE = wintypes.HANDLE(-1).value
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_ERROR_INVALID_PARAMETER = 87
+
+
+def _process_alive(pid: int) -> bool:
+    """Report whether a PID still exists; unknown/denied processes count as alive."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # Only "no such process" is proof of death; access denied is not.
+        return ctypes.get_last_error() != _ERROR_INVALID_PARAMETER
+    try:
+        code = wintypes.DWORD()
+        if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == _STILL_ACTIVE
+    finally:
+        _kernel32.CloseHandle(handle)
 
 
 class AmbiguousMaxInstanceError(ConnectionError):
     """Raised when multiple live Max native bridges exist and none is claimed."""
+
+
+class NoMaxInstanceError(ConnectionError):
+    """Raised when no live Max instance publishes a native bridge pipe."""
 
 
 class MaxBridgeError(Exception):
@@ -89,7 +112,7 @@ class MaxClient:
         self,
         timeout: float = DEFAULT_TIMEOUT,
         transport: str = "auto",
-        pipe_name: str = DEFAULT_PIPE_NAME,
+        pipe_name: str = "",
     ):
         if transport not in ('auto', 'pipe'):
             raise ValueError('Only native named pipes are supported; TCP/slots were removed')
@@ -98,6 +121,7 @@ class MaxClient:
         self.pipe_name = pipe_name
         self._pipe_handle: Optional[int] = None
         self._selected_pipe_name: Optional[str] = None
+        self._bound_target: dict[str, Any] | None = None
         self._pipe_lock = threading.Lock()
         self._local = threading.local()
 
@@ -111,13 +135,14 @@ class MaxClient:
         response = getattr(self._local, "last_response", None)
         if isinstance(response, dict):
             meta = response.get("meta") if isinstance(response.get("meta"), dict) else {}
+            target = meta.get("target") if isinstance(meta.get("target"), dict) else {}
             return {
                 "transport": meta.get("transport"),
                 "requested_transport": meta.get("requestedTransport"),
                 "request_id": response.get("requestId"),
                 "protocol_version": meta.get("protocolVersion"),
                 "client_round_trip_ms": meta.get("clientRoundTripMs"),
-                "fallback_error": meta.get("fallbackError"),
+                **target,
             }
         error = getattr(self._local, "last_error", None)
         if isinstance(error, dict):
@@ -150,7 +175,35 @@ class MaxClient:
     def _active_instance(self) -> dict[str, Any] | None:
         return self._load_instance(self._config_dir() / "active_instance.json")
 
+    @staticmethod
+    def _target(pipe: str, source: str, pid: Any = None) -> dict[str, Any]:
+        """Build the routing metadata carried on every response and error."""
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            match = re.search(r"-pid-(\d+)$", pipe)
+            pid = int(match[1]) if match else None
+        return {"target_pid": pid, "target_pipe": pipe, "target_source": source}
+
+    @staticmethod
+    def _instance_pid(*sources: str | dict[str, Any] | None) -> int | None:
+        """Read the PID from an instance record, its pipe name, or its filename."""
+        for source in sources:
+            if isinstance(source, dict):
+                pid = source.get("pid")
+                if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+                    return pid
+                source = source.get("pipe")
+            if isinstance(source, str):
+                match = re.search(r"pid-(\d+)", source)
+                if match:
+                    return int(match[1])
+        return None
+
     def _live_instances(self) -> list[dict[str, Any]]:
+        """List instances whose process is alive and whose pipe answers.
+
+        Records left behind by a crashed or closed Max are deleted while
+        enumerating, so a dead PID can never be routed to or reported.
+        """
         instances_dir = self._config_dir() / "instances"
         try:
             paths = sorted(instances_dir.glob("*.json"))
@@ -160,37 +213,147 @@ class MaxClient:
         live: list[dict[str, Any]] = []
         for path in paths:
             data = self._load_instance(path)
-            if data and self._probe_pipe_available(data["pipe"]):
-                live.append(data)
-        return live
+            pid = self._instance_pid(data, path.name)
+            if pid is None:
+                # Not attributable to a process: leave it alone rather than
+                # deleting a record that may just be mid-write.
+                continue
+            if not _process_alive(pid):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                continue
+            if data is None:
+                continue
+            data = {**data, "pid": pid}
+            if not self._probe_pipe_available(data["pipe"]):
+                # Process is alive but the bridge is not listening (yet); keep
+                # the file, it is not stale.
+                continue
+            try:
+                data = {**data, "started": path.stat().st_mtime}
+            except OSError:
+                pass
+            live.append(data)
+        return sorted(live, key=lambda item: int(item.get("pid") or 0))
 
-    def _resolve_pipe_name(self) -> str:
-        # An explicit session/job target always wins over an environment default.
-        if self.pipe_name != DEFAULT_PIPE_NAME:
-            return self.pipe_name
-        env_pipe = os.environ.get(MCP_PIPE_ENV)
-        if env_pipe:
-            return env_pipe
-
+    def _default_target(self) -> dict[str, Any]:
+        """Resolve the routing target from claim file / live instances only."""
         active = self._active_instance()
-        if active and self._probe_pipe_available(active["pipe"]):
-            return active["pipe"]
+        active_pid = self._instance_pid(active)
+        if active and active_pid and _process_alive(active_pid) and self._probe_pipe_available(active["pipe"]):
+            return self._target(active["pipe"], "claimed", active_pid)
 
         live = self._live_instances()
         if len(live) == 1:
-            return live[0]["pipe"]
+            return self._target(live[0]["pipe"], "single", live[0].get("pid"))
         if len(live) > 1:
             labels = ", ".join(
-                f"{item.get('instance_id', 'unknown')} pid={item.get('pid', '?')}"
+                f"pid={item.get('pid', '?')}"
                 for item in live
             )
             raise AmbiguousMaxInstanceError(
                 "Multiple 3ds Max MCP instances are running. "
-                "In the target 3ds Max window, run MCP > MCP Claim This Max. "
+                "Call select_max_instance(pid), or in the target 3ds Max window "
+                "run MCP > MCP Claim This Max. "
                 f"Available instances: {labels}"
             )
 
-        return DEFAULT_PIPE_NAME
+        raise NoMaxInstanceError(
+            "No live 3ds Max instance with the native bridge found. "
+            "Start 3ds Max with the MCP Bridge plugin loaded, then call "
+            "list_max_instances to confirm it registered."
+        )
+
+    def _resolve_target(self) -> dict[str, Any]:
+        """Pick the target for this request; never falls back to a shared pipe."""
+        if self._bound_target is not None:
+            return dict(self._bound_target)
+        # An explicit session/job target always wins over an environment default.
+        if self.pipe_name:
+            return self._target(self.pipe_name, "explicit")
+        env_pipe = os.environ.get(MCP_PIPE_ENV)
+        if env_pipe:
+            return self._target(env_pipe, "explicit")
+        return self._default_target()
+
+    def _resolve_pipe_name(self) -> str:
+        return self._resolve_target()["target_pipe"]
+
+    def selected_pid(self) -> int | None:
+        """PID this client currently routes to, or None if nothing is resolvable.
+
+        Resolution only; nothing is sent to 3ds Max.
+        """
+        try:
+            return self._resolve_target()["target_pid"]
+        except (ConnectionError, TimeoutError):
+            return None
+
+    # ── Instance selection API ───────────────────────────────────
+    def list_max_instances(self) -> dict[str, Any]:
+        """List live instances, flagging the claimed and the selected one."""
+        active = self._active_instance()
+        claimed_pipe = active["pipe"] if active else None
+        selected_pipe = self._bound_target["target_pipe"] if self._bound_target else None
+        return {
+            "instances": [
+                {
+                    **item,
+                    "claimed": item["pipe"] == claimed_pipe,
+                    "selected": item["pipe"] == selected_pipe,
+                }
+                for item in self._live_instances()
+            ]
+        }
+
+    def get_selected_max_instance(self) -> dict[str, Any]:
+        """Report the current target without switching or sending anything."""
+        try:
+            target = self._resolve_target()
+        except (ConnectionError, TimeoutError) as exc:
+            return {
+                "target_pid": None,
+                "target_pipe": None,
+                "target_source": None,
+                "pinned": False,
+                "available": False,
+                "reason": str(exc),
+            }
+        return {
+            **target,
+            "pinned": self._bound_target is not None,
+            "available": self._probe_pipe_available(target["target_pipe"]),
+        }
+
+    def select_max_instance(self, pid: int) -> dict[str, Any]:
+        """Bind this MCP process to a live Max PID until changed or released."""
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            raise ValueError("pid must be a positive process ID")
+        record = next(
+            (item for item in self._live_instances() if self._instance_pid(item) == pid),
+            None,
+        )
+        pipe = record["pipe"] if record else f"{PIPE_PREFIX}{pid}"
+        if not _process_alive(pid) or not self._probe_pipe_available(pipe):
+            raise ConnectionError(
+                f"3ds Max PID {pid} is unavailable; selection was not changed. "
+                "Call list_max_instances for live PIDs."
+            )
+        with self._pipe_lock:
+            self._close_pipe_handle()
+            self._selected_pipe_name = None
+            self._bound_target = self._target(pipe, "selected", pid)
+            return {**self._bound_target, "pinned": True, "available": True}
+
+    def release_max_instance(self) -> dict[str, Any]:
+        """Drop the pinned target; routing returns to claim/single resolution."""
+        with self._pipe_lock:
+            self._close_pipe_handle()
+            self._selected_pipe_name = None
+            self._bound_target = None
+        return {"target_pid": None, "target_pipe": None, "target_source": None, "pinned": False}
 
     def _probe_pipe_available(self, pipe_name: str | None = None) -> bool:
         """Best-effort probe that treats a busy pipe as available."""
@@ -272,7 +435,8 @@ class MaxClient:
         timeout: Optional[float] = None,
     ) -> dict[str, Any]:
         """Send a command to 3ds Max and return the parsed JSON response."""
-        pipe_name = self._resolve_pipe_name()
+        target = self._resolve_target()
+        pipe_name = target["target_pipe"]
         if not getattr(self, '_async_scheduler', False) and cmd_type != 'native:render_cancel':
             from .async_jobs import busy_job
             active = busy_job(pipe_name)
@@ -283,8 +447,7 @@ class MaxClient:
             raise ValueError('timeout must be finite and positive')
         request_id = uuid4().hex
         started_at = time.perf_counter()
-        transport_used = self.transport
-        fallback_error: str | None = None
+        transport_used = "namedpipe"
         self.clear_last_response()
 
         request = json.dumps({
@@ -294,7 +457,6 @@ class MaxClient:
             "protocolVersion": 2,
         }, ensure_ascii=True)
 
-        transport_used = "namedpipe"
         try:
             response_data = self._send_via_pipe(request, effective_timeout, pipe_name=pipe_name)
             response = self._parse_response(response_data, request_id, started_at)
@@ -304,15 +466,14 @@ class MaxClient:
                 "requested_transport": self.transport,
                 "request_id": request_id,
                 "error": str(exc),
-                "fallback_error": fallback_error,
+                **target,
             }
             raise
 
         meta = response.setdefault("meta", {})
         meta.setdefault("transport", transport_used)
         meta.setdefault("requestedTransport", self.transport)
-        if fallback_error:
-            meta.setdefault("fallbackError", fallback_error)
+        meta.setdefault("target", dict(target))
         self._local.last_response = response
         return response
 
@@ -421,26 +582,8 @@ class MaxClient:
 
 
 class MaxClientManager(MaxClient):
-    """Session-local native target selection; no numbered slots or TCP fallback."""
+    """Process-local native target selection; no numbered slots or TCP fallback.
 
-    def list_instances(self):
-        live = sorted(self._live_instances(), key=lambda item: int(item.get('pid', 0)))
-        try:
-            active = self._resolve_pipe_name()
-        except AmbiguousMaxInstanceError:
-            active = None
-        return [dict(item, active=item['pipe'] == active) for item in live]
-
-    def select_instance(self, instance_id=''):
-        if not instance_id:
-            with self._pipe_lock:
-                self._close_pipe_handle()
-                self.pipe_name = DEFAULT_PIPE_NAME
-            return {'selection': 'automatic'}
-        matches = [item for item in self._live_instances() if item.get('instance_id') == instance_id]
-        if len(matches) != 1:
-            raise ValueError('Instance is absent or ambiguous; call list_max_instances first')
-        with self._pipe_lock:
-            self._close_pipe_handle()
-            self.pipe_name = matches[0]['pipe']
-        return dict(matches[0], active=True)
+    Selection lives on MaxClient itself (list/select/get_selected/release_max_instance);
+    this subclass only names the process-wide instance created by the server.
+    """

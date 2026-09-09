@@ -1,10 +1,37 @@
 import unittest
 import json
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from maxmcp.max_client import AmbiguousMaxInstanceError, MaxBridgeError, MaxClient
+from maxmcp.max_client import (
+    AmbiguousMaxInstanceError,
+    MaxBridgeError,
+    MaxClient,
+    NoMaxInstanceError,
+    _process_alive,
+)
+
+
+@contextmanager
+def _instance_dir(*pids):
+    """Temporary LOCALAPPDATA root holding one instance record per PID."""
+    with tempfile.TemporaryDirectory() as tmp:
+        instances = Path(tmp) / "3dsmax-mcp" / "instances"
+        instances.mkdir(parents=True)
+        for pid in pids:
+            (instances / f"pid-{pid}.json").write_text(json.dumps(_instance(pid)), "utf-8")
+        yield tmp
+
+
+def _instance(pid, **extra):
+    return {
+        'instance_id': f'pid-{pid}',
+        'pid': pid,
+        'pipe': fr'\\.\pipe\3dsmax-mcp-pid-{pid}',
+        **extra,
+    }
 
 
 class MaxClientTests(unittest.TestCase):
@@ -15,11 +42,14 @@ class MaxClientTests(unittest.TestCase):
 
     def test_request_resolves_target_once_and_records_transport_failures(self):
         client = MaxClient()
-        with patch.object(client, '_resolve_pipe_name', side_effect=['pipe-A', 'pipe-B']) as resolve, patch.object(client, '_send_via_pipe', side_effect=TimeoutError('pending')) as send:
+        targets = [MaxClient._target('pipe-A', 'explicit'), MaxClient._target('pipe-B', 'explicit')]
+        with patch.object(client, '_resolve_target', side_effect=targets) as resolve, patch.object(client, '_send_via_pipe', side_effect=TimeoutError('pending')) as send:
             with self.assertRaises(TimeoutError): client.send_command('1')
             resolve.assert_called_once()
             self.assertEqual(send.call_args.kwargs['pipe_name'], 'pipe-A')
-            self.assertEqual(client.get_last_transport()['error'], 'pending')
+            transport = client.get_last_transport()
+            self.assertEqual(transport['error'], 'pending')
+            self.assertEqual(transport['target_pipe'], 'pipe-A')
 
     def test_connection_lock_obeys_deadline(self):
         client = MaxClient(pipe_name='pipe-A')
@@ -114,41 +144,131 @@ class MaxClientTests(unittest.TestCase):
         self.assertNotIsInstance(raised.exception, RuntimeError)
         self.assertEqual(raised.exception.bridge_response["error"], payload["error"])
 
+    def test_send_command_reports_the_routed_target(self) -> None:
+        client = MaxClient(timeout=1.0, transport="pipe")
+        target = MaxClient._target(r"\\.\pipe\3dsmax-mcp-pid-111", "claimed")
+        with (
+            patch.object(client, "_resolve_target", return_value=target),
+            patch.object(MaxClient, "_send_via_pipe", return_value=b'{"success":true,"result":"ok"}\n'),
+        ):
+            response = client.send_command("x")
+
+        self.assertEqual(response["meta"]["target"], target)
+        transport = client.get_last_transport()
+        self.assertEqual(transport["target_pid"], 111)
+        self.assertEqual(transport["target_pipe"], target["target_pipe"])
+        self.assertEqual(transport["target_source"], "claimed")
+
     def test_resolve_pipe_uses_active_instance_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "3dsmax-mcp"
             config.mkdir()
-            active = {
-                "instance_id": "pid-111",
-                "pid": 111,
-                "pipe": r"\\.\pipe\3dsmax-mcp-pid-111",
-            }
+            active = _instance(111)
             (config / "active_instance.json").write_text(json.dumps(active), "utf-8")
 
             with (
                 patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
+                patch("maxmcp.max_client._process_alive", return_value=True),
                 patch.object(MaxClient, "_probe_pipe_available", return_value=True),
             ):
-                self.assertEqual(MaxClient()._resolve_pipe_name(), active["pipe"])
+                client = MaxClient()
+                self.assertEqual(client._resolve_pipe_name(), active["pipe"])
+                self.assertEqual(client._resolve_target()["target_source"], "claimed")
+                self.assertEqual(client.selected_pid(), 111)
 
     def test_resolve_pipe_requires_claim_when_multiple_instances_are_live(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            instances = Path(tmp) / "3dsmax-mcp" / "instances"
-            instances.mkdir(parents=True)
-            for pid in (111, 222):
-                data = {
-                    "instance_id": f"pid-{pid}",
-                    "pid": pid,
-                    "pipe": fr"\\.\pipe\3dsmax-mcp-pid-{pid}",
-                }
-                (instances / f"pid-{pid}.json").write_text(json.dumps(data), "utf-8")
+        with _instance_dir(111, 222) as tmp:
+            with (
+                patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
+                patch("maxmcp.max_client._process_alive", return_value=True),
+                patch.object(MaxClient, "_probe_pipe_available", return_value=True),
+            ):
+                client = MaxClient()
+                with self.assertRaisesRegex(AmbiguousMaxInstanceError, "select_max_instance"):
+                    client._resolve_pipe_name()
+                self.assertIsNone(client.selected_pid())
 
+    def test_single_live_instance_is_routed_without_a_claim(self) -> None:
+        with _instance_dir(111) as tmp:
+            with (
+                patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
+                patch("maxmcp.max_client._process_alive", return_value=True),
+                patch.object(MaxClient, "_probe_pipe_available", return_value=True),
+            ):
+                client = MaxClient()
+                self.assertEqual(client._resolve_target()["target_source"], "single")
+                self.assertEqual(client.selected_pid(), 111)
+
+    def test_missing_instance_never_falls_back_to_the_shared_pipe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
                 patch.object(MaxClient, "_probe_pipe_available", return_value=True),
             ):
-                with self.assertRaisesRegex(AmbiguousMaxInstanceError, "MCP Claim This Max"):
-                    MaxClient()._resolve_pipe_name()
+                client = MaxClient()
+                with self.assertRaisesRegex(NoMaxInstanceError, "No live 3ds Max instance"):
+                    client._resolve_pipe_name()
+                self.assertIsNone(client.selected_pid())
+                self.assertFalse(client.native_available)
+                with self.assertRaises(NoMaxInstanceError):
+                    client.send_command("x")
+
+    def test_stale_instance_files_are_ignored_and_removed(self) -> None:
+        with _instance_dir(111, 222) as tmp:
+            stale = Path(tmp) / "3dsmax-mcp" / "instances" / "pid-222.json"
+            with (
+                patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
+                patch("maxmcp.max_client._process_alive", side_effect=lambda pid: pid == 111),
+                patch.object(MaxClient, "_probe_pipe_available", return_value=True),
+            ):
+                client = MaxClient()
+                listed = client.list_max_instances()["instances"]
+                self.assertEqual([item["pid"] for item in listed], [111])
+                self.assertEqual(client._resolve_target()["target_source"], "single")
+            self.assertFalse(stale.exists())
+
+    def test_select_and_release_pin_the_target(self) -> None:
+        with _instance_dir(111, 222) as tmp:
+            with (
+                patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
+                patch("maxmcp.max_client._process_alive", return_value=True),
+                patch.object(MaxClient, "_probe_pipe_available", return_value=True),
+            ):
+                client = MaxClient()
+                selected = client.select_max_instance(222)
+                self.assertEqual(selected["target_pid"], 222)
+                self.assertEqual(selected["target_source"], "selected")
+                self.assertEqual(client.selected_pid(), 222)
+                self.assertEqual(client.get_selected_max_instance()["target_source"], "selected")
+                self.assertEqual(
+                    [item["selected"] for item in client.list_max_instances()["instances"]],
+                    [False, True],
+                )
+
+                self.assertIsNone(client.release_max_instance()["target_pid"])
+                with self.assertRaises(AmbiguousMaxInstanceError):
+                    client._resolve_target()
+
+    def test_process_liveness_is_measured_against_real_win32(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        self.assertTrue(_process_alive(os.getpid()))
+        self.assertFalse(_process_alive(0))
+        finished = subprocess.Popen([sys.executable, "-c", "pass"])
+        finished.wait(timeout=30)
+        self.assertFalse(_process_alive(finished.pid))
+
+    def test_select_rejects_dead_or_invalid_pids(self) -> None:
+        client = MaxClient()
+        with patch("maxmcp.max_client._process_alive", return_value=False):
+            with self.assertRaises(ConnectionError):
+                client.select_max_instance(4242)
+        for bad in (0, -1, True, "111"):
+            with self.assertRaises(ValueError):
+                client.select_max_instance(bad)  # type: ignore[arg-type]
+        self.assertIsNone(client._bound_target)
 
 
 if __name__ == "__main__":

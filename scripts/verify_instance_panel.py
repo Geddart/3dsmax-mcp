@@ -9,7 +9,7 @@ from maxmcp.tools.max_ui import max_ui_windows, max_ui_capture
 
 target=int(sys.argv[1])
 c=MaxClientManager()
-c.select_instance(f'pid-{target}')
+c.select_max_instance(target)
 script=(Path(__file__).resolve().parents[1]/'maxscript/mcp_server.ms').as_posix()
 print(c.send_command(f'fileIn "{script}"; "loaded"'),flush=True)
 print(c.send_command('try(destroyDialog MCP_InstancePanel)catch(); createDialog MCP_InstancePanel; MCP_InstancePanel.targets.items as string'),flush=True)

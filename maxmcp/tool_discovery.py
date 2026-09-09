@@ -39,7 +39,7 @@ TOOLSET_SPECS = (
     ToolsetSpec(
         "connection",
         "Bridge diagnostics, installed capabilities, session context, and main-thread checks.",
-        ("bridge", "capabilities", "session_context", "mainthread", "instances"),
+        ("bridge", "capabilities", "session_context", "mainthread", "routing"),
     ),
     ToolsetSpec(
         "scene",
