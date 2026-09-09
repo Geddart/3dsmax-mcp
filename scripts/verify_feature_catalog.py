@@ -83,7 +83,7 @@ async def check(profile, pid=None):
                 assert old and not old - names, old - names
                 print('FULL', len(names), 'LEGACY_NAMES_RETAINED', len(old), flush=True)
                 if pid:
-                    payload(await session.call_tool('set_active_instance', {'instance_id': f'pid-{pid}'}))
+                    payload(await session.call_tool('select_max_instance', {'pid': pid}))
                     job = payload(await session.call_tool('max_job_submit', {'code': 'sleep 2; "MCP async verified"'}))
                     wait = asyncio.create_task(session.call_tool('max_job_wait', {'job_id': job['job_id'], 'timeout_seconds': 10}))
                     await asyncio.sleep(.1)
@@ -107,7 +107,7 @@ async def check(profile, pid=None):
                 assert {tool.name for tool in (await session.list_tools()).tools} == names
                 payload(await session.call_tool('call_tool', {'name': 'max_job_list', 'arguments': {}}))
                 if pid:
-                    payload(await session.call_tool('call_tool', {'name': 'set_active_instance', 'arguments': {'instance_id': f'pid-{pid}'}}))
+                    payload(await session.call_tool('call_tool', {'name': 'select_max_instance', 'arguments': {'pid': pid}}))
                     job = payload(await session.call_tool('call_tool', {'name': 'max_job_submit', 'arguments': {'code': 'sleep 1; "progressive verified"'}}))
                     done = payload(await session.call_tool('call_tool', {'name': 'max_job_wait', 'arguments': {'job_id': job['job_id'], 'timeout_seconds': 10}}))
                     assert done['state'] == 'succeeded', done

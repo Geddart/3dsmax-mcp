@@ -19,9 +19,9 @@ def main(pid):
     import os
     record = Path(os.environ['LOCALAPPDATA'])/'3dsmax-mcp/instances'/f'pid-{pid}.json'
     pipe = json.loads(record.read_text())['pipe']
-    from maxmcp.tools.instances import list_max_instances, set_active_instance
+    from maxmcp.tools.routing import list_max_instances, select_max_instance
     available = list_max_instances()['instances']
-    set_active_instance(f'pid-{pid}')
+    select_max_instance(pid)
     assert client._resolve_pipe_name() == pipe
     c = MaxClient(transport='pipe', pipe_name=pipe)
     title = 'MCP UI Job Acceptance'
@@ -48,11 +48,11 @@ def main(pid):
         assert state['state']=='running', state
         others = [item for item in available if item['pipe'] != pipe]
         if others:
-            set_active_instance(others[0]['instance_id'])
+            select_max_instance(others[0]['pid'])
             other_pid = client.send_command('((dotNetClass "System.Diagnostics.Process").GetCurrentProcess()).Id as string')['result']
             assert int(other_pid) == others[0]['pid']
             assert jobs.max_job_status(jid)['target'] == pipe, 'Job was redirected by target switch'
-            set_active_instance(f'pid-{pid}')
+            select_max_instance(pid)
         start = time.monotonic()
         assert jobs.max_job_status(jid)['state']=='running'
         assert time.monotonic()-start < .2, 'poll blocked'

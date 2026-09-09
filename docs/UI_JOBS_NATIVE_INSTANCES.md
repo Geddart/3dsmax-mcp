@@ -9,10 +9,28 @@ Windows UI Automation/Win32, and a short deferred MAXScript callback.
 
 ## Native instances replace slots
 
-Use `list_max_instances`, then `set_active_instance(instance_id="pid-...")`.
-An explicit choice is local to the current MCP server process. Empty instance_id
-resumes automatic discovery/Claim This Max routing. There is no three-instance cap.
-Multiple unclaimed instances require selection rather than arbitrary routing.
+Use `list_max_instances`, then `select_max_instance(pid=12345)`.
+`get_selected_max_instance()` reports the current target, and
+`release_max_instance()` drops the pin and returns to claim/single routing.
+A selection is local to the current MCP server process. There is no
+three-instance cap. Multiple unclaimed instances require selection rather than
+arbitrary routing. These four names and their `target_pid` / `target_pipe` /
+`target_source` fields match upstream 1.6.7, so merges do not collide.
+
+There is **no shared-pipe fallback**. Every request routes to a per-process pipe
+(`\\.\pipe\3dsmax-mcp-pid-<pid>`); when nothing is selected, claimed, or singly
+live, the call fails with "No live 3ds Max instance with the native bridge
+found" instead of reaching whatever listens on the old `\\.\pipe\3dsmax-mcp`
+name — which may be a production Max running the old fork bridge.
+
+Routing is reported on every response: `target_pid`, `target_pipe` and
+`target_source` (`selected` | `claimed` | `single` | `explicit`) appear in the
+transport metadata, and `MaxClient.selected_pid()` resolves the bound PID
+without sending anything to Max.
+
+Instance records for dead PIDs are ignored and their files deleted while
+enumerating `%LOCALAPPDATA%\3dsmax-mcp\instances`, so a crashed Max cannot
+linger in `list_max_instances` or be routed to.
 
 In Max, **MCP → MCP Instances** opens the replacement panel. It lists version,
 PID and window/scene title. **Use selected instance** sets the shared default;
@@ -21,8 +39,9 @@ over that default. Jobs and observed UI tokens keep their submitted target.
 
 The Python TCP transport, slot manager, numbered slot macros, TCP startup macros
 and MAXScript listener are removed. `execute_maxscript` no longer accepts `slot`;
-`set_active_instance` now accepts an instance ID. The old checkout/backups remain
-historical rollback material and are not the configured server.
+instance-id string routing (`set_active_instance`) is replaced by the PID-based
+API above. The old checkout/backups remain historical rollback material and are
+not the configured server.
 
 `MCP_Server.escapeJsonString` remains as a helper object: retained plugin tools
 depend on it even though they communicate over native pipes.
