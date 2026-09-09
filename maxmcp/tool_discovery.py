@@ -34,10 +34,12 @@ class ToolsetSpec:
 
 
 TOOLSET_SPECS = (
+    ToolsetSpec("jobs", "Nonblocking long operations, progress, results, and cooperative cancellation.", ("jobs",)),
+    ToolsetSpec("max_ui", "Inspect and operate real dialogs in an explicitly selected Max process.", ("max_ui",)),
     ToolsetSpec(
         "connection",
         "Bridge diagnostics, installed capabilities, session context, and main-thread checks.",
-        ("bridge", "capabilities", "session_context", "mainthread"),
+        ("bridge", "capabilities", "session_context", "mainthread", "instances"),
     ),
     ToolsetSpec(
         "scene",
@@ -149,7 +151,7 @@ TOOLSET_SPECS = (
 )
 
 
-TOOLSET_SPECS += (ToolsetSpec("fork_extensions", "Custom Redshift, RPManager, Forest Pack, instance selection and verified legacy workflows.", ('redshift', 'rpmanager', 'forest_pack', 'instances', 'fork_build', 'fork_grid', 'fork_modifiers', 'fork_plugin_workflows', 'fork_scene', 'fork_scene_query', 'fork_snapshots', 'fork_verification', 'fork_viewport', 'fork_workflows')),)
+TOOLSET_SPECS += (ToolsetSpec("fork_extensions", "Custom Redshift, RPManager, Forest Pack and verified legacy workflows.", ('redshift', 'rpmanager', 'forest_pack', 'fork_build', 'fork_grid', 'fork_modifiers', 'fork_plugin_workflows', 'fork_scene', 'fork_scene_query', 'fork_snapshots', 'fork_verification', 'fork_viewport', 'fork_workflows')),)
 
 def _decorated_tool_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     """Return the registered MCP name without importing a tool module."""
@@ -361,7 +363,7 @@ class ProgressiveToolCatalog:
             "tools": tools,
         }
 
-    def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         """Validate and invoke one allowlisted hidden tool with its normal wrapper."""
         normalized = name.strip()
         if normalized in META_TOOL_NAMES:
@@ -399,11 +401,6 @@ class ProgressiveToolCatalog:
                     f"Tool {normalized!r} was not registered after loading {module!r}",
                     code="NOT_FOUND",
                 )
-            if getattr(tool, "is_async", False):
-                return _error_envelope(
-                    f"Async tool {normalized!r} is not supported by synchronous progressive dispatch",
-                    code="BAD_PARAM",
-                )
             if getattr(tool, "context_kwarg", None):
                 return _error_envelope(
                     f"Context-injected tool {normalized!r} is not supported by progressive dispatch",
@@ -419,7 +416,7 @@ class ProgressiveToolCatalog:
             # tool.fn is the same make_structured_tool wrapper used by eager
             # profiles, preserving safe-mode behavior, transport metadata,
             # hints, and the stable ToolEnvelope contract.
-            result = tool.fn(**kwargs)
+            result = await tool.fn(**kwargs) if getattr(tool, "is_async", False) else tool.fn(**kwargs)
             return ToolEnvelope.model_validate(result).model_dump(mode="json", exclude_none=True)
         except Exception as exc:
             return _error_envelope(
@@ -457,13 +454,13 @@ def register_progressive_tools(
         """Load one toolset and return its tool names, descriptions, and exact input schemas."""
         return catalog.describe_toolset(toolset)
 
-    def call_tool(name: str, arguments: dict[str, Any] | None = None) -> ToolEnvelope:
+    async def call_tool(name: str, arguments: dict[str, Any] | None = None) -> ToolEnvelope:
         """Call one allowlisted operational tool by name with its exact argument object.
 
         This proxy can mutate the scene when the selected tool is mutating. Unknown
         names, meta-tool recursion, and recursive dispatch are rejected.
         """
-        return catalog.call_tool(name, arguments)  # type: ignore[return-value]
+        return await catalog.call_tool(name, arguments)  # type: ignore[return-value]
 
     for function in (list_toolsets, describe_toolset):
         public_mcp.add_tool(

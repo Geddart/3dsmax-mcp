@@ -99,6 +99,10 @@ std::string MainThreadExecutor::ExecuteSync(
         [&] { return item->completed; });
 
     if (!finished) {
+        // Still queued: prevent late execution of callbacks that capture caller
+        // stack references. Running work holds this mutex until it completes.
+        item->completed = true;
+        item->work = {};
         throw std::runtime_error("Main thread execution timed out");
     }
 
@@ -162,6 +166,7 @@ LRESULT CALLBACK MainThreadExecutor::WndProc(
 void MainThreadExecutor::RunWorkItem(const std::shared_ptr<WorkItem>& item) {
     {
         std::lock_guard<std::mutex> lock(item->mutex);
+        if (item->completed) return; // timed out before it started
         try {
             item->result = item->work();
         } catch (const std::exception& e) {

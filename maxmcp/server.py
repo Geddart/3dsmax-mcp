@@ -24,6 +24,8 @@ if __name__ == "__main__" and __spec__ is not None:
 
 
 _READ_ONLY_TOOLS = {
+    "max_ui_windows", "max_ui_inspect", "max_ui_capture", "max_ui_wait",
+    "max_job_list", "max_job_status", "max_job_result", "max_job_wait",
     "get_bridge_status",
     "get_plugin_capabilities",
     "query_scene",
@@ -69,6 +71,8 @@ _READ_ONLY_TOOLS = {
 }
 
 _DESTRUCTIVE_TOOLS = {
+    "max_job_submit", "max_job_render", "max_job_forget", "max_job_cancel",
+    "max_ui_invoke", "max_ui_set_value", "max_ui_send_keys",
     "scene_patch",
     "scene_qa",
     "delete_objects",
@@ -193,6 +197,9 @@ def _install_structured_tool_results() -> None:
 _install_structured_tool_results()
 
 CORE_TOOL_MODULES = (
+    "instances",
+    "jobs",
+    "max_ui",
     "execute",
     "bridge",
     "capabilities",
@@ -252,7 +259,7 @@ SPECIALTY_TOOL_MODULES = (
 )
 
 
-SPECIALTY_TOOL_MODULES += ('redshift', 'rpmanager', 'forest_pack', 'instances', 'fork_build', 'fork_grid', 'fork_modifiers', 'fork_plugin_workflows', 'fork_scene', 'fork_scene_query', 'fork_snapshots', 'fork_verification', 'fork_viewport', 'fork_workflows')
+SPECIALTY_TOOL_MODULES += ('redshift', 'rpmanager', 'forest_pack', 'fork_build', 'fork_grid', 'fork_modifiers', 'fork_plugin_workflows', 'fork_scene', 'fork_scene_query', 'fork_snapshots', 'fork_verification', 'fork_viewport', 'fork_workflows')
 
 def _tool_profile() -> str:
     value = os.environ.get("MCP_TOOL_PROFILE") or os.environ.get("THREEDSMAX_MCP_TOOL_PROFILE")

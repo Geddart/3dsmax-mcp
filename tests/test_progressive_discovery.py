@@ -25,6 +25,15 @@ def _payload(result) -> dict:
 
 
 class ProgressiveDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_job_tools_dispatch_through_progressive_profile(self):
+        params=StdioServerParameters(command=sys.executable,args=['-m','maxmcp.server'],env={**os.environ,'MCP_TOOL_PROFILE':'progressive'})
+        async with stdio_client(params) as (read,write):
+            async with ClientSession(read,write) as session:
+                await session.initialize()
+                result=_payload(await session.call_tool('call_tool',{'name':'max_job_list','arguments':{}}))
+                self.assertTrue(result['ok'],result)
+                self.assertEqual(result['result']['jobs'],[])
+
     async def test_progressive_profile_stays_compact_while_loading_toolsets(self) -> None:
         params = StdioServerParameters(
             command=sys.executable,

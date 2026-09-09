@@ -1,21 +1,18 @@
 import ctypes
 import ctypes.wintypes as wintypes
 import json
+import math
 import os
-import socket
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
+from .pipe_io import transfer
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
 DEFAULT_TIMEOUT = 120.0
 DEFAULT_PIPE_NAME = r"\\.\pipe\3dsmax-mcp"
 MCP_PIPE_ENV = "MCP_MAX_PIPE"
-BASE_PORT = 8765
-MAX_SLOTS = 3
 
 # Win32 constants for named pipe
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -77,7 +74,7 @@ class AmbiguousMaxInstanceError(ConnectionError):
 
 
 class MaxBridgeError(Exception):
-    """Raised when the native/TCP bridge returns a structured error response."""
+    """Raised when the native bridge returns a structured error response."""
 
     def __init__(self, message: str, response: dict[str, Any]) -> None:
         self.bridge_message = message
@@ -86,18 +83,16 @@ class MaxBridgeError(Exception):
 
 
 class MaxClient:
-    """Client that sends commands to 3ds Max via named pipe or TCP."""
+    """Client that sends commands to a native 3ds Max named pipe."""
 
     def __init__(
         self,
-        host: str = DEFAULT_HOST,
-        port: int = DEFAULT_PORT,
         timeout: float = DEFAULT_TIMEOUT,
         transport: str = "auto",
         pipe_name: str = DEFAULT_PIPE_NAME,
     ):
-        self.host = host
-        self.port = port
+        if transport not in ('auto', 'pipe'):
+            raise ValueError('Only native named pipes are supported; TCP/slots were removed')
         self.timeout = timeout
         self.transport = transport
         self.pipe_name = pipe_name
@@ -132,10 +127,6 @@ class MaxClient:
     @property
     def native_available(self) -> bool:
         """Check whether the native C++ bridge is currently available."""
-        if self.transport == "pipe":
-            return True
-        if self.transport == "tcp":
-            return False
         try:
             return self._probe_pipe_available(self._resolve_pipe_name())
         except (ConnectionError, TimeoutError):
@@ -174,12 +165,12 @@ class MaxClient:
         return live
 
     def _resolve_pipe_name(self) -> str:
+        # An explicit session/job target always wins over an environment default.
+        if self.pipe_name != DEFAULT_PIPE_NAME:
+            return self.pipe_name
         env_pipe = os.environ.get(MCP_PIPE_ENV)
         if env_pipe:
             return env_pipe
-
-        if self.pipe_name != DEFAULT_PIPE_NAME:
-            return self.pipe_name
 
         active = self._active_instance()
         if active and self._probe_pipe_available(active["pipe"]):
@@ -204,25 +195,6 @@ class MaxClient:
     def _probe_pipe_available(self, pipe_name: str | None = None) -> bool:
         """Best-effort probe that treats a busy pipe as available."""
         pipe_name = pipe_name or self.pipe_name
-        handle = _kernel32.CreateFileW(
-            pipe_name,
-            _GENERIC_READ | _GENERIC_WRITE,
-            0,
-            None,
-            _OPEN_EXISTING,
-            0,
-            None,
-        )
-        if handle != _INVALID_HANDLE:
-            _kernel32.CloseHandle(handle)
-            return True
-
-        err = ctypes.get_last_error()
-        if err in (_ERROR_PIPE_BUSY, _ERROR_ACCESS_DENIED):
-            return True
-        if err in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND):
-            return False
-
         if _kernel32.WaitNamedPipeW(pipe_name, 0):
             return True
         wait_err = ctypes.get_last_error()
@@ -241,6 +213,7 @@ class MaxClient:
         if handle not in (None, 0, _INVALID_HANDLE):
             return handle
 
+        connect_grace = min(deadline, time.perf_counter() + .5)
         while True:
             handle = _kernel32.CreateFileW(
                 pipe_name,
@@ -248,7 +221,7 @@ class MaxClient:
                 0,
                 None,
                 _OPEN_EXISTING,
-                0,
+                0x40000000,  # FILE_FLAG_OVERLAPPED: enforce read AND write deadlines
                 None,
             )
             if handle != _INVALID_HANDLE:
@@ -257,6 +230,9 @@ class MaxClient:
 
             err = ctypes.get_last_error()
             if err in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND):
+                if time.perf_counter() < connect_grace:
+                    time.sleep(.01)
+                    continue
                 raise ConnectionError(
                     f"Named pipe {pipe_name} not found. "
                     "Is the MCP Bridge plugin loaded in 3ds Max?"
@@ -276,6 +252,9 @@ class MaxClient:
                 continue
             wait_err = ctypes.get_last_error()
             if wait_err in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND):
+                if time.perf_counter() < connect_grace:
+                    time.sleep(.01)
+                    continue
                 raise ConnectionError(
                     f"Named pipe {pipe_name} disappeared while waiting."
                 )
@@ -293,7 +272,15 @@ class MaxClient:
         timeout: Optional[float] = None,
     ) -> dict[str, Any]:
         """Send a command to 3ds Max and return the parsed JSON response."""
-        effective_timeout = timeout or self.timeout
+        pipe_name = self._resolve_pipe_name()
+        if not getattr(self, '_async_scheduler', False) and cmd_type != 'native:render_cancel':
+            from .async_jobs import busy_job
+            active = busy_job(pipe_name)
+            if active:
+                raise RuntimeError(f'Max is reserved by async job {active}; use max_job_status/result or max_ui_*')
+        effective_timeout = self.timeout if timeout is None else timeout
+        if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+            raise ValueError('timeout must be finite and positive')
         request_id = uuid4().hex
         started_at = time.perf_counter()
         transport_used = self.transport
@@ -307,24 +294,9 @@ class MaxClient:
             "protocolVersion": 2,
         }, ensure_ascii=True)
 
-        if self.transport == "pipe":
-            transport_used = "namedpipe"
-            response_data = self._send_via_pipe(request, effective_timeout)
-        elif self.transport == "tcp":
-            transport_used = "tcp"
-            response_data = self._send_via_tcp(request, effective_timeout)
-        else:
-            try:
-                transport_used = "namedpipe"
-                response_data = self._send_via_pipe(request, effective_timeout)
-            except AmbiguousMaxInstanceError:
-                raise
-            except (ConnectionError, TimeoutError) as exc:
-                fallback_error = str(exc)
-                transport_used = "tcp"
-                response_data = self._send_via_tcp(request, effective_timeout)
-
+        transport_used = "namedpipe"
         try:
+            response_data = self._send_via_pipe(request, effective_timeout, pipe_name=pipe_name)
             response = self._parse_response(response_data, request_id, started_at)
         except Exception as exc:
             self._local.last_error = {
@@ -345,134 +317,72 @@ class MaxClient:
         return response
 
     # ── Named Pipe transport ─────────────────────────────────────
-    def _send_via_pipe(self, request: str, timeout: float) -> bytes:
+    def _send_via_pipe(self, request: str, timeout: float, *, pipe_name: str | None = None) -> bytes:
         deadline = time.perf_counter() + timeout
         data = (request + "\n").encode("utf-8")
-        pipe_name = self._resolve_pipe_name()
+        pipe_name = pipe_name or self._resolve_pipe_name()
 
-        with self._pipe_lock:
+        if not self._pipe_lock.acquire(timeout=max(0, deadline-time.perf_counter())):
+            raise TimeoutError('Timed out waiting for the MCP connection lock; request not sent')
+        try:
             if self._selected_pipe_name != pipe_name:
                 self._close_pipe_handle()
                 self._selected_pipe_name = pipe_name
 
-            for attempt in range(2):
-                handle = self._ensure_pipe_handle(deadline, pipe_name)
-                try:
-                    total_written = 0
-                    while total_written < len(data):
-                        written = wintypes.DWORD()
-                        ok = _kernel32.WriteFile(
-                            handle,
-                            data[total_written:],
-                            len(data) - total_written,
-                            ctypes.byref(written),
-                            None,
-                        )
-                        if not ok:
-                            err = ctypes.get_last_error()
-                            if err == _ERROR_BROKEN_PIPE:
-                                raise BrokenPipeError("Pipe closed while writing request.")
-                            raise ConnectionError(
-                                f"Failed writing to pipe: Win32 error {err}"
-                            )
-                        if written.value == 0:
-                            raise ConnectionError(
-                                "Pipe write returned 0 bytes written."
-                            )
-                        total_written += written.value
-
-                    response_data = bytearray()
-                    buf = ctypes.create_string_buffer(65536)
-                    while True:
-                        if time.perf_counter() >= deadline:
-                            self._close_pipe_handle()
-                            raise TimeoutError(
-                                f"Timed out waiting for named pipe response after "
-                                f"{timeout}s."
-                            )
-
-                        bytes_read = wintypes.DWORD()
-                        ok = _kernel32.ReadFile(
-                            handle, buf, len(buf), ctypes.byref(bytes_read), None
-                        )
-                        if bytes_read.value > 0:
-                            response_data.extend(buf.raw[:bytes_read.value])
-                            if b"\n" in response_data:
-                                return bytes(response_data)
-
-                        if not ok:
-                            err = ctypes.get_last_error()
-                            if err == _ERROR_BROKEN_PIPE:
-                                raise BrokenPipeError(
-                                    "Pipe closed while reading response."
-                                )
-                            raise ConnectionError(
-                                f"Failed reading from pipe: Win32 error {err}"
-                            )
-
-                        if bytes_read.value == 0:
-                            raise BrokenPipeError(
-                                "Pipe closed before response terminator."
-                            )
-                except BrokenPipeError:
-                    self._close_pipe_handle()
-                    if attempt == 0 and time.perf_counter() < deadline:
-                        continue
-                    raise ConnectionError("Named pipe connection closed during request.")
-                except ConnectionError:
-                    self._close_pipe_handle()
-                    if attempt == 0 and time.perf_counter() < deadline:
-                        continue
-                    raise
-
-    # ── TCP transport (legacy) ───────────────────────────────────
-    def _send_via_tcp(self, request: str, timeout: float) -> bytes:
-        # One retry after 500ms on ConnectionRefusedError — handles the
-        # narrow window where Max is mid-restart (listener stopped but
-        # not yet rebound). Without this, a single MCP call during that
-        # window fails hard even though the next call would succeed.
-        deadline = time.perf_counter() + timeout
-        for attempt in range(2):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(max(0.5, deadline - time.perf_counter()))
+            handle = self._ensure_pipe_handle(deadline, pipe_name)
             try:
-                sock.connect((self.host, self.port))
-                sock.sendall((request + "\n").encode("utf-8"))
+                total_written = 0
+                while total_written < len(data):
+                    ok, err, written = transfer(_kernel32.WriteFile, handle,
+                                                data[total_written:], len(data)-total_written, deadline)
+                    total_written += written
+                    if not ok:
+                        if err == _ERROR_BROKEN_PIPE:
+                            raise BrokenPipeError("Pipe closed while writing request.")
+                        raise ConnectionError(
+                            f"Failed writing to pipe: Win32 error {err}"
+                        )
+                    if written == 0:
+                        raise ConnectionError(
+                            "Pipe write returned 0 bytes written."
+                        )
 
-                response_data = b""
+                response_data = bytearray()
+                buf = ctypes.create_string_buffer(65536)
                 while True:
-                    chunk = sock.recv(4096)
-                    if not chunk:
-                        break
-                    response_data += chunk
-                    if b"\n" in response_data:
-                        break
+                    if time.perf_counter() >= deadline:
+                        self._close_pipe_handle()
+                        raise TimeoutError(
+                            f"Timed out waiting for named pipe response after "
+                            f"{timeout}s."
+                        )
 
-                return response_data
+                    ok, err, bytes_read = transfer(_kernel32.ReadFile, handle, buf, len(buf), deadline)
+                    if bytes_read > 0:
+                        response_data.extend(buf.raw[:bytes_read])
+                        if b"\n" in response_data:
+                            return bytes(response_data)
 
-            except socket.timeout:
-                raise TimeoutError(
-                    f"3ds Max did not respond within {timeout}s. "
-                    "Is the MCP TCP listener running in 3ds Max?"
-                )
-            except ConnectionRefusedError:
-                if attempt == 0 and time.perf_counter() + 0.5 < deadline:
-                    sock.close()
-                    time.sleep(0.5)
-                    continue
-                raise ConnectionError(
-                    f"Could not connect to 3ds Max on {self.host}:{self.port}. "
-                    "Is the MCP TCP listener running in 3ds Max?"
-                )
-            finally:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
-        # Unreachable — loop either returns or raises
-        raise ConnectionError(
-            f"Could not connect to 3ds Max on {self.host}:{self.port} after retry."
-        )
+                    if not ok:
+                        if err == _ERROR_BROKEN_PIPE:
+                            raise BrokenPipeError(
+                                "Pipe closed while reading response."
+                            )
+                        raise ConnectionError(
+                            f"Failed reading from pipe: Win32 error {err}"
+                        )
+
+                    if bytes_read == 0:
+                        raise BrokenPipeError(
+                            "Pipe closed before response terminator."
+                        )
+            except BaseException:
+                # Once WriteFile is attempted its outcome may be uncertain, even
+                # if Win32 reports zero transferred bytes. Never replay it.
+                self._close_pipe_handle()
+                raise
+        finally:
+            self._pipe_lock.release()
 
     # ── Response parsing (shared) ────────────────────────────────
     def _parse_response(
@@ -511,64 +421,26 @@ class MaxClient:
 
 
 class MaxClientManager(MaxClient):
-    """Default to native instance discovery; retain explicitly selected legacy slots."""
-    max_slots = 3
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._active_slot = None
-        self._slot_pipes = {}
-        self._slot_clients = {}
+    """Session-local native target selection; no numbered slots or TCP fallback."""
 
     def list_instances(self):
-        for item in sorted(self._live_instances(), key=lambda x: int(x.get("pid", 0))):
-            if item["pipe"] not in self._slot_pipes.values():
-                free = next((i for i in range(1, self.max_slots + 1) if i not in self._slot_pipes), None)
-                if free is not None:
-                    self._slot_pipes[free] = item["pipe"]
-        return [dict(self.ping_slot(i), active=i == self._active_slot) for i in range(1, self.max_slots + 1)]
-
-    def _slot_client(self, slot):
-        if not 1 <= slot <= self.max_slots:
-            raise ValueError("Slot must be 1-3")
-        pipe = self._slot_pipes.get(slot)
-        key = (slot, pipe)
-        if key not in self._slot_clients:
-            self._slot_clients[key] = MaxClient(host=self.host, port=BASE_PORT + slot - 1,
-                timeout=self.timeout, transport="pipe" if pipe else "tcp", pipe_name=pipe or DEFAULT_PIPE_NAME)
-        return self._slot_clients[key]
-
-    def ping_slot(self, slot, timeout=2.0):
-        c = self._slot_client(slot)
+        live = sorted(self._live_instances(), key=lambda item: int(item.get('pid', 0)))
         try:
-            resp = c.send_command('(dotNetClass "System.Diagnostics.Process").GetCurrentProcess().Id as string', timeout=timeout)
-            return dict(slot=slot, port=c.port, pipe=self._slot_pipes.get(slot), status="running", pid=resp.get("result"))
-        except (ConnectionError, TimeoutError, OSError, RuntimeError, MaxBridgeError):
-            return dict(slot=slot, port=c.port, pipe=self._slot_pipes.get(slot), status="offline", pid=None)
+            active = self._resolve_pipe_name()
+        except AmbiguousMaxInstanceError:
+            active = None
+        return [dict(item, active=item['pipe'] == active) for item in live]
 
-    @property
-    def active_slot(self):
-        return self._active_slot
-
-    @active_slot.setter
-    def active_slot(self, slot):
-        self._slot_client(slot)
-        self._active_slot = slot
-
-    @property
-    def native_available(self):
-        if self._active_slot is not None:
-            return self._slot_client(self._active_slot).native_available
-        return super().native_available
-
-    def send_command(self, command, cmd_type="maxscript", timeout=None, slot=None):
-        target = slot if slot is not None else self._active_slot
-        if target is None:
-            return super().send_command(command, cmd_type=cmd_type, timeout=timeout)
-        c = self._slot_client(target)
-        c.clear_last_response()
-        try:
-            return c.send_command(command, cmd_type=cmd_type, timeout=timeout)
-        finally:
-            self._local.last_response = getattr(c._local, "last_response", None)
-            self._local.last_error = getattr(c._local, "last_error", None)
+    def select_instance(self, instance_id=''):
+        if not instance_id:
+            with self._pipe_lock:
+                self._close_pipe_handle()
+                self.pipe_name = DEFAULT_PIPE_NAME
+            return {'selection': 'automatic'}
+        matches = [item for item in self._live_instances() if item.get('instance_id') == instance_id]
+        if len(matches) != 1:
+            raise ValueError('Instance is absent or ambiguous; call list_max_instances first')
+        with self._pipe_lock:
+            self._close_pipe_handle()
+            self.pipe_name = matches[0]['pipe']
+        return dict(matches[0], active=True)

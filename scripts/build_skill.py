@@ -28,9 +28,9 @@ MCP server for AI agents to control 3ds Max. This file is auto-generated from `s
 
 ## Project Structure
 - `maxmcp/server.py` — FastMCP server entry point
-- `maxmcp/max_client.py` — TCP socket client (connects to 127.0.0.1:8765)
+- `maxmcp/max_client.py` — native named-pipe client and session-local instance selection
 - `maxmcp/tools/` — MCP tool implementations (one file per category)
-- `maxscript/mcp_server.ms` — MAXScript listener (runs inside 3ds Max as a bundle post-start-up script)
+- `maxscript/mcp_server.ms` — shared helper and native instance UI (bundle post-start-up script)
 - `bundle/PackageContents.xml.in` — ApplicationPlugins manifest template (installed to `%ProgramData%\\Autodesk\\ApplicationPlugins\\3dsmax-mcp`)
 - `native/` — C++ GUP bridge plugin (named pipe, direct SDK handlers)
 

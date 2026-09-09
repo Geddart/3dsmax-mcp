@@ -551,6 +551,14 @@ def make_structured_tool(
 
     wrapped.__signature__ = fn_signature  # type: ignore[attr-defined]
     wrapped.__annotations__ = resolved_annotations
+    if fn.__module__.endswith(('.tools.jobs', '.tools.max_ui')):
+        # UI providers and bounded waits must not block FastMCP's event loop.
+        import asyncio
+        @wraps(wrapped)
+        async def asynchronous(*args, **kwargs):
+            return await asyncio.to_thread(wrapped, *args, **kwargs)
+        asynchronous.__signature__ = fn_signature
+        return asynchronous
     return wrapped
 
 

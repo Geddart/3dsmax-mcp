@@ -16,7 +16,9 @@ Principles:
 - Do not call `get_bridge_status` or `get_session_context` as a session preamble.
 - Prefer a dedicated MCP tool over raw MAXScript when a tool clearly matches the task.
 - Do not render unless the user explicitly asks. Viewport capture is fine when visual proof is useful.
-- Multiple Max instances: use **MCP Claim This Max** in the target window so tools hit the right session.
+- Multiple Max instances: use `list_max_instances` and `set_active_instance(instance_id="pid-...")` to pin this MCP session, or **MCP Claim This Max** / **MCP Instances** in Max to choose the shared default; numbered slots and TCP were removed.
+- Deployment must discover Max installation directories through the Windows registry; installations can be on drives other than C:, and the new bundle manifest should be activated only after disabling legacy copies.
+- Avoid calling `quitMAX` synchronously inside a legacy bridge request: shutdown can stall at MCPBridge teardown; save the scene first and close Max through its normal application lifecycle.
 
 ## Tool Choice
 
@@ -187,7 +189,19 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 - **`(getDir #temp)`** is Max temp, not OS temp
 - **.NET strings**: convert to MAXScript strings before string methods
 - Controller/wire paths: normalize display tokens like `[#Z Position]` to `[#z_position]`
-- TCP fallback is opt-in; prefer the native bridge, and if Max viewport interaction stutters while fallback is running, stop the fallback and use the native bridge path.
+- Native pipes are the only transport; if a selected Max exits, rediscover and select an instance instead of retrying a slot/port.
+
+## Dialogs and long operations
+
+- Use `max_ui_windows(pid)` → `max_ui_inspect(pid, window=token)` → `max_ui_invoke` / `max_ui_set_value` / `max_ui_send_keys` with observed element tokens; refresh after actions, and never retry an uncertain UI action without inspection.
+- Max rollout Edit/CustButton controls may expose only UIA Pane with no patterns; use the provided native fallbacks, and read cross-process Edit text with bounded WM_GETTEXT rather than GetWindowText.
+- `max_ui_wait` waits for an exact dialog title; `max_ui_capture` captures only the selected Max window to a file, without rendering.
+- `max_job_submit` schedules a one-shot main-thread callback and returns a handle; use `max_job_status/result/list/wait/cancel/forget` without polling Max's socket, or `max_job_render` only for a requested render.
+- Job scripts can call `mcpJobProgress percent` and `mcpJobCheckCancel()`; cancellation is cooperative, and unknown scheduling outcomes are not completion. Keep the MCP session alive until jobs finish.
+- An active job reserves that target in this MCP process; normal scene calls fail fast, native render abort remains allowed, and changing the active instance never redirects a submitted job. Coordinate separate MCP clients yourself.
+- Stop a deferred timer before running user code to prevent re-entry through nested modal message pumps; callbacks must use literal paths rather than closed-over MAXScript stack locals.
+- Discovery must probe named pipes without opening throwaway connections; a connection may briefly disappear while the server recreates its accept instance, so bounded retries are safe only before a request is written.
+- Never replay a written scene command on a lost response, and retain `MCP_Server.escapeJsonString` when removing the old listener because custom and upstream fallback tools still use it.
 
 ### OSL
 - Use `write_osl_shader` for file I/O and compilation
@@ -229,3 +243,12 @@ This build preserves custom Redshift, RPManager, Forest Pack, RailClone and lega
 
 - When upgrading this fork, preserve removed legacy native operations through their MAXScript paths; tool-name retention alone does not establish compatibility.
 - Progressive discovery requires every enabled fork module to be included in its toolset map, and referenced fork guide files must be bundled by build_skill.py.
+- Listing async tool schemas is insufficient: progressive `call_tool` must await async implementations, and MCP wait/UI tools must yield the event loop so other job-status calls remain usable.
+- Explicit session/job pipe targets must override MCP_MAX_PIPE; resolve once per request so the reservation check and actual send address the same instance.
+- Enforce named-pipe deadlines with overlapped reads/writes and bounded lock acquisition; CancelIoEx must complete before freeing OVERLAPPED buffers/events, and attempted writes must not be replayed after uncertain failures.
+- Publish terminal job state after releasing the Max reservation; latch completed state, freeze elapsed time, tolerate transient sharing violations, and discard non-finite progress values.
+- Use an explicit scheduling-rejection response for work that never started; preserve unknown status for timeouts or missing acknowledgements because those are not proof of non-execution.
+- UI waits must pass their remaining deadline to the provider process; verify exact text readback and keyboard focus, reject NUL values and Alt/global shortcuts, and bound traversal queues as well as returned elements.
+- Native queued callbacks can capture caller stack references: cancel work that times out before starting, and do not unlock running callbacks to force a timeout without first fixing callback ownership.
+- If MSBuild reports duplicate PATH/Path environment keys, launch CMake through Python subprocess with env=dict(os.environ) to normalize Windows environment names.
+- Max rollout Edit controls may reject UIA SetFocus; native focus fallback must verify the exact focused HWND before sending keys, not merely the foreground process.

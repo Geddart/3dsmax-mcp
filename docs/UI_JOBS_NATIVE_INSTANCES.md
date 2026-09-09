@@ -1,0 +1,124 @@
+# Dialog automation, async jobs, and native instances
+
+Implemented on the merged **1.5.5+fork** checkout. The custom Redshift, RPManager,
+Forest Pack, RailClone and other retained tool modules remain enabled.
+
+Max Ultra MCP's public README inspired the two capabilities; no source from that
+repository was copied, installed, or merged. This implementation uses Python,
+Windows UI Automation/Win32, and a short deferred MAXScript callback.
+
+## Native instances replace slots
+
+Use `list_max_instances`, then `set_active_instance(instance_id="pid-...")`.
+An explicit choice is local to the current MCP server process. Empty instance_id
+resumes automatic discovery/Claim This Max routing. There is no three-instance cap.
+Multiple unclaimed instances require selection rather than arbitrary routing.
+
+In Max, **MCP → MCP Instances** opens the replacement panel. It lists version,
+PID and window/scene title. **Use selected instance** sets the shared default;
+**MCP Claim This Max** remains available. Explicit session pins take precedence
+over that default. Jobs and observed UI tokens keep their submitted target.
+
+The Python TCP transport, slot manager, numbered slot macros, TCP startup macros
+and MAXScript listener are removed. `execute_maxscript` no longer accepts `slot`;
+`set_active_instance` now accepts an instance ID. The old checkout/backups remain
+historical rollback material and are not the configured server.
+
+`MCP_Server.escapeJsonString` remains as a helper object: retained plugin tools
+depend on it even though they communicate over native pipes.
+
+## Real dialog tools
+
+`max_ui_windows(pid)` finds only visible windows in that Max process.
+Pass a returned **token** to `max_ui_inspect(pid, window=token)`, then use an
+element token with `max_ui_invoke`, `max_ui_set_value`, or `max_ui_send_keys`.
+Re-inspect after an action. `max_ui_wait` searches for an exact window title;
+`max_ui_capture` saves a window-only PNG (no rendering).
+
+UI operations run in a bounded hidden helper process, not on the MCP or Max
+request thread. Tokens check PID, process start time, window/runtime identity
+and element ownership. Password/disabled controls are rejected. UIA patterns
+are preferred; Max's standard Edit and CustButton controls have narrow Win32
+fallbacks. Actions report dispatch, not proof that a dialog completed its work.
+
+A hung provider may time out, and GPU/custom windows may capture blank. Input
+focus can race user input: prefer value/invoke patterns over SendKeys. A timeout
+is an unknown outcome; inspect before retrying. The helper does not automate
+other processes or bypass Windows elevation restrictions.
+
+## Async job tools
+
+`max_job_submit(code, label)` returns a handle immediately. A short native request
+installs a one-shot WinForms timer on Max's main thread. The timer releases that
+request before executing the operation, writing progress/results to local files.
+No MAXScript or SDK scene operations run on a background Python thread.
+
+Use `max_job_status`, `max_job_result`, `max_job_list`, `max_job_wait`,
+`max_job_cancel` and `max_job_forget`. Result text is paginated. `max_job_render`
+uses the current renderer with `vfb:false`, only when a render is requested.
+
+Scripts can call:
+
+```maxscript
+for frame = 1 to 100 do (
+    mcpJobCheckCancel()
+    -- One bounded simulation step here.
+    mcpJobProgress frame
+)
+"finished"
+```
+
+Cancellation is cooperative, not a process kill. Cancelling before execution
+skips the body; running scripts must check the flag. A blocking renderer/plugin
+may ignore cancellation until it returns. The existing `render_automations`
+abort path remains available; it uses the bridge's native render-abort handler.
+
+One active/uncertain job per target is allowed in this MCP server. Normal bridge
+calls to that target fail fast while reserved; job status/results and UI tools
+remain available. Another Max instance can still be used. Other MCP server
+processes are not governed by this in-process reservation; coordinate clients
+when doing long scene operations.
+
+Scheduling uncertainty is **unknown**, not failed/cancelled, because a request
+may execute after a timeout. Accepted scheduling is idempotent; written native
+requests are not automatically replayed or retried over TCP. The safe-mode
+restricted-function list also applies to submitted scripts.
+
+Handles/history belong to the current MCP server process (maximum 64 retained
+jobs). Do not restart MCP during a job: the job can continue in Max but the new
+MCP process will not own its handle. Max remains busy during blocking operations;
+async handles do not make rendering or simulation itself multithreaded.
+
+## Verification
+
+The subsequent [progressive implementation audit](PROGRESSIVE_AUDIT.md) records
+additional fixes, complete schema parity checks, and pending native deployment.
+
+480 automated tests passed, including the progressive async-dispatch regression.
+A real MCP handshake confirmed 254 tools, all 188 original tool names,
+full-profile async wait/status concurrency, and progressive async dispatch.
+
+Automated tests cover registration/progressive profiles, ownership, input bounds,
+nonblocking waits, result pagination, cancellation semantics, safe mode, busy
+target reservations, native routing and no replay after a written request.
+
+`scripts/verify_ui_jobs.py PID` explicitly creates a temporary rollout and a real
+modal message box, edits/reads a field, invokes buttons, captures a window, runs
+a short sleeping job, cancels a cooperative job, and checks target isolation.
+It cleans up its dialogs; it does not render or change scene geometry.
+`scripts/verify_instance_panel.py PID` verifies the new instance UI and helper.
+
+Live checks passed in Max 2025 and 2027 for the initial dialog/job workflow and
+cross-instance job isolation. The modal and running-cancellation checks passed
+in Max 2025. Production renders, simulations and every third-party plugin dialog
+were not exercised; those remain workload-specific acceptance checks.
+
+Deployment on 2026-09-09 updated the shared bundle script and removed exact old
+slot/TCP macro files for both versions, with backups in
+`.deployment-backup/native-ui-20260909-224155`. The new panel is loaded in both
+running versions. Restart MCP clients to load Python/tool changes; restart Max
+to clear cached old macro definitions. Custom toolbar layouts are not rewritten.
+
+Design references: [Max Ultra MCP public README](https://github.com/maxpkg-dev/max-ultra-mcp),
+[Autodesk WinForms timer guidance](https://help.autodesk.com/cloudhelp/2021/ENU/3DSMax-MAXScript/files/GUID-DB82F222-B77F-4F85-865F-A4D54B53107D.htm),
+[Microsoft InvokePattern blocking behavior](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.invokepattern.invoke).

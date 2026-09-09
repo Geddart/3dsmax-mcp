@@ -49,3 +49,5 @@ native/deploy.bat
 .staged-bundle/
 
 .deployment-log.txt
+.native-ui-deployment.log
+.audit-tests.log

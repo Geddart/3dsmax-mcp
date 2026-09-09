@@ -1,9 +1,10 @@
 from pathlib import Path
+import unittest
 
-
-def test_tcp_timer_tick_does_not_probe_native_bridge() -> None:
-    script = Path("maxscript/mcp_server.ms").read_text()
-    on_tick = script.split("fn onTick sender args =", 1)[1].split("-- Start the TCP server", 1)[0]
-
-    assert "nativeBridgeAvailable" not in on_tick
-    assert "windows.getChildHWND" not in on_tick
+class NativeScriptTests(unittest.TestCase):
+    def test_helpers_remain_without_listener_or_slot_ui(self):
+        script=(Path(__file__).parents[1]/'maxscript/mcp_server.ms').read_text(encoding='utf-8-sig')
+        self.assertIn('fn escapeJsonString',script)
+        self.assertIn('MCP_InstancePanel',script)
+        self.assertNotIn('TcpListener',script)
+        self.assertNotIn('MCP_StartSlot',script)

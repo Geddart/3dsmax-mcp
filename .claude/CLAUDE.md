@@ -12,11 +12,11 @@ When you encounter a bug, unexpected behavior, or discover a MAXScript/3ds Max/M
 
 ## Project Structure
 - `maxmcp/server.py` — FastMCP server entry point
-- `maxmcp/max_client.py` — TCP socket client + MaxClientManager (multi-instance slot routing)
+- `maxmcp/max_client.py` — native named-pipe client and per-session instance selection
 - `maxmcp/tools/` — MCP tool implementations (one file per category)
-- `maxscript/mcp_server.ms` — MAXScript listener (runs inside 3ds Max)
-- `maxscript/mcp_manager.ms` — Multi-instance slot manager UI
-- `maxscript/mcp_toolbar.ms` — Macroscript toolbar buttons for slots
+- `maxscript/mcp_server.ms` — shared JSON helper, native instance panel and claim macro
+- `maxmcp/async_jobs.py` — deferred main-thread jobs with out-of-band status/results
+- `maxmcp/helpers/max_ui.ps1` — process-scoped Windows dialog automation
 - `bundle/PackageContents.xml.in` — ApplicationPlugins startup manifest
 - `native/` — C++ GUP bridge plugin (named pipe, per-instance SDK bridge)
 

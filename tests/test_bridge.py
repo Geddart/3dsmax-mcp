@@ -23,19 +23,10 @@ class BridgeToolTests(unittest.TestCase):
         self.assertEqual(result["connected"], True)
         self.assertEqual(result["legacyTransport"], False)
 
-    def test_get_bridge_status_falls_back_for_legacy_listener(self) -> None:
-        with (
-            patch("maxmcp.tools.bridge.client.send_command", side_effect=[
-                RuntimeError("MAXScript error: Empty command"),
-                {"result": '{"pong": true, "server": "3dsmax-mcp"}', "requestId": None, "meta": {}},
-            ]) as mocked_send,
-        ):
-            result = json.loads(get_bridge_status())
-
-        self.assertEqual(mocked_send.call_count, 2)
-        self.assertEqual(result["legacyTransport"], True)
-        self.assertEqual(result["connected"], True)
-
+    def test_legacy_errors_do_not_trigger_a_second_command(self):
+        with patch('maxmcp.tools.bridge.client.send_command', side_effect=RuntimeError('Empty command')) as send:
+            with self.assertRaises(RuntimeError): get_bridge_status()
+            self.assertEqual(send.call_count,1)
 
 if __name__ == "__main__":
     unittest.main()
