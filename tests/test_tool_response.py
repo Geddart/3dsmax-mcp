@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import os
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ from maxmcp.tool_response import (
     envelope_result,
     envelope_exception,
     make_structured_tool,
+    run_in_thread,
 )
 
 
@@ -246,6 +249,53 @@ class ToolResponseTests(unittest.TestCase):
             error_payload = wrapped("x", count=-1)
             self.assertEqual(error_payload["ok"], False)
             self.assertEqual(error_payload["error"]["type"], "ValueError")
+
+
+class RunInThreadTests(unittest.TestCase):
+    """Async dispatch is chosen by an explicit marker, not by module name."""
+
+    def test_undecorated_tool_stays_synchronous(self) -> None:
+        def plain() -> dict:
+            return {"value": 1}
+
+        plain.__module__ = "maxmcp.tools.jobs"
+        wrapped = make_structured_tool(plain)
+        self.assertFalse(inspect.iscoroutinefunction(wrapped))
+        self.assertTrue(wrapped()["ok"])
+
+    def test_decorated_tool_is_dispatched_to_a_thread(self) -> None:
+        import threading
+
+        @run_in_thread
+        def marked() -> dict:
+            return {"thread": threading.current_thread().name}
+
+        wrapped = make_structured_tool(marked)
+        self.assertTrue(inspect.iscoroutinefunction(wrapped))
+
+        async def check() -> None:
+            payload = await wrapped()
+            self.assertTrue(payload["ok"])
+            self.assertNotEqual(payload["result"]["thread"], threading.current_thread().name)
+
+        asyncio.run(check())
+
+    def test_max_ui_module_keeps_the_temporary_fallback(self) -> None:
+        def provider() -> dict:
+            return {"value": 1}
+
+        provider.__module__ = "maxmcp.tools.max_ui"
+        self.assertTrue(inspect.iscoroutinefunction(make_structured_tool(provider)))
+
+    def test_every_job_tool_is_marked(self) -> None:
+        from maxmcp.tool_response import RUN_IN_THREAD_ATTR
+        from maxmcp.tools import jobs as job_tools
+
+        names = [name for name in dir(job_tools) if name.startswith("max_job_")]
+        self.assertTrue(names)
+        for name in names:
+            self.assertTrue(getattr(getattr(job_tools, name), RUN_IN_THREAD_ATTR, False), name)
+
 
 
 if __name__ == "__main__":

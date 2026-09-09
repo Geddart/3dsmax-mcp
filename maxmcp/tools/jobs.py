@@ -1,12 +1,13 @@
 """Detached Max main-thread operations with session-owned handles."""
 import time
-import configparser
 from ..server import mcp, client
 from ..max_client import MaxClient
 from ..async_jobs import jobs, ms_string
+from ..tool_response import run_in_thread
 
 
 @mcp.tool()
+@run_in_thread
 def max_job_submit(code: str, label: str = 'MAXScript') -> dict:
     """Schedule MAXScript and return immediately with a job handle.
 
@@ -17,12 +18,7 @@ def max_job_submit(code: str, label: str = 'MAXScript') -> dict:
     Handles live for this MCP server session; restarting MCP loses ownership.
     """
     selected = client
-    config = configparser.ConfigParser()
-    config.read(selected._config_dir() / 'mcp_config.ini', encoding='utf-8-sig')
-    if config.getboolean('mcp', 'safe_mode', fallback=True):
-        blocked = ('doscommand', 'shelllaunch', 'deletefile', 'python.execute', 'createfile', 'hiddendoscommand')
-        if any(token in code.lower() for token in blocked):
-            raise ValueError('Blocked by safe mode: job contains a restricted function')
+    # Safe mode is enforced inside JobStore.submit so every path shares one check.
     pipe = selected._resolve_pipe_name()
     if not selected._probe_pipe_available(pipe):
         raise ValueError('Selected native Max bridge is not available')
@@ -33,10 +29,11 @@ def max_job_submit(code: str, label: str = 'MAXScript') -> dict:
             return connection.send_command(script, timeout=30)
         finally:
             connection._close_pipe_handle()
-    return jobs.submit(code, pipe, schedule, label)
+    return jobs.submit(code, pipe, schedule, label, config_dir=selected._config_dir())
 
 
 @mcp.tool()
+@run_in_thread
 def max_job_render(width: int = 1920, height: int = 1080, output_path: str = '') -> dict:
     """Start a render only when the user requests one, returning a job handle.
 
@@ -51,18 +48,21 @@ def max_job_render(width: int = 1920, height: int = 1080, output_path: str = '')
 
 
 @mcp.tool()
+@run_in_thread
 def max_job_status(job_id: str) -> dict:
     """Read job state/progress without sending anything to busy Max."""
     return jobs.status(job_id)
 
 
 @mcp.tool()
+@run_in_thread
 def max_job_result(job_id: str, offset: int = 0, limit: int = 16000) -> dict:
     """Read a completed job's output/error, paginated in characters."""
     return jobs.result(job_id, offset, limit)
 
 
 @mcp.tool()
+@run_in_thread
 def max_job_list() -> dict:
     """List jobs owned by this MCP server session without contacting Max."""
     with jobs.lock:
@@ -70,6 +70,7 @@ def max_job_list() -> dict:
 
 
 @mcp.tool()
+@run_in_thread
 def max_job_cancel(job_id: str) -> dict:
     """Request cooperative cancellation; never kill Max or claim a running job stopped.
 
@@ -80,6 +81,7 @@ def max_job_cancel(job_id: str) -> dict:
 
 
 @mcp.tool()
+@run_in_thread
 def max_job_wait(job_id: str, timeout_seconds: float = 5) -> dict:
     """Wait at most 30 seconds for completion; does not occupy the Max socket."""
     if not 0 <= timeout_seconds <= 30:
@@ -93,6 +95,12 @@ def max_job_wait(job_id: str, timeout_seconds: float = 5) -> dict:
 
 
 @mcp.tool()
-def max_job_forget(job_id: str) -> dict:
-    """Delete this session's completed job output and release its history slot."""
-    return jobs.forget(job_id)
+@run_in_thread
+def max_job_forget(job_id: str, force: bool = False) -> dict:
+    """Delete this session's completed job output and release its history slot.
+
+    force=True also releases a job stuck in the 'unknown' state (scheduling result
+    ambiguous), freeing the Max instance for normal commands again. Use it ONLY if
+    you verified in Max that nothing is running; otherwise a live job keeps writing.
+    """
+    return jobs.forget(job_id, force)

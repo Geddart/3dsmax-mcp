@@ -491,6 +491,19 @@ def envelope_exception(
     return _finalize_envelope(payload)
 
 
+# Marker attribute set by @run_in_thread; functools.wraps copies it onto wrappers.
+RUN_IN_THREAD_ATTR = "_maxmcp_run_in_thread"
+
+
+def run_in_thread(fn):
+    """Mark a tool whose body may block, so it is dispatched via asyncio.to_thread.
+
+    Bounded waits and UI providers must never occupy FastMCP's event loop.
+    """
+    setattr(fn, RUN_IN_THREAD_ATTR, True)
+    return fn
+
+
 def make_structured_tool(
     fn: Callable[..., Any],
     *,
@@ -551,7 +564,9 @@ def make_structured_tool(
 
     wrapped.__signature__ = fn_signature  # type: ignore[attr-defined]
     wrapped.__annotations__ = resolved_annotations
-    if fn.__module__.endswith(('.tools.jobs', '.tools.max_ui')):
+    # TODO: drop the module-suffix fallback once maxmcp/tools/max_ui.py carries
+    # the @run_in_thread decorator (that file is owned by another change).
+    if getattr(fn, RUN_IN_THREAD_ATTR, False) or fn.__module__.endswith('.tools.max_ui'):
         # UI providers and bounded waits must not block FastMCP's event loop.
         import asyncio
         @wraps(wrapped)
@@ -569,5 +584,7 @@ __all__ = [
     "envelope_result",
     "envelope_exception",
     "make_structured_tool",
+    "run_in_thread",
+    "RUN_IN_THREAD_ATTR",
     "tripback_mode",
 ]
