@@ -21,7 +21,7 @@ Principles:
 - Do not call `get_bridge_status` or `get_session_context` as a session preamble.
 - Prefer a dedicated MCP tool over raw MAXScript when a tool clearly matches the task.
 - Do not render unless the user explicitly asks. Viewport capture is fine when visual proof is useful.
-- Multiple Max instances: use `list_max_instances` and `set_active_instance(instance_id="pid-...")` to pin this MCP session, or **MCP Claim This Max** / **MCP Instances** in Max to choose the shared default; numbered slots and TCP were removed.
+- Multiple Max instances: use `list_max_instances` and `select_max_instance(pid)` to pin this MCP session (`get_selected_max_instance` reads it, `release_max_instance` unpins), or **MCP Claim This Max** / **MCP Instances** in Max to choose the shared default; numbered slots and TCP were removed.
 - Deployment must discover Max installation directories through the Windows registry; installations can be on drives other than C:, and the new bundle manifest should be activated only after disabling legacy copies.
 - Avoid calling `quitMAX` synchronously inside a legacy bridge request: shutdown can stall at MCPBridge teardown; save the scene first and close Max through its normal application lifecycle.
 
@@ -198,15 +198,21 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 
 ## Dialogs and long operations
 
-- Use `max_ui_windows(pid)` → `max_ui_inspect(pid, window=token)` → `max_ui_invoke` / `max_ui_set_value` / `max_ui_send_keys` with observed element tokens; refresh after actions, and never retry an uncertain UI action without inspection.
+- Omit `pid` on every `max_ui_*` call: it binds to this session's instance. Passing a hand-typed pid can click inside a production Max; an explicit pid must be a live registered instance and is refused otherwise. Use `max_ui_windows()` → `max_ui_inspect(window=token)` → `max_ui_invoke` / `max_ui_set_value` / `max_ui_send_keys` with observed element tokens; refresh after actions, and never retry an uncertain UI action without inspection.
 - Max rollout Edit/CustButton controls may expose only UIA Pane with no patterns; use the provided native fallbacks, and read cross-process Edit text with bounded WM_GETTEXT rather than GetWindowText.
-- `max_ui_wait` waits for an exact dialog title; `max_ui_capture` captures only the selected Max window to a file, without rendering.
+- `max_ui_wait` matches the dialog title after normalisation (surrounding whitespace and a trailing `*` ignored); pass `match="contains"` for a case-insensitive substring match.
+- WM_SETTEXT on a Max Edit control does NOT fire a rollout `on entered` handler — pass `commit=True` to `max_ui_set_value` to send `{ENTER}` through the focused control.
+- Max spinners/edits normalise text (`"1"` becomes `"1.0"`); never assert readback equals what you wrote — check the returned `matches` flag.
+- `max_ui_capture` captures only the selected Max window; `max_ui_capture` captures only the selected Max window to a file, without rendering.
 - `max_job_submit` schedules a one-shot main-thread callback and returns a handle; use `max_job_status/result/list/wait/cancel/forget` without polling Max's socket, or `max_job_render` only for a requested render.
 - Job scripts can call `mcpJobProgress percent` and `mcpJobCheckCancel()`; cancellation is cooperative, and unknown scheduling outcomes are not completion. Keep the MCP session alive until jobs finish.
 - An active job reserves that target in this MCP process; normal scene calls fail fast, native render abort remains allowed, and changing the active instance never redirects a submitted job. Coordinate separate MCP clients yourself.
 - Stop a deferred timer before running user code to prevent re-entry through nested modal message pumps; callbacks must use literal paths rather than closed-over MAXScript stack locals.
 - Discovery must probe named pipes without opening throwaway connections; a connection may briefly disappear while the server recreates its accept instance, so bounded retries are safe only before a request is written.
 - Never replay a written scene command on a lost response, and retain `MCP_Server.escapeJsonString` when removing the old listener because custom and upstream fallback tools still use it.
+- An async job stuck in `unknown` blocks its Max until `max_job_forget(job_id, force=True)` — only after verifying in Max that nothing is running.
+- Native build: keep the CMake build dir on a SHORT path. MSBuild FileTracker fails with `FTK1011` when build-dir + `.tlog` names exceed MAX_PATH, e.g. building from a deep temp worktree.
+- Python-side: MAXScript-adjacent error strings must be raw strings — `'%LOCALAPPDATA%dsmax-mcp\...'` silently becomes an `` octal escape.
 
 ### OSL
 - Use `write_osl_shader` for file I/O and compilation

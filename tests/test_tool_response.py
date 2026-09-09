@@ -280,12 +280,22 @@ class RunInThreadTests(unittest.TestCase):
 
         asyncio.run(check())
 
-    def test_max_ui_module_keeps_the_temporary_fallback(self) -> None:
+    def test_module_name_alone_no_longer_forces_a_thread(self) -> None:
+        """The temporary '.tools.max_ui' suffix fallback is gone; only the marker counts."""
         def provider() -> dict:
             return {"value": 1}
 
         provider.__module__ = "maxmcp.tools.max_ui"
-        self.assertTrue(inspect.iscoroutinefunction(make_structured_tool(provider)))
+        self.assertFalse(inspect.iscoroutinefunction(make_structured_tool(provider)))
+
+    def test_every_ui_tool_is_marked(self) -> None:
+        from maxmcp.tool_response import RUN_IN_THREAD_ATTR
+        from maxmcp.tools import max_ui as ui_tools
+
+        names = [name for name in dir(ui_tools) if name.startswith("max_ui_")]
+        self.assertTrue(names)
+        for name in names:
+            self.assertTrue(getattr(getattr(ui_tools, name), RUN_IN_THREAD_ATTR, False), name)
 
     def test_every_job_tool_is_marked(self) -> None:
         from maxmcp.tool_response import RUN_IN_THREAD_ATTR

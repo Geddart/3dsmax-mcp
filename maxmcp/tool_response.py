@@ -564,9 +564,7 @@ def make_structured_tool(
 
     wrapped.__signature__ = fn_signature  # type: ignore[attr-defined]
     wrapped.__annotations__ = resolved_annotations
-    # TODO: drop the module-suffix fallback once maxmcp/tools/max_ui.py carries
-    # the @run_in_thread decorator (that file is owned by another change).
-    if getattr(fn, RUN_IN_THREAD_ATTR, False) or fn.__module__.endswith('.tools.max_ui'):
+    if getattr(fn, RUN_IN_THREAD_ATTR, False):
         # UI providers and bounded waits must not block FastMCP's event loop.
         import asyncio
         @wraps(wrapped)

@@ -127,7 +127,7 @@ def resolve_pid(pid=None):
         if pid is None:
             raise UITargetError(
                 'No 3ds Max instance is bound to this session; run list_max_instances '
-                'then set_active_instance, or pass an explicit pid')
+                'then select_max_instance(pid), or pass an explicit pid')
     else:
         if type(pid) is not int or pid <= 0:
             raise ValueError('An explicit positive Max PID is required')

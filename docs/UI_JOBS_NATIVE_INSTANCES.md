@@ -55,8 +55,9 @@ Re-inspect after an action. `max_ui_wait` waits for a window title;
 `max_ui_capture` saves a window-only PNG (no rendering).
 
 **`pid` is optional and should normally be omitted.** It then resolves to the
-instance this session is pinned to (`set_active_instance`, via the client's
-`selected_pid()`); an unpinned session refuses rather than guessing. A pid that
+instance this session routes to (`select_max_instance(pid)`, via the client's
+`selected_pid()`, which also honours a claimed or single live instance); a session
+with no resolvable instance refuses rather than guessing. A pid that
 *is* passed must appear in the live native-bridge instance registry
 (`%LOCALAPPDATA%\3dsmax-mcp\instances\pid-*.json`, process still running), so a
 typo cannot drive an unrelated Max. PIDs listed in `MCP_UI_DENY_PIDS`

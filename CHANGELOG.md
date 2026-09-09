@@ -31,8 +31,9 @@ review round on PR #2.
 ### Changed
 - **TCP transport and numbered slots removed** in favour of upstream's per-process native
   instance routing (deliberate, approved decision). Instances are now selected by native
-  discovery id (`pid-<pid>`) via `list_instances` / `set_active_instance`; the old
-  slot/port macros and toolbar scripts are retired. Named pipes are the only transport.
+  PID via `list_max_instances` / `select_max_instance(pid)` / `get_selected_max_instance` /
+  `release_max_instance` (module `maxmcp/tools/routing.py`); the old
+  slot/port macros, toolbar scripts and the instance-id string API are retired. Named pipes are the only transport.
 - All 188 previously advertised tool names are retained; removed upstream native operations fall
   back to their preserved MAXScript paths.
 - `skills/3dsmax-mcp-dev/` split into `SKILL.md` (served to agents) plus `fork-reference.md`

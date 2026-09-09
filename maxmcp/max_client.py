@@ -441,7 +441,10 @@ class MaxClient:
             from .async_jobs import busy_job
             active = busy_job(pipe_name)
             if active:
-                raise RuntimeError(f'Max is reserved by async job {active}; use max_job_status/result or max_ui_*')
+                raise RuntimeError(
+                    f'Max is reserved by async job {active}; use max_job_status/result or max_ui_*. '
+                    f'If that job is stuck in an unknown state and you verified in Max that nothing '
+                    f"is running, release it with max_job_forget('{active}', force=True).")
         effective_timeout = self.timeout if timeout is None else timeout
         if not math.isfinite(effective_timeout) or effective_timeout <= 0:
             raise ValueError('timeout must be finite and positive')

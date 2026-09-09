@@ -2,6 +2,7 @@
 import time
 import re
 from ..server import mcp
+from ..tool_response import run_in_thread
 from ..max_ui import request, resolve_pid, capture_path, UIReadTimeout
 
 # A cold PowerShell provider needs about a second before it can answer at all,
@@ -22,11 +23,12 @@ def _title_matches(observed: str, wanted: str, mode: str) -> bool:
 
 
 @mcp.tool()
+@run_in_thread
 def max_ui_windows(pid: int | None = None) -> dict:
     """Find visible top-level dialogs/windows belonging only to one 3dsmax.exe PID.
 
-    Omit pid to use the instance this session is pinned to (list_max_instances /
-    set_active_instance). An explicit pid must be a live registered Max instance
+    Omit pid to use the instance this session routes to (list_max_instances /
+    select_max_instance). An explicit pid must be a live registered Max instance
     and must not be protected. Works independently of the Max bridge, including
     when a job or modal is open. Returns observed window tokens plus the pid used.
     """
@@ -34,6 +36,7 @@ def max_ui_windows(pid: int | None = None) -> dict:
 
 
 @mcp.tool()
+@run_in_thread
 def max_ui_inspect(pid: int | None = None, window: dict | None = None,
                    max_elements: int = 200, max_depth: int = 8) -> dict:
     """Inspect a previously observed Max window's UIA controls and supported patterns.
@@ -50,6 +53,7 @@ def max_ui_inspect(pid: int | None = None, window: dict | None = None,
 
 
 @mcp.tool()
+@run_in_thread
 def max_ui_invoke(pid: int | None = None, element: dict | None = None) -> dict:
     """Invoke an observed Max control with UIA InvokePattern (e.g. a dialog button).
 
@@ -63,6 +67,7 @@ def max_ui_invoke(pid: int | None = None, element: dict | None = None) -> dict:
 
 
 @mcp.tool()
+@run_in_thread
 def max_ui_set_value(pid: int | None = None, element: dict | None = None,
                      value: str = '', commit: bool = False) -> dict:
     """Set an observed editable Max control, then read it back without asserting equality.
@@ -84,6 +89,7 @@ def max_ui_set_value(pid: int | None = None, element: dict | None = None,
 
 
 @mcp.tool()
+@run_in_thread
 def max_ui_send_keys(pid: int | None = None, element: dict | None = None, keys: str = '') -> dict:
     """Focus an observed Max control and send a short Windows Forms SendKeys sequence.
 
@@ -102,6 +108,7 @@ def max_ui_send_keys(pid: int | None = None, element: dict | None = None, keys: 
 
 
 @mcp.tool()
+@run_in_thread
 def max_ui_wait(pid: int | None = None, title: str = '', timeout_seconds: float = 5,
                 match: str = 'exact') -> dict:
     """Wait for a Max window by title; bounded to 30 seconds, no Max socket.
@@ -135,6 +142,7 @@ def max_ui_wait(pid: int | None = None, title: str = '', timeout_seconds: float 
 
 
 @mcp.tool()
+@run_in_thread
 def max_ui_capture(pid: int | None = None, window: dict | None = None) -> dict:
     """Capture an observed Max window using PrintWindow and return a local PNG path.
 
