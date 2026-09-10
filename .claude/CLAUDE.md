@@ -11,14 +11,14 @@ When you encounter a bug, unexpected behavior, or discover a MAXScript/3ds Max/M
 4. Check for duplicates before adding
 
 ## Project Structure
-- `src/server.py` — FastMCP server entry point
-- `src/max_client.py` — TCP socket client + MaxClientManager (multi-instance slot routing)
-- `src/tools/` — MCP tool implementations (one file per category)
-- `maxscript/mcp_server.ms` — MAXScript listener (runs inside 3ds Max)
-- `maxscript/mcp_manager.ms` — Multi-instance slot manager UI
-- `maxscript/mcp_toolbar.ms` — Macroscript toolbar buttons for slots
-- `maxscript/startup/mcp_autostart.ms` — auto-start loader for 3ds Max
-- `native/` — C++ GUP bridge plugin (named pipe, 53 native handlers)
+- `maxmcp/server.py` — FastMCP server entry point
+- `maxmcp/max_client.py` — native named-pipe client and per-session instance selection
+- `maxmcp/tools/` — MCP tool implementations (one file per category)
+- `maxscript/mcp_server.ms` — shared JSON helper, native instance panel and claim macro
+- `maxmcp/async_jobs.py` — deferred main-thread jobs with out-of-band status/results
+- `maxmcp/helpers/max_ui.ps1` — process-scoped Windows dialog automation
+- `bundle/PackageContents.xml.in` — ApplicationPlugins startup manifest
+- `native/` — C++ GUP bridge plugin (named pipe, per-instance SDK bridge)
 
 ## Skills & Build
 - `skills/3dsmax-mcp-dev/SKILL.md` — source of truth (grows via learn-from-mistakes)
@@ -26,7 +26,7 @@ When you encounter a bug, unexpected behavior, or discover a MAXScript/3ds Max/M
 - Both `.claude/skills/` and `AGENTS.md` are gitignored — never edit them directly
 
 ## Key Patterns
-- Tools registered via `@mcp.tool()` in `src/tools/*.py`
+- Tools registered via `@mcp.tool()` in `maxmcp/tools/*.py`
 - All tools send MAXScript strings to 3ds Max via `client.send_command()`
 - MAXScript results returned as JSON strings via manual concatenation
 - Viewport capture: `gw.getViewportDib()` → save to temp → `Read` tool to view

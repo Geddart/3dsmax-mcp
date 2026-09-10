@@ -22,10 +22,21 @@ public:
     DWORD_PTR Control(DWORD parameter) override { return 0; }
 
     MainThreadExecutor& GetExecutor() { return executor_; }
+    bool IsPipeRunning() const;
+    const std::string& InstanceId() const { return instance_id_; }
+    const std::string& PipeNameUtf8() const { return pipe_name_utf8_; }
+    void ClaimInstance();
 
 private:
+    void StartPipe();
+    void StopPipe();
+    void RegisterInstance();
+    void UnregisterInstance();
+
     std::unique_ptr<PipeServer> pipe_server_;
     MainThreadExecutor executor_;
+    std::string instance_id_;
+    std::string pipe_name_utf8_;
 };
 
 extern HINSTANCE hInstance;

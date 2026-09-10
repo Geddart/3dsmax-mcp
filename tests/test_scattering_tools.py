@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from src.tools import scattering
+from maxmcp.tools import scattering
 
 
 class ScatterForestPackTests(unittest.TestCase):
@@ -38,19 +38,20 @@ class ScatterForestPackTests(unittest.TestCase):
         self.assertIn('local surfaceNames = #("GroundA", "GroundB")', maxscript)
         self.assertIn('local geometryNames = #("TreeA", "TreeB")', maxscript)
         self.assertIn("local probValues = #(0.700000, 0.300000)", maxscript)
-        self.assertIn("fp.arnodelist = areaNodeList", maxscript)
+        self.assertIn("fp.arnodelist = surfaceNodes", maxscript)
         self.assertIn("fp.arnamelist = areaNameList", maxscript)
         self.assertIn("fp.pf_aractivelist = areaActiveList", maxscript)
         self.assertIn("fp.arprojectlist = areaProjectList", maxscript)
         self.assertIn("fp.maxdensity = 250", maxscript)
         self.assertIn("fp.seed = 77", maxscript)
-        self.assertIn('local sourceWidthWU = units.decodeValue "2.5cm"', maxscript)
-        self.assertIn('local sourceHeightWU = units.decodeValue "6.5cm"', maxscript)
+        # Footprint is auto-sized per geometry item from its bbox, clamped to non-zero.
+        self.assertIn("local footprint = amax dim.x dim.y", maxscript)
+        self.assertIn("if footprint <= 0.0 do footprint = 1.0", maxscript)
         self.assertIn('local iconSizeWU = units.decodeValue "45.0cm"', maxscript)
         self.assertIn('local densityUnitsXWU = units.decodeValue "800.0cm"', maxscript)
         self.assertIn('local densityUnitsYWU = units.decodeValue "200.0cm"', maxscript)
-        self.assertIn("fp.widthlist = #(sourceWidthWU)", maxscript)
-        self.assertIn("fp.heightlist = #(sourceHeightWU)", maxscript)
+        self.assertIn("fp.widthlist = widthList", maxscript)
+        self.assertIn("fp.heightlist = heightList", maxscript)
         self.assertIn("fp.units_x = densityUnitsXWU", maxscript)
         self.assertIn("fp.units_y = densityUnitsYWU", maxscript)
         self.assertIn("fp.iconSize = iconSizeWU", maxscript)

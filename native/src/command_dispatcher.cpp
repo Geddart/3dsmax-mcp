@@ -2,13 +2,16 @@
 #include "mcp_bridge/bridge_gup.h"
 #include "mcp_bridge/native_handlers.h"
 #include "mcp_bridge/main_thread_executor.h"
+#include "mcp_bridge/handler_helpers.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <unordered_set>
 #include <shlobj.h>
 
 #include <max.h>
 #include <maxapi.h>
+#include <hold.h>
 #include <maxscript/maxscript.h>
 #include <maxscript/foundation/strings.h>
 #include <CoreFunctions.h>
@@ -59,13 +62,17 @@ static bool IsDirectHandler(const std::string& cmd_type) {
         "native:find_class_instances",
         "native:get_hierarchy",
         "native:scene_delta",
+        "native:scene_qa_scan",
         // Object reads
         "native:get_object_properties",
+        "native:analyze_node_orientation",
         "native:inspect_object",
         "native:inspect_properties",
         // Material reads
         "native:get_materials",
         "native:get_material_slots",
+        "native:inspect_material_network",
+        "native:replicate_material_preview",
         // Scene query
         "native:find_objects_by_property",
         "native:get_instances",
@@ -96,6 +103,154 @@ static bool IsDirectHandler(const std::string& cmd_type) {
     };
     return kDirect.count(cmd_type) > 0;
 }
+
+static bool IsMutatingNativeHandler(const std::string& cmd_type) {
+    static const std::unordered_set<std::string> kMutating = {
+        "native:set_object_property",
+        "native:create_object",
+        "native:delete_objects",
+        "native:transform_object",
+        "native:select_objects",
+        "native:set_visibility",
+        "native:clone_objects",
+        "native:add_modifier",
+        "native:remove_modifier",
+        "native:set_modifier_state",
+        "native:collapse_modifier_stack",
+        "native:make_modifier_unique",
+        "native:set_modifier_property",
+        "native:batch_modify",
+        "native:mcg_apply_modifier",
+        "native:mcg_set_node_parameter",
+        "native:replicate_material",
+        "native:write_osl_shader",
+        "native:set_parent",
+        "native:batch_rename_objects",
+        "native:manage_scene",
+        "native:merge_from_file",
+        "native:assign_material",
+        "native:set_material_property",
+        "native:set_material_properties",
+        "native:create_shell_material",
+        "native:manage_layers",
+        "native:manage_groups",
+        "native:manage_selection_sets",
+        "native:toggle_effect",
+        "native:delete_effect",
+        "native:replace_material",
+        "native:batch_replace_materials",
+        "native:create_texture_map",
+        "native:set_texture_map_properties",
+        "native:set_sub_material",
+        "native:replicate_material_apply",
+        "native:assign_controller",
+        "native:set_controller_props",
+        "native:add_controller_target",
+        "native:keyframe_tracks",
+        "native:wire_params",
+        "native:unwire_params",
+        "native:invoke_interface",
+        "native:run_macroscript",
+        "native:scene_patch",
+        "native:scene_qa_fix",
+    };
+    return kMutating.count(cmd_type) > 0;
+}
+
+static bool RequestIsDryRunOrPreview(const std::string& command) {
+    if (command.empty()) return false;
+    json payload = json::parse(command, nullptr, false);
+    if (payload.is_discarded() || !payload.is_object()) return false;
+    return payload.value("dry_run", false) || payload.value("preview", false);
+}
+
+static bool ResultLooksLikeError(const std::string& result) {
+    json payload = json::parse(result, nullptr, false);
+    if (payload.is_discarded() || !payload.is_object()) return false;
+    if (payload.contains("error") && !payload["error"].is_null()) return true;
+    std::string status = payload.value("status", "");
+    std::transform(status.begin(), status.end(), status.begin(), ::tolower);
+    return status == "error" || status == "failed";
+}
+
+static std::string NativeErrorCodeForMessage(const std::string& message) {
+    std::string lower = message;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    if (lower.find("safe mode") != std::string::npos) return "SAFE_MODE";
+    if (lower.find("main thread execution timed out") != std::string::npos ||
+        lower.find("named pipe") != std::string::npos ||
+        (lower.find("bridge") != std::string::npos && lower.find("not found") != std::string::npos))
+        return "BRIDGE_DOWN";
+    if (lower.find("render busy") != std::string::npos ||
+        lower.find("already rendering") != std::string::npos)
+        return "RENDER_BUSY";
+    if (lower.find("ambiguous") != std::string::npos) return "AMBIGUOUS";
+    if (lower.find("unknown object class") != std::string::npos ||
+        lower.find("unknown modifier class") != std::string::npos ||
+        lower.find("unknown material class") != std::string::npos ||
+        lower.find("unknown class") != std::string::npos ||
+        (lower.find("plugin") != std::string::npos && lower.find("missing") != std::string::npos))
+        return "PLUGIN_MISSING";
+    if (lower.find("not found") != std::string::npos ||
+        lower.find("no material assigned") != std::string::npos ||
+        lower.find("no modifiers on") != std::string::npos)
+        return "NOT_FOUND";
+    return "BAD_PARAM";
+}
+
+static std::string NormalizeNativeError(const std::string& message) {
+    json structured = json::parse(message, nullptr, false);
+    if (!structured.is_discarded() && structured.is_object() &&
+        (structured.contains("code") || structured.contains("message"))) {
+        return structured.dump();
+    }
+    const std::string code = NativeErrorCodeForMessage(message);
+    json payload;
+    payload["type"] = "NativeError";
+    payload["message"] = message;
+    payload["code"] = code;
+    payload["retryable"] = (code == "BRIDGE_DOWN" || code == "RENDER_BUSY");
+    return payload.dump();
+}
+
+class NativeUndoTransaction {
+public:
+    explicit NativeUndoTransaction(const std::string& cmd_type)
+        : active_(false) {
+        // theHold is global and does not tolerate interleaved Begin/Accept
+        // pairs. If a hold is already open (user mid-operation, or any other
+        // code path), run without our own transaction rather than nesting —
+        // an Accept/Cancel here would commit or roll back someone else's
+        // restore records.
+        if (theHold.Holding()) return;
+        std::wstring label = L"MCP " + HandlerHelpers::Utf8ToWide(cmd_type);
+        label_ = MSTR(label.c_str());
+        theHold.Begin();
+        active_ = true;
+    }
+
+    ~NativeUndoTransaction() {
+        if (active_) {
+            try { theHold.Cancel(); } catch (...) {}
+        }
+    }
+
+    void Accept() {
+        if (!active_) return;
+        theHold.Accept(label_);
+        active_ = false;
+    }
+
+    void Cancel() {
+        if (!active_) return;
+        theHold.Cancel();
+        active_ = false;
+    }
+
+private:
+    bool active_;
+    MSTR label_;
+};
 
 // RAII guard — enables direct mode on construction, disables on destruction
 struct DirectModeGuard {
@@ -180,7 +335,8 @@ static std::string HandleMaxScript(
     }
 
     return gup->GetExecutor().ExecuteSync([&command]() -> std::string {
-        std::wstring wcmd = Utf8ToWide(command);
+        std::wstring wcmd = HandlerHelpers::WrapForErrorCapture(
+            HandlerHelpers::Utf8ToWide(command));
 
         FPValue fpv;
         BOOL ok = FALSE;
@@ -198,7 +354,9 @@ static std::string HandleMaxScript(
         }
 
         if (!ok) {
-            throw std::runtime_error("MAXScript execution failed");
+            // Parse-time errors fall through here; runtime errors are caught
+            // inside MAXScript and surface as a sentinel string in fpv below.
+            throw std::runtime_error("MAXScript execution failed (parse error)");
         }
 
         // Convert FPValue to string
@@ -272,6 +430,7 @@ std::string CommandDispatcher::Dispatch(
     DirectModeGuard dmg(direct);
 
     try {
+        auto invoke = [&]() -> std::string {
         std::string result;
 
         if (cmd_type == "ping") {
@@ -296,9 +455,19 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::GetHierarchy(command, gup);
         } else if (cmd_type == "native:scene_delta") {
             result = NativeHandlers::SceneDelta(command, gup, client_session_id);
+        } else if (cmd_type == "native:resolve_node_refs") {
+            result = NativeHandlers::ResolveNodeRefs(command, gup);
+        } else if (cmd_type == "native:scene_patch") {
+            result = NativeHandlers::ScenePatch(command, gup);
+        } else if (cmd_type == "native:scene_qa_scan") {
+            result = NativeHandlers::SceneQAScan(command, gup);
+        } else if (cmd_type == "native:scene_qa_fix") {
+            result = NativeHandlers::SceneQAFix(command, gup);
         // Phase 1: Object operations
         } else if (cmd_type == "native:get_object_properties") {
             result = NativeHandlers::GetObjectProperties(command, gup);
+        } else if (cmd_type == "native:analyze_node_orientation") {
+            result = NativeHandlers::AnalyzeNodeOrientation(command, gup);
         } else if (cmd_type == "native:set_object_property") {
             result = NativeHandlers::SetObjectProperty(command, gup);
         } else if (cmd_type == "native:create_object") {
@@ -316,8 +485,6 @@ std::string CommandDispatcher::Dispatch(
         // Phase 2: Modifier operations
         } else if (cmd_type == "native:add_modifier") {
             result = NativeHandlers::AddModifier(command, gup);
-        } else if (cmd_type == "native:add_modifier_verified") {
-            result = NativeHandlers::AddModifierVerified(command, gup);
         } else if (cmd_type == "native:remove_modifier") {
             result = NativeHandlers::RemoveModifier(command, gup);
         } else if (cmd_type == "native:set_modifier_state") {
@@ -326,8 +493,17 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::CollapseModifierStack(command, gup);
         } else if (cmd_type == "native:make_modifier_unique") {
             result = NativeHandlers::MakeModifierUnique(command, gup);
-        } else if (cmd_type == "native:batch_modify") {
-            result = NativeHandlers::BatchModify(command, gup);
+        } else if (cmd_type == "native:set_modifier_property" || cmd_type == "native:batch_modify") {
+            result = NativeHandlers::SetModifierProperty(command, gup);
+        // Max Creation Graph scripted modifiers
+        } else if (cmd_type == "native:mcg_resolve_class") {
+            result = NativeHandlers::MCGResolveClass(command, gup);
+        } else if (cmd_type == "native:mcg_apply_modifier") {
+            result = NativeHandlers::MCGApplyModifier(command, gup);
+        } else if (cmd_type == "native:mcg_set_node_parameter") {
+            result = NativeHandlers::MCGSetNodeParameter(command, gup);
+        } else if (cmd_type == "native:mcg_inspect_instance") {
+            result = NativeHandlers::MCGInspectInstance(command, gup);
         // Phase 3: Inspect & scene query
         } else if (cmd_type == "native:inspect_object") {
             result = NativeHandlers::InspectObject(command, gup);
@@ -343,6 +519,14 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::GetDependencies(command, gup);
         } else if (cmd_type == "native:get_material_slots") {
             result = NativeHandlers::GetMaterialSlots(command, gup);
+        } else if (cmd_type == "native:get_material_library") {
+            result = NativeHandlers::GetMaterialLibrary(command, gup);
+        } else if (cmd_type == "native:inspect_material_network") {
+            result = NativeHandlers::InspectMaterialNetwork(command, gup);
+        } else if (cmd_type == "native:replicate_material") {
+            result = NativeHandlers::ReplicateMaterial(command, gup);
+        } else if (cmd_type == "native:replicate_material_preview") {
+            result = NativeHandlers::ReplicateMaterialPreview(command, gup);
         } else if (cmd_type == "native:write_osl_shader") {
             result = NativeHandlers::WriteOSLShader(command, gup);
         // Phase 4: Scene management
@@ -352,6 +536,8 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::BatchRenameObjects(command, gup);
         } else if (cmd_type == "native:manage_scene") {
             result = NativeHandlers::ManageScene(command, gup);
+        } else if (cmd_type == "native:undo_last") {
+            result = NativeHandlers::UndoLast(command, gup);
         // File access
         } else if (cmd_type == "native:inspect_max_file") {
             result = NativeHandlers::InspectMaxFile(command, gup);
@@ -366,6 +552,8 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::CaptureViewport(command, gup);
         } else if (cmd_type == "native:capture_screen") {
             result = NativeHandlers::CaptureScreen(command, gup);
+        } else if (cmd_type == "native:isolate_and_capture_selected") {
+            result = NativeHandlers::IsolateAndCaptureSelected(command, gup);
         // Phase 6: Material writes
         } else if (cmd_type == "native:assign_material") {
             result = NativeHandlers::AssignMaterial(command, gup);
@@ -373,13 +561,15 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::SetMaterialProperty(command, gup);
         } else if (cmd_type == "native:set_material_properties") {
             result = NativeHandlers::SetMaterialProperties(command, gup);
-        } else if (cmd_type == "native:set_material_verified") {
-            result = NativeHandlers::SetMaterialVerified(command, gup);
         } else if (cmd_type == "native:create_shell_material") {
             result = NativeHandlers::CreateShellMaterial(command, gup);
+        } else if (cmd_type == "native:backup_material_library") {
+            result = NativeHandlers::BackupMaterialLibrary(command, gup);
         // Plugin enumeration
         } else if (cmd_type == "native:list_plugin_classes") {
             result = NativeHandlers::ListPluginClasses(command, gup);
+        } else if (cmd_type == "native:get_plugin_capabilities") {
+            result = NativeHandlers::GetPluginCapabilities(command, gup);
         // Controller / track inspection
         } else if (cmd_type == "native:inspect_track_view") {
             result = NativeHandlers::InspectTrackView(command, gup);
@@ -418,6 +608,10 @@ std::string CommandDispatcher::Dispatch(
         // Render
         } else if (cmd_type == "native:render_scene") {
             result = NativeHandlers::RenderScene(command, gup);
+        } else if (cmd_type == "native:render_start") {
+            result = NativeHandlers::RenderStart(command, gup);
+        } else if (cmd_type == "native:render_cancel") {
+            result = NativeHandlers::RenderCancel(command, gup);
         // Material replace
         } else if (cmd_type == "native:replace_material") {
             result = NativeHandlers::ReplaceMaterial(command, gup);
@@ -430,6 +624,8 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::SetTextureMapProperties(command, gup);
         } else if (cmd_type == "native:set_sub_material") {
             result = NativeHandlers::SetSubMaterial(command, gup);
+        } else if (cmd_type == "native:replicate_material_apply") {
+            result = NativeHandlers::ReplicateMaterialApply(command, gup);
         // Controllers (extended)
         } else if (cmd_type == "native:assign_controller") {
             result = NativeHandlers::AssignController(command, gup);
@@ -439,6 +635,8 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::SetControllerProps(command, gup);
         } else if (cmd_type == "native:add_controller_target") {
             result = NativeHandlers::AddControllerTarget(command, gup);
+        } else if (cmd_type == "native:keyframe_tracks") {
+            result = NativeHandlers::KeyframeTracks(command, gup);
         // Wire params
         } else if (cmd_type == "native:wire_params") {
             result = NativeHandlers::WireParams(command, gup);
@@ -456,14 +654,51 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::ListMacroscripts(command, gup);
         } else if (cmd_type == "native:list_action_tables") {
             result = NativeHandlers::ListActionTables(command, gup);
+        } else if (cmd_type == "native:main_thread") {
+            result = NativeHandlers::MainThread(command, gup);
         } else if (cmd_type == "native:introspect_interface") {
             result = NativeHandlers::IntrospectInterface(command, gup);
         } else if (cmd_type == "native:invoke_interface") {
             result = NativeHandlers::InvokeInterface(command, gup);
         } else if (cmd_type == "native:run_macroscript") {
             result = NativeHandlers::RunMacroscript(command, gup);
+        // Chat UI (v0.7.0)
+        } else if (cmd_type == "native:chat_ui") {
+            result = NativeHandlers::ChatUI(command, gup);
+        // Live tool smoke testing
+        } else if (cmd_type == "native:invoke_tool") {
+            result = NativeHandlers::InvokeTool(command, gup);
+        } else if (cmd_type == "native:tool_smoke") {
+            result = NativeHandlers::RunToolSmoke(command, gup);
         } else {
             throw std::runtime_error("Unknown command type: " + cmd_type);
+        }
+
+        return result;
+        };
+
+        std::string result;
+        // scene_patch owns a strict hold so it can reject an already-open user
+        // transaction and report rollback only after Cancel() has completed.
+        const bool handlerOwnsTransaction = cmd_type == "native:scene_patch";
+        const bool transact =
+            IsMutatingNativeHandler(cmd_type) &&
+            !RequestIsDryRunOrPreview(command) &&
+            !handlerOwnsTransaction;
+
+        if (transact) {
+            result = gup->GetExecutor().ExecuteSync([&]() -> std::string {
+                NativeUndoTransaction tx(cmd_type);
+                std::string inner = invoke();
+                if (ResultLooksLikeError(inner)) {
+                    tx.Cancel();
+                } else {
+                    tx.Accept();
+                }
+                return inner;
+            });
+        } else {
+            result = invoke();
         }
 
         auto end = std::chrono::steady_clock::now();
@@ -473,6 +708,6 @@ std::string CommandDispatcher::Dispatch(
     } catch (const std::exception& e) {
         auto end = std::chrono::steady_clock::now();
         int ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-        return BuildResponse(false, "", e.what(), request_id, cmd_type, ms);
+        return BuildResponse(false, "", NormalizeNativeError(e.what()), request_id, cmd_type, ms);
     }
 }

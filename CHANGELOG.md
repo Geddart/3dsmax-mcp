@@ -5,7 +5,162 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.5+fork] - Unreleased
+
+Integration of upstream **1.5.5** (`32af329`) on top of fork `72b454f` (0.5.3.1+fork), plus the
+review round on PR #2.
+
+> **Native binaries in this round:** Max 2025 and Max 2027 now carry the source fixes.
+> The 2027 binary was rebuilt with its matching SDK and has not yet been live-tested.
+> `mcp_bridge_2023/2024/2026.gup` are unchanged and predate both the `vfb:false` render
+> fix and the overlapped-I/O transport; rebuild each against its matching SDK before shipping.
+
+### Added
+- **Progressive tool discovery** — the `progressive` profile advertises only `list_toolsets`,
+  `describe_toolset` and `call_tool`; operational tools are described on demand. Schemas are
+  byte-identical to the full profile (see `docs/PROGRESSIVE_AUDIT.md` for the measurements).
+- **Async job handles** — `max_job_submit` / `max_job_status` / `max_job_result` / `max_job_list` /
+  `max_job_wait` / `max_job_cancel` / `max_job_forget` schedule one-shot main-thread callbacks and
+  return immediately. Job scripts can call `mcpJobProgress` and `mcpJobCheckCancel()`;
+  cancellation is cooperative and an unknown outcome is never reported as completion.
+- **Process-scoped UI automation** — `max_ui_windows`, `max_ui_inspect`, `max_ui_invoke`,
+  `max_ui_set_value`, `max_ui_send_keys`, `max_ui_wait`, `max_ui_capture`, each bound to a
+  specific Max PID, with native fallbacks for rollout controls that expose no UIA patterns.
+- Upstream 1.5.5 structured results, atomic scene edits and OpenPBR material defaults.
+
+### Changed
+- **TCP transport and numbered slots removed** in favour of upstream's per-process native
+  instance routing (deliberate, approved decision). Instances are now selected by native
+  PID via `list_max_instances` / `select_max_instance(pid)` / `get_selected_max_instance` /
+  `release_max_instance` (module `maxmcp/tools/routing.py`); the old
+  slot/port macros, toolbar scripts and the instance-id string API are retired. Named pipes are the only transport.
+- 187 of the 188 previously advertised tool names are retained (`set_active_instance` became `select_max_instance(pid)` in the review round); removed upstream native operations fall
+  back to their preserved MAXScript paths.
+- `skills/3dsmax-mcp-dev/` split into `SKILL.md` (served to agents) plus `fork-reference.md`
+  (long-tail plugin lessons).
+- `scripts/verify_feature_catalog.py` is parametrized (argparse + environment variables) and
+  compares against a **git ref** (default `master`) instead of a hardcoded sibling checkout.
+
+### Fixed
+- **Plain-pipe fallback removed** — the unauthenticated/unframed fallback path could talk to a
+  half-initialized bridge; discovery now probes named pipes without opening throwaway
+  connections.
+- **Job-registry wedge** — a terminal job state is published only after the Max reservation is
+  released, completed state is latched, elapsed time freezes, transient sharing violations are
+  tolerated and non-finite progress values are discarded.
+- **UI tools bound to the wrong process** — every UI call now resolves and verifies its target
+  PID, waits pass their remaining deadline to the provider process, and keyboard input requires
+  the exact observed control to hold focus.
+- **`safe_value()` regression in `set_texture_map_properties`** — `maxmcp/tools/material_ops.py`
+  emitted the raw property value into MAXScript, so a Windows path (`"C:\tex\normal.png"`) had
+  its backslash escapes eaten (`\t` became a tab) and the texture silently failed to load. The value is
+  wrapped with `safe_value()` again, matching every other assignment site; covered by
+  `tests/test_material_ops.py`.
+- **SKILL.md restored** — the must-know Redshift / RPManager / tyFlow / Forest Pack / RailClone
+  rules are back in `SKILL.md` (what `resource://3dsmax-mcp/skill` and the `max_assistant` prompt
+  actually serve) instead of living only in `fork-reference.md`, which now carries the long tail
+  and is pointed at loudly from the top of `SKILL.md`.
+- **Native shutdown fixes** — overlapped I/O with proper `OVERLAPPED` pointers, idle client I/O
+  observing shutdown, connect cancellation completing before its event is freed, and expired
+  queued main-thread work being skipped rather than executed against a dead caller stack.
+- **Native binary rebuilt for Max 2025** — `native/bin/mcp_bridge_2025.gup` is a true Release
+  build carrying the transport/executor fixes above and the `vfb:false` render fix
+  (4 593 664 -> 2 135 552 bytes). A repeat build has matching size, imports and fix strings;
+  the committed binary was retained. The 2023/2024/2026 binaries still require rebuilding.
+- mcp_bridge_2027.gup rebuilt from source with the 2027 SDK; live-tested 2026-09-10 in Max 2027 (instance panel, UI automation, async jobs, MCP stdio catalog)
+- **`render_scene` native handler double-pass with Redshift** — `native/src/handlers/render_handlers.cpp` was issuing `render … vfb:true …`, which on a Redshift renderer caused two full render passes per call: one into the VFB display buffer, then a second to satisfy the `outputFile:` save. Doubled render cost per tool call and doubled the window in which `RSScene is locked` / Scene.cpp:402 crashes could fire. Changed to `vfb:false` to match the Python fallback in `src/tools/render.py` (which was already correct). Reproduced in 822 HeissluftBallon envelope work 2026-04-20. Rebuild `mcp_bridge.gup` from `native/` (see README "Building from source") to pick up the fix.
+
+#### PR #2 review round
+
+- **The instance fence covered only the `max_ui_*` tools** — `protected_pids.json` /
+  `MCP_UI_DENY_PIDS` were read exclusively by `maxmcp/max_ui.py`, so every MAXScript tool routed
+  around them. Fencing the production Max and then closing the dev Max made the production one
+  "the single live instance", and the next `execute_maxscript` / `scene_patch` / `max_job_render`
+  ran inside it with `target_source='single'` and no refusal. The fence now lives in
+  `maxmcp/pid_fence.py` and is enforced in `MaxClient._default_target()` (claimed *and* single
+  branches) and `select_max_instance()`, raising the new `ProtectedMaxInstanceError`.
+- **A fence entry lapsing across a Max restart was at least made visible** — a bare PID is
+  recycled by Windows, so the protection can quietly protect nothing (and can start refusing an
+  unrelated dev Max that inherited the number). `list_max_instances` now reports `protected` per
+  instance plus a `protected_fence` block whose `lapsed_pids` names entries that match nothing
+  live, so the lapse is seen rather than assumed away. The fence itself stays per-PID and must be
+  renewed after a restart.
+- **Routing metadata was stripped from every response in the default tripback mode** — the docs
+  promised `target_pid` / `target_pipe` / `target_source` on every response that reaches Max, but minimal mode
+  attached transport only on errors and `_slim_transport` copied just `transport` and the dead
+  `fallback_error`. Slim transport now carries the three routing keys and is attached on the
+  minimal-mode success path too; the `fallback_error` branch (whose only producer this round
+  deleted) is gone.
+- **`scripts/verify_ui_jobs.py` auto-drove a second Max** — the acceptance script picked
+  `others[0]` from the live instance list and executed MAXScript in it, which on this workstation
+  is the production Max, possibly mid-render. The isolation check is now opt-in via
+  `--other-pid N` and refuses a protected PID.
+- **A racing foreground could swallow `SendKeys` input and still be reported as committed** —
+  `SendWait` injects into the input desktop, not into a PID-scoped window, so a dialog that stole
+  focus after `Set-ControlFocus` received the keystroke. `max_ui_set_value(commit=True)` and
+  `max_ui_send_keys` now re-read the foreground PID after the injection and report
+  `foreground_changed` (with `committed=false` / `completed=false`) instead of claiming success.
+- **A SKILL.md lesson contained raw `0x03` bytes** — the `\3` in `\3dsmax-mcp` was interpreted as
+  an octal escape and written into the file, erasing both the trigger and the symptom of the very
+  pitfall the line documents. `SKILL.md` is served verbatim as an MCP resource, so every agent
+  loading the skill received the control character. Rewritten, and the file is control-byte clean.
+
+#### PR #2 review round 2
+
+- **`max_versions` fencing removed entirely** — the key compared against the bridge's
+  `max_version`, which is the compile-time `MAX_SDK_VERSION` written by
+  `native/src/bridge_gup.cpp`, identical for every Max of a release. `{"max_versions": [27000]}`
+  therefore fenced the production *and* the dev Max 2025 and wedged routing completely.
+  `denied_max_versions()`, its checks in `_default_target` / `select_max_instance` /
+  `resolve_pid`, and the `protected_fence.max_versions` field are gone. The fence is per-PID,
+  lapses on restart, and `protected_fence.lapsed_pids` makes that visible; a restart-proof fence
+  needs the bridge to publish a stable identity (scene path / operator label) and is future work.
+- **`max_ui_wait` authorised its target differently from the other six UI tools** — it resolved
+  `pid` to an int once and then fed that int back into `request()`, which re-authorised it
+  through the explicit-pid branch (registry membership required). A session-resolved PID that is
+  not in the registry worked everywhere except in `max_ui_wait`. The original `pid` argument is
+  now passed on every probe; the resolved target is used only for the reported `pid`.
+- **Two process-liveness policies disagreed** — `maxmcp/max_ui._process_is_live` treated any
+  `OpenProcess` failure as death (an access-denied Max looked dead), while
+  `maxmcp/max_client._process_alive` counts only `ERROR_INVALID_PARAMETER` as proof. `max_ui`
+  now delegates to `max_client`, so there is a single policy.
+- **`max_ui_set_value` could silently write an empty string** — `value` had defaulted to `''`
+  once `pid` became optional and moved ahead of it, so an omitted value was a valid empty write.
+  It is now `None` by default and raises `ValueError('value is required')`.
+- **"Did this request reach Max?" was decided by string matching** — `is_provably_unsent` parsed
+  message text, where `'timed out waiting for named pipe'` is a prefix of the ambiguous
+  read-timeout message and only marker ordering kept the two apart. `maxmcp/max_client` now
+  raises the new `PipeNotConnectedError(ConnectionError)` at every raise site that fires before
+  the first `WriteFile` (pipe not found, open failed, wait timed out, pipe vanished, connection
+  lock timeout), and classification is by type; the markers remain as a fallback only.
+- **`select_max_instance` could pin a PID with no instance record** — it synthesised
+  `\.\pipe\3dsmax-mcp-pid-<pid>` and pinned whenever the process was alive and something
+  answered that name. Selection now refuses outright with `NoMaxInstanceError` naming
+  `list_max_instances`.
+- **Docs overpromised routing metadata** — "reported on every response" is now "every response
+  that reached Max"; `list_max_instances`, `max_job_*` and `max_ui_*` never call
+  `send_command` and emit no transport block (the `max_ui_*` results carry their own `pid`).
+- **Every tool call resolved the routing target twice** — `MaxClient.native_available` ran a full
+  `_default_target()` (glob the instances dir, `OpenProcess` per record, `WaitNamedPipeW` per
+  record) and `send_command` immediately repeated it, across ~70 `if client.native_available:`
+  sites. The resolved target is now memoised on the client for `MaxClient._TARGET_CACHE_TTL`
+  (1.5 s, monotonic clock) and shared by both paths. Only successes are cached: `Ambiguous`/`No`/
+  `ProtectedMaxInstanceError` propagate untouched, so a Max that appears or a fence that lifts is
+  seen on the next call. The cache is dropped by `select_max_instance`, `release_max_instance` and
+  any `ConnectionError`/`TimeoutError` out of a send, so a vanished Max is re-resolved at once.
+
+<!-- native -->
+### Fixed (native bridge)
+- **Max hung on exit for up to 120 s per in-flight request** — `MCPBridgeGUP::Stop()` joined the pipe client threads (`StopPipe()`) *before* shutting the executor down. A client thread inside `CommandDispatcher::Dispatch` -> `MainThreadExecutor::ExecuteSync` was waiting for a `WM_MCP_EXECUTE` that the main thread could no longer pump, because it was blocked in `std::thread::join()` on that same thread. New `MainThreadExecutor::BeginShutdown()` is now the first thing `Stop()` calls: it closes a submission gate (later `ExecuteSync` calls from background threads throw immediately instead of posting) and completes every queued/deferred work item with an error, so the joins below it return at once.
+- **Leaked work items on shutdown** — `MainThreadExecutor::Shutdown()` called `DestroyWindow()` while `WM_MCP_EXECUTE` messages were still queued. Windows discards those messages, leaking the heap `shared_ptr<WorkItem>` each one owns and leaving its waiter to sleep out the full timeout. `DrainPendingWork()` now `PeekMessage`-drains the queue first, deletes the raw pointers and wakes each waiter with an error.
+- **`CompletePipeIO` swallowed real wait failures** — `WAIT_FAILED` (and a null shutdown event) were indistinguishable from "shutdown was signalled". Both are now reported via `OutputDebugString` (`LogPipeIOFailure`); the cancel-and-drain behaviour is unchanged.
+
+### Changed (native bridge)
+- `PipeIOEvent::Reset()` lets one event be reused across the chunks of a request/response. `PipeServer::ReadRequest`/`WriteResponse` no longer create and close a kernel event every 4 KB.
+- `native/CMakeLists.txt` gained `option(MCP_BUILD_TESTS OFF)`, which pulls `native/tests` in via `add_subdirectory` and registers it with CTest. `native/tests` still configures standalone.
+- `native/tests/transport_tests.cpp`: new coverage for shutdown waking a queued waiter promptly, `ExecuteSync` failing fast once shutting down, `Initialize()` reopening the gate, and the null-shutdown / event-reuse paths in `pipe_io.h`.
+- `native/bin/mcp_bridge_2025.gup` rebuilt from source as a true Release build (4 593 664 -> 2 135 552 bytes; the committed binary was an unoptimized link — 2x `.text`, 6x `.pdata`, extra `.idata`/`.tls`/`.00cfg` sections — and predated the overlapped-I/O transport entirely). Binaries for 2023/2024/2026/2027 were **not** rebuilt: only the Max 2025 SDK is installed on this machine.
+<!-- /native -->
 
 ## [0.5.3.1-fork] - 2026-04-17
 

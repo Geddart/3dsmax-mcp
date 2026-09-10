@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <stdexcept>
 #include <nlohmann/json.hpp>
 #include <max.h>
 #include <maxapi.h>
@@ -13,9 +14,11 @@
 #include <INodeLayerProperties.h>
 #include <iparamb2.h>
 #include <plugapi.h>
+#include <ISceneEventManager.h>
 
 #include <maxscript/maxscript.h>
 #include <maxscript/foundation/strings.h>
+#include <maxscript/maxwrapper/mxsobjects.h>
 #include <CoreFunctions.h>
 
 class MCPBridgeGUP;
@@ -41,6 +44,69 @@ inline std::wstring Utf8ToWide(const std::string& s) {
     return w;
 }
 
+// MAXScript's `(classOf value) as string` exposes the script-facing class
+// token, not the localized UI label returned by Animatable::ClassName().
+inline std::string ScriptClassName(ClassDesc* descriptor) {
+    if (!descriptor) return {};
+
+    const MCHAR* internalName = descriptor->InternalName();
+    if (internalName && *internalName) {
+        return WideToUtf8(internalName);
+    }
+
+    const MCHAR* nonLocalizedName = descriptor->NonLocalizedClassName();
+    if (nonLocalizedName && *nonLocalizedName) {
+        return WideToUtf8(nonLocalizedName);
+    }
+
+    const MCHAR* className = descriptor->ClassName();
+    return className ? WideToUtf8(className) : std::string();
+}
+
+inline std::string ScriptClassName(Animatable* value) {
+    if (!value) return {};
+
+    ClassDesc* descriptor = DllDir::GetInstance().ClassDir().FindClass(
+        value->SuperClassID(), value->ClassID());
+    const std::string scriptName = ScriptClassName(descriptor);
+    if (!scriptName.empty()) {
+        return scriptName;
+    }
+    return WideToUtf8(value->ClassName().data());
+}
+
+// The script-visible MAXClass name can differ from ClassDesc::InternalName()
+// (OpenPBR_Material vs OpenPBR, for example). This is still native C++ metadata:
+// it does not evaluate MAXScript. Call only from handlers marshalled to Max's
+// main thread because the MAXScript class registry is not thread-safe.
+inline std::string MaxScriptVisibleClassName(
+    SClass_ID superClassId,
+    const Class_ID& classId) {
+    ScopedMaxScriptEvaluationContext evaluationContext;
+    Class_ID lookupId = classId;
+    MAXClass* maxClass = MAXClass::lookup_class(
+        &lookupId,
+        superClassId,
+        true);
+    if (maxClass && maxClass->name) {
+        const MCHAR* value = maxClass->name->to_string();
+        if (value && *value) {
+            return WideToUtf8(value);
+        }
+    }
+    ClassDesc* descriptor = DllDir::GetInstance().ClassDir().FindClass(
+        superClassId,
+        classId);
+    return ScriptClassName(descriptor);
+}
+
+inline std::string MaxScriptVisibleClassName(Animatable* value) {
+    if (!value) return {};
+    return MaxScriptVisibleClassName(
+        value->SuperClassID(),
+        value->ClassID());
+}
+
 // ── Node property helpers ───────────────────────────────────────
 inline std::string NodeClassName(INode* node) {
     ObjectState os = node->EvalWorldState(GetCOREInterface()->GetTime());
@@ -63,6 +129,21 @@ inline std::string NodeLayerName(INode* node) {
     return "0";
 }
 
+inline unsigned long long NodeHandle(INode* node) {
+    if (!node) return 0ULL;
+    return static_cast<unsigned long long>(Animatable::GetHandleByAnim(node));
+}
+
+inline json NodeIdentityJson(INode* node) {
+    json out;
+    if (!node) return out;
+    out["name"] = WideToUtf8(node->GetName());
+    out["handle"] = NodeHandle(node);
+    out["class"] = NodeClassName(node);
+    out["layer"] = NodeLayerName(node);
+    return out;
+}
+
 inline json NodePosition(INode* node, TimeValue t) {
     Matrix3 tm = node->GetNodeTM(t);
     Point3 pos = tm.GetTrans();
@@ -83,6 +164,19 @@ inline void CollectNodes(INode* node, std::vector<INode*>& out) {
     }
 }
 
+inline std::vector<INode*> CollectNodesByExactName(const std::string& name) {
+    Interface* ip = GetCOREInterface();
+    INode* root = ip->GetRootNode();
+    std::vector<INode*> all, matched;
+    CollectNodes(root, all);
+    for (INode* n : all) {
+        if (WideToUtf8(n->GetName()) == name) {
+            matched.push_back(n);
+        }
+    }
+    return matched;
+}
+
 // ── Node lookup by name ─────────────────────────────────────────
 inline INode* FindNodeByName(const std::string& name) {
     Interface* ip = GetCOREInterface();
@@ -90,9 +184,110 @@ inline INode* FindNodeByName(const std::string& name) {
     return ip->GetINodeByName(wname.c_str());
 }
 
+inline unsigned long long PayloadHandleValue(const json& payload, const std::string& key = "handle") {
+    auto it = payload.find(key);
+    if (it == payload.end() || it->is_null()) return 0ULL;
+    try {
+        if (it->is_number_unsigned()) return it->get<unsigned long long>();
+        if (it->is_number_integer()) {
+            long long value = it->get<long long>();
+            return value > 0 ? static_cast<unsigned long long>(value) : 0ULL;
+        }
+        // type() check instead of is_string(): MAXScript's value.h defines a
+        // function-like is_string macro that breaks the method call when this
+        // header lands after maxscript includes.
+        if (it->type() == json::value_t::string) {
+            std::string value = it->get<std::string>();
+            if (!value.empty()) return std::stoull(value);
+        }
+    } catch (...) {
+        return 0ULL;
+    }
+    return 0ULL;
+}
+
+inline INode* FindNodeByHandle(unsigned long long handle) {
+    if (handle == 0ULL) return nullptr;
+    return NodeEventNamespace::GetNodeByKey(static_cast<NodeEventNamespace::NodeKey>(handle));
+}
+
+inline std::string StructuredErrorPayload(
+    const std::string& code,
+    const std::string& message,
+    const json& hint = json()) {
+    json payload;
+    payload["type"] = "NativeError";
+    payload["message"] = message;
+    payload["code"] = code;
+    payload["retryable"] = (
+        code == "BRIDGE_DOWN" || code == "RENDER_BUSY" ||
+        code == "SCENE_CONFLICT" || code == "TRANSACTION_BUSY");
+    if (!hint.is_null() && !hint.empty()) {
+        payload["hint"] = hint;
+    }
+    return payload.dump();
+}
+
+inline INode* ResolveNodeFromPayload(
+    const json& payload,
+    const std::string& nameKey = "name",
+    const std::string& handleKey = "handle") {
+
+    const unsigned long long handle = PayloadHandleValue(payload, handleKey);
+    if (handle != 0ULL) {
+        INode* byHandle = FindNodeByHandle(handle);
+        if (!byHandle) {
+            throw std::runtime_error("Object handle not found: " + std::to_string(handle));
+        }
+        return byHandle;
+    }
+
+    const std::string name = payload.value(nameKey, "");
+    if (name.empty()) {
+        throw std::runtime_error(nameKey + " or " + handleKey + " is required");
+    }
+
+    std::vector<INode*> matches = CollectNodesByExactName(name);
+    if (matches.empty()) {
+        throw std::runtime_error("Object not found: " + name);
+    }
+    if (matches.size() > 1) {
+        json candidates = json::array();
+        for (INode* node : matches) {
+            candidates.push_back(NodeIdentityJson(node));
+        }
+        json hint = {
+            {"message", "Pass handle to disambiguate this object name."},
+            {"candidates", candidates},
+        };
+        throw std::runtime_error(StructuredErrorPayload(
+            "AMBIGUOUS",
+            "Ambiguous object name: " + name,
+            hint));
+    }
+    return matches[0];
+}
+
+// MAXScript-level wrap that captures runtime exceptions (parse errors still
+// surface via ExecuteMAXScriptScript returning FALSE). The wrapped script
+// returns either the user's value, or a string with this sentinel prefix.
+inline const char* MaxScriptErrorSentinel() { return "__MCP_MS_ERR__:"; }
+
+inline std::wstring WrapForErrorCapture(const std::wstring& wcmd) {
+    return std::wstring(
+        L"(\n"
+        L"  local __mcp_err = undefined\n"
+        L"  local __mcp_res = try (\n"
+    ) + wcmd + std::wstring(
+        L"\n  ) catch (__mcp_err = getCurrentException(); undefined)\n"
+        L"  if __mcp_err != undefined then (\"__MCP_MS_ERR__:\" + __mcp_err) else __mcp_res\n"
+        L")\n"
+    );
+}
+
 // ── MAXScript execution (for hybrid handlers) ───────────────────
 inline std::string RunMAXScript(const std::string& script) {
-    std::wstring wcmd = Utf8ToWide(script);
+    std::wstring wcmd = WrapForErrorCapture(Utf8ToWide(script));
     FPValue fpv;
     BOOL ok = FALSE;
 
@@ -131,19 +326,12 @@ inline std::string RunMAXScript(const std::string& script) {
     if (fpv.type == TYPE_FLOAT) {
         return std::to_string(fpv.f);
     }
-
-    // Fallback: wrap in string conversion
-    std::wstring wrap = L"(" + wcmd + L") as string";
-    FPValue fpv2;
-    if (ExecuteMAXScriptScript(wrap.c_str(), MAXScript::ScriptSource::NonEmbedded, TRUE, &fpv2)) {
-        if (fpv2.type == TYPE_STRING || fpv2.type == TYPE_FILENAME) {
-            return WideToUtf8(fpv2.s);
-        }
-        if (fpv2.type == TYPE_TSTR) {
-            return WideToUtf8(fpv2.tstr->data());
-        }
+    if (fpv.type == TYPE_BOOL) {
+        return fpv.i ? "true" : "false";
     }
 
+    // Never re-evaluate the script to stringify the result: scripts with side
+    // effects (e.g. "max undo") would run twice.
     return "OK";
 }
 

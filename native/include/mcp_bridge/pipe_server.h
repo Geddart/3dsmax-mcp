@@ -10,12 +10,13 @@ class MCPBridgeGUP;
 
 class PipeServer {
 public:
-    explicit PipeServer(MCPBridgeGUP* gup);
+    explicit PipeServer(MCPBridgeGUP* gup, std::wstring pipe_name);
     ~PipeServer();
 
     void Start();
     void Stop();
     bool IsRunning() const { return running_.load(); }
+    const std::wstring& PipeName() const { return pipe_name_; }
 
 private:
     void AcceptLoop();
@@ -25,6 +26,7 @@ private:
     void CleanupFinishedThreads();
 
     MCPBridgeGUP* gup_;
+    std::wstring pipe_name_;
     std::thread accept_thread_;
     std::atomic<bool> running_{false};
     HANDLE shutdown_event_ = nullptr;
@@ -37,6 +39,5 @@ private:
     };
     std::vector<std::unique_ptr<ClientThread>> client_threads_;
 
-    static constexpr const wchar_t* PIPE_NAME = L"\\\\.\\pipe\\3dsmax-mcp";
     static constexpr DWORD BUFFER_SIZE = 64 * 1024;
 };
