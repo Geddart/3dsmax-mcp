@@ -12,7 +12,7 @@ errors when `.tlog` paths exceed MAX_PATH.
 | 2024 | C++17 | Older binary; rebuild with matching SDK before shipping |
 | 2025 | C++17 | Contains transport/executor and `vfb:false` fixes; rebuild verified against committed binary |
 | 2026 | C++17 | Older binary; rebuild with matching SDK before shipping |
-| 2027 | C++20 | Rebuilt from this worktree with the 2027 SDK; not yet live-tested |
+| 2027 | C++20 | Contains transport/executor and `vfb:false` fixes; live acceptance passed in Max 2027 (2026-09-10) |
 
 The 2023/2024/2026 binaries predate the transport/executor and `vfb:false` fixes.
 `MAX_SDK_VERSION` is defined by CMake as the target year (for example, 2027),
@@ -53,7 +53,7 @@ All three binaries contain `GetOverlappedResult`,
 The 2027 dependency check includes `core.dll`, `maxutil.dll`, `gup.dll`,
 `ParamBlk2.dll`, `MAXScrpt.dll`, `Geom.dll` and `MSVCP140.dll`, with no debug CRT.
 Native transport regression tests passed. These are build/static checks;
-the new 2027 binary has not been deployed or live-tested.
+the 2027 binary passed live acceptance in Max 2027 on 2026-09-10.
 
 `build.bat` also supports year selection and stages binaries in both
 `native/bin` and `bundle/Contents/bin`, but uses build directories under

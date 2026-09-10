@@ -13,7 +13,7 @@ The original checkout, environment, untracked files and local edits remain avail
 - Use **MCP Claim This Max** or **MCP Instances** in Max for default native routing. Old slot/TCP macros and toolbar scripts have been retired from the installation.
 - Upstream structured results, atomic operations and progressive discovery are retained. The installed full profile exposes all custom tools directly; progressive discovery also indexes the extensions.
 - The Redshift `vfb:false` fix is preserved in the rendering tool and native source.
-- The Max 2025 and Max 2027 native bridges were rebuilt from source with their matching SDKs. Both contain the pipe-cancellation, executor-shutdown-gate and `vfb:false` fixes. The new 2027 binary has not been deployed or live-tested.
+- The Max 2025 and Max 2027 native bridges were rebuilt from source with their matching SDKs. Both contain the pipe-cancellation, executor-shutdown-gate and `vfb:false` fixes. The 2027 binary passed the same live acceptance set as 2025 (instance panel, UI automation, async jobs, MCP stdio catalog) in Max 2027 on 2026-09-10.
 - A repeat Max 2025 Release build matches the committed binary's size (2,135,552 bytes), imports and fix strings. Only two compiler-generated RTTI names differ among extracted strings; the committed binary was retained. The 2027 Release binary is 2,066,944 bytes. See [native build matrix and commands](../native/README.md).
 - `mcp_bridge_2023/2024/2026.gup` still predate the transport/executor and native `vfb:false` fixes; rebuild each against its matching SDK before shipping to those Max versions.
 - Compatible dependencies were refreshed in the isolated environment, including MCP 1.29.1. MCP remains pinned below 2 as required by the upstream API.

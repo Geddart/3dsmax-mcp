@@ -67,7 +67,7 @@ review round on PR #2.
   build carrying the transport/executor fixes above and the `vfb:false` render fix
   (4 593 664 -> 2 135 552 bytes). A repeat build has matching size, imports and fix strings;
   the committed binary was retained. The 2023/2024/2026 binaries still require rebuilding.
-- mcp_bridge_2027.gup rebuilt from source with the 2027 SDK; not yet live-tested
+- mcp_bridge_2027.gup rebuilt from source with the 2027 SDK; live-tested 2026-09-10 in Max 2027 (instance panel, UI automation, async jobs, MCP stdio catalog)
 - **`render_scene` native handler double-pass with Redshift** — `native/src/handlers/render_handlers.cpp` was issuing `render … vfb:true …`, which on a Redshift renderer caused two full render passes per call: one into the VFB display buffer, then a second to satisfy the `outputFile:` save. Doubled render cost per tool call and doubled the window in which `RSScene is locked` / Scene.cpp:402 crashes could fire. Changed to `vfb:false` to match the Python fallback in `src/tools/render.py` (which was already correct). Reproduced in 822 HeissluftBallon envelope work 2026-04-20. Rebuild `mcp_bridge.gup` from `native/` (see README "Building from source") to pick up the fix.
 
 #### PR #2 review round
