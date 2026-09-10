@@ -80,7 +80,10 @@ async def check(profile, pid=None):
             schema_bytes = len(catalog.model_dump_json().encode('utf-8'))
             if profile == 'full':
                 old = legacy_tool_names(OPTS.legacy_ref, OPTS.legacy_path)
-                assert old and not old - names, old - names
+                # Deliberate renames (legacy name -> current name); see CHANGELOG.
+                renamed = {'set_active_instance': 'select_max_instance'}
+                missing = {n for n in old - names if renamed.get(n) not in names}
+                assert old and not missing, missing
                 print('FULL', len(names), 'LEGACY_NAMES_RETAINED', len(old), flush=True)
                 if pid:
                     payload(await session.call_tool('select_max_instance', {'pid': pid}))

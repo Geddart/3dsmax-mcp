@@ -34,7 +34,7 @@ review round on PR #2.
   PID via `list_max_instances` / `select_max_instance(pid)` / `get_selected_max_instance` /
   `release_max_instance` (module `maxmcp/tools/routing.py`); the old
   slot/port macros, toolbar scripts and the instance-id string API are retired. Named pipes are the only transport.
-- All 188 previously advertised tool names are retained; removed upstream native operations fall
+- 187 of the 188 previously advertised tool names are retained (`set_active_instance` became `select_max_instance(pid)` in the review round); removed upstream native operations fall
   back to their preserved MAXScript paths.
 - `skills/3dsmax-mcp-dev/` split into `SKILL.md` (served to agents) plus `fork-reference.md`
   (long-tail plugin lessons).
