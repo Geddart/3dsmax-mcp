@@ -221,7 +221,10 @@ class MaxClientTests(unittest.TestCase):
             with (
                 patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
                 patch("maxmcp.max_client._process_alive", side_effect=lambda pid: pid == 111),
-                patch.object(MaxClient, "_probe_pipe_available", return_value=True),
+                # The dead instance's pipe is gone too; a still-answering pipe
+                # would (correctly) keep the record, see the regression test.
+                patch.object(MaxClient, "_probe_pipe_available",
+                             side_effect=lambda pipe=None: "pid-111" in str(pipe)),
             ):
                 client = MaxClient()
                 listed = client.list_max_instances()["instances"]
@@ -352,9 +355,35 @@ class MaxClientTests(unittest.TestCase):
                     client.select_max_instance(222)
                 self.assertIsNone(client._bound_target)
 
+    def test_record_with_answering_pipe_is_never_deleted(self) -> None:
+        """A listening bridge pipe outranks a negative process probe.
+
+        Regression: a wrong/mocked liveness answer must not wipe the registry.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            instances = Path(tmp) / "3dsmax-mcp" / "instances"
+            instances.mkdir(parents=True)
+            record = instances / "pid-777.json"
+            record.write_text(json.dumps({
+                "instance_id": "pid-777", "pid": 777,
+                "pipe": r"\\.\pipe\3dsmax-mcp-pid-777",
+            }), encoding="utf-8")
+            with (
+                patch.dict("os.environ", {"LOCALAPPDATA": tmp}, clear=False),
+                patch("maxmcp.max_client._process_alive", return_value=False),
+                patch.object(MaxClient, "_probe_pipe_available", return_value=True),
+            ):
+                live = MaxClient()._live_instances()
+            self.assertTrue(record.exists(), "record with a live pipe was deleted")
+            self.assertEqual([item["pid"] for item in live], [777])
+
     def test_select_rejects_dead_or_invalid_pids(self) -> None:
         client = MaxClient()
-        with patch("maxmcp.max_client._process_alive", return_value=False):
+        # Redirect the registry: with liveness mocked False, an unredirected
+        # _live_instances() would delete the REAL instance records on disk.
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"LOCALAPPDATA": tmp}, clear=False
+        ), patch("maxmcp.max_client._process_alive", return_value=False):
             with self.assertRaises(ConnectionError):
                 client.select_max_instance(4242)
         for bad in (0, -1, True, "111"):

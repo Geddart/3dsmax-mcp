@@ -245,7 +245,13 @@ class MaxClient:
                 # Not attributable to a process: leave it alone rather than
                 # deleting a record that may just be mid-write.
                 continue
+            pipe_answers = bool(data and data.get("pipe") and self._probe_pipe_available(data["pipe"]))
             if not _process_alive(pid):
+                if pipe_answers:
+                    # A listening pipe is proof of life whatever the process
+                    # probe says; a record with a live bridge is never deleted.
+                    live.append({**data, "pid": pid})
+                    continue
                 try:
                     path.unlink()
                 except OSError:
@@ -254,7 +260,7 @@ class MaxClient:
             if data is None:
                 continue
             data = {**data, "pid": pid}
-            if not self._probe_pipe_available(data["pipe"]):
+            if not pipe_answers:
                 # Process is alive but the bridge is not listening (yet); keep
                 # the file, it is not stale.
                 continue
