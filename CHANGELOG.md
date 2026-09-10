@@ -141,9 +141,14 @@ review round on PR #2.
 - **Docs overpromised routing metadata** — "reported on every response" is now "every response
   that reached Max"; `list_max_instances`, `max_job_*` and `max_ui_*` never call
   `send_command` and emit no transport block (the `max_ui_*` results carry their own `pid`).
-- **Known / follow-up:** `MaxClient.native_available` resolves the target twice per call
-  (`_resolve_pipe_name()` then the probe). Harmless but wasteful; caching it is deliberately not
-  done in this round.
+- **Every tool call resolved the routing target twice** — `MaxClient.native_available` ran a full
+  `_default_target()` (glob the instances dir, `OpenProcess` per record, `WaitNamedPipeW` per
+  record) and `send_command` immediately repeated it, across ~70 `if client.native_available:`
+  sites. The resolved target is now memoised on the client for `MaxClient._TARGET_CACHE_TTL`
+  (1.5 s, monotonic clock) and shared by both paths. Only successes are cached: `Ambiguous`/`No`/
+  `ProtectedMaxInstanceError` propagate untouched, so a Max that appears or a fence that lifts is
+  seen on the next call. The cache is dropped by `select_max_instance`, `release_max_instance` and
+  any `ConnectionError`/`TimeoutError` out of a send, so a vanished Max is re-resolved at once.
 
 <!-- native -->
 ### Fixed (native bridge)

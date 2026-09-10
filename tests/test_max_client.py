@@ -363,5 +363,118 @@ class MaxClientTests(unittest.TestCase):
         self.assertIsNone(client._bound_target)
 
 
+class TargetCacheTests(unittest.TestCase):
+    """The resolved default target is memoised for a short TTL."""
+
+    def _client(self, ttl=1.5):
+        client = MaxClient(timeout=1.0, transport="pipe")
+        client._TARGET_CACHE_TTL = ttl
+        return client
+
+    @contextmanager
+    def _counted_resolution(self, client, *, target=None, side_effect=None):
+        """Patch _default_target on the instance and expose the call counter."""
+        resolved = target or MaxClient._target('pipe-cached', 'single', 111)
+        mock = MagicMock(return_value=resolved, side_effect=side_effect)
+        with patch.dict("os.environ", {"MCP_MAX_PIPE": ""}, clear=False):
+            with patch.object(client, "_default_target", mock):
+                yield mock
+
+    def test_two_calls_within_the_ttl_resolve_once(self) -> None:
+        client = self._client()
+        with self._counted_resolution(client) as resolve:
+            with patch.object(MaxClient, "_probe_pipe_available", return_value=True):
+                self.assertTrue(client.native_available)
+                first = client._resolve_target()
+                self.assertTrue(client.native_available)
+                second = client._resolve_target()
+        self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(first, second)
+        self.assertEqual(first["target_pid"], 111)
+
+    def test_cached_target_is_a_copy_callers_cannot_poison(self) -> None:
+        client = self._client()
+        with self._counted_resolution(client):
+            first = client._resolve_target()
+            first["target_pid"] = 999
+            self.assertEqual(client._resolve_target()["target_pid"], 111)
+
+    def test_ttl_zero_disables_caching(self) -> None:
+        client = self._client(ttl=0)
+        with self._counted_resolution(client) as resolve:
+            client._resolve_target()
+            client._resolve_target()
+            client._resolve_target()
+        self.assertEqual(resolve.call_count, 3)
+        self.assertIsNone(client._target_cache)
+
+    def test_failures_are_never_cached(self) -> None:
+        client = self._client()
+        with self._counted_resolution(
+            client, side_effect=NoMaxInstanceError("nothing live")
+        ) as resolve:
+            for _ in range(3):
+                with self.assertRaises(NoMaxInstanceError):
+                    client._resolve_target()
+        self.assertEqual(resolve.call_count, 3)
+        self.assertIsNone(client._target_cache)
+
+    def test_ambiguous_and_protected_semantics_survive_the_cache(self) -> None:
+        client = self._client()
+        for error in (AmbiguousMaxInstanceError("two"), ProtectedMaxInstanceError("fenced")):
+            with self._counted_resolution(client, side_effect=error):
+                with self.assertRaises(type(error)):
+                    client._resolve_target()
+                self.assertFalse(client.native_available)
+
+    def test_select_and_release_invalidate_the_cache(self) -> None:
+        with _instance_dir(111) as tmp:
+            with (
+                patch.dict("os.environ", {"LOCALAPPDATA": tmp, "MCP_MAX_PIPE": ""}, clear=False),
+                patch("maxmcp.max_client._process_alive", return_value=True),
+                patch.object(MaxClient, "_probe_pipe_available", return_value=True),
+            ):
+                client = self._client()
+                client._resolve_target()
+                self.assertIsNotNone(client._target_cache)
+
+                client.select_max_instance(111)
+                self.assertIsNone(client._target_cache)
+
+                client.release_max_instance()
+                self.assertIsNone(client._target_cache)
+
+                client._resolve_target()
+                self.assertIsNotNone(client._target_cache)
+                client.release_max_instance()
+                self.assertIsNone(client._target_cache)
+
+    def test_send_failure_invalidates_the_cache(self) -> None:
+        client = self._client()
+        with self._counted_resolution(client) as resolve:
+            with patch.object(
+                MaxClient, "_send_via_pipe", side_effect=PipeNotConnectedError("gone")
+            ):
+                with self.assertRaises(PipeNotConnectedError):
+                    client.send_command("x")
+            self.assertIsNone(client._target_cache)
+            with patch.object(
+                MaxClient,
+                "_send_via_pipe",
+                return_value=b'{"success":true,"result":"ok","error":"","meta":{}}\n',
+            ):
+                client.send_command("x")
+        self.assertEqual(resolve.call_count, 2)
+
+    def test_a_non_connection_failure_keeps_the_cache(self) -> None:
+        client = self._client()
+        with self._counted_resolution(client) as resolve:
+            with patch.object(MaxClient, "_send_via_pipe", side_effect=ValueError("boom")):
+                with self.assertRaises(ValueError):
+                    client.send_command("x")
+            self.assertIsNotNone(client._target_cache)
+        self.assertEqual(resolve.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

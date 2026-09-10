@@ -128,6 +128,12 @@ class MaxBridgeError(Exception):
 class MaxClient:
     """Client that sends commands to a native 3ds Max named pipe."""
 
+    #: Seconds a resolved default target stays cached. Resolution globs the
+    #: instances directory and does an OpenProcess + WaitNamedPipeW per record,
+    #: and every tool call resolves at least twice (``native_available`` then
+    #: ``send_command``). Tests set this to 0 to disable caching entirely.
+    _TARGET_CACHE_TTL = 1.5
+
     def __init__(
         self,
         timeout: float = DEFAULT_TIMEOUT,
@@ -142,6 +148,7 @@ class MaxClient:
         self._pipe_handle: Optional[int] = None
         self._selected_pipe_name: Optional[str] = None
         self._bound_target: dict[str, Any] | None = None
+        self._target_cache: tuple[float, dict[str, Any]] | None = None
         self._pipe_lock = threading.Lock()
         self._local = threading.local()
 
@@ -311,6 +318,29 @@ class MaxClient:
             "list_max_instances to confirm it registered."
         )
 
+    def invalidate_target_cache(self) -> None:
+        """Drop the cached default target so the next call re-resolves."""
+        self._target_cache = None
+
+    def _cached_default_target(self) -> dict[str, Any]:
+        """``_default_target`` memoised for ``_TARGET_CACHE_TTL`` seconds.
+
+        Only successes are cached: an ``AmbiguousMaxInstanceError`` /
+        ``NoMaxInstanceError`` / ``ProtectedMaxInstanceError`` propagates and
+        leaves the cache untouched, so a Max that appears (or a fence that is
+        lifted) is picked up on the very next call rather than after the TTL.
+        """
+        ttl = self._TARGET_CACHE_TTL
+        if ttl <= 0:
+            self._target_cache = None
+            return self._default_target()
+        cached = self._target_cache
+        if cached is not None and (time.monotonic() - cached[0]) < ttl:
+            return dict(cached[1])
+        target = self._default_target()
+        self._target_cache = (time.monotonic(), dict(target))
+        return dict(target)
+
     def _resolve_target(self) -> dict[str, Any]:
         """Pick the target for this request; never falls back to a shared pipe."""
         if self._bound_target is not None:
@@ -321,7 +351,7 @@ class MaxClient:
         env_pipe = os.environ.get(MCP_PIPE_ENV)
         if env_pipe:
             return self._target(env_pipe, "explicit")
-        return self._default_target()
+        return self._cached_default_target()
 
     def _resolve_pipe_name(self) -> str:
         return self._resolve_target()["target_pipe"]
@@ -412,6 +442,7 @@ class MaxClient:
         with self._pipe_lock:
             self._close_pipe_handle()
             self._selected_pipe_name = None
+            self._target_cache = None
             self._bound_target = self._target(pipe, "selected", pid)
             return {**self._bound_target, "pinned": True, "available": True}
 
@@ -420,6 +451,7 @@ class MaxClient:
         with self._pipe_lock:
             self._close_pipe_handle()
             self._selected_pipe_name = None
+            self._target_cache = None
             self._bound_target = None
         return {"target_pid": None, "target_pipe": None, "target_source": None, "pinned": False}
 
@@ -532,6 +564,10 @@ class MaxClient:
             response_data = self._send_via_pipe(request, effective_timeout, pipe_name=pipe_name)
             response = self._parse_response(response_data, request_id, started_at)
         except Exception as exc:
+            if isinstance(exc, (ConnectionError, TimeoutError)):
+                # The Max we routed to may be gone; re-resolve on the next call
+                # instead of serving a stale target for the rest of the TTL.
+                self._target_cache = None
             self._local.last_error = {
                 "transport": transport_used,
                 "requested_transport": self.transport,
