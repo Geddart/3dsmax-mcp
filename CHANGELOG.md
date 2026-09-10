@@ -10,10 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Integration of upstream **1.5.5** (`32af329`) on top of fork `72b454f` (0.5.3.1+fork), plus the
 review round on PR #2.
 
-> **Native binaries in this round:** only `native/bin/mcp_bridge_2025.gup` was rebuilt (Max 2025 is
-> the only SDK installed on the build machine). `mcp_bridge_2023/2024/2026/2027.gup` are unchanged
-> and predate both the `vfb:false` render fix and the overlapped-I/O transport — rebuild each
-> against its matching SDK before shipping to those Max versions.
+> **Native binaries in this round:** Max 2025 and Max 2027 now carry the source fixes.
+> The 2027 binary was rebuilt with its matching SDK and has not yet been live-tested.
+> `mcp_bridge_2023/2024/2026.gup` are unchanged and predate both the `vfb:false` render
+> fix and the overlapped-I/O transport; rebuild each against its matching SDK before shipping.
 
 ### Added
 - **Progressive tool discovery** — the `progressive` profile advertises only `list_toolsets`,
@@ -63,12 +63,11 @@ review round on PR #2.
 - **Native shutdown fixes** — overlapped I/O with proper `OVERLAPPED` pointers, idle client I/O
   observing shutdown, connect cancellation completing before its event is freed, and expired
   queued main-thread work being skipped rather than executed against a dead caller stack.
-- **Native binary rebuilt for Max 2025 only** — `native/bin/mcp_bridge_2025.gup` is a true Release
+- **Native binary rebuilt for Max 2025** — `native/bin/mcp_bridge_2025.gup` is a true Release
   build carrying the transport/executor fixes above and the `vfb:false` render fix
-  (4 593 664 -> 2 135 552 bytes). `mcp_bridge_2023.gup`, `mcp_bridge_2024.gup`,
-  `mcp_bridge_2026.gup` and `mcp_bridge_2027.gup` were **not** rebuilt (no matching SDK on the
-  build machine): they still contain `vfb:true` and lack `GetOverlappedResult`, so anyone on those
-  Max versions runs a stale bridge until it is rebuilt against its own SDK.
+  (4 593 664 -> 2 135 552 bytes). A repeat build has matching size, imports and fix strings;
+  the committed binary was retained. The 2023/2024/2026 binaries still require rebuilding.
+- mcp_bridge_2027.gup rebuilt from source with the 2027 SDK; not yet live-tested
 - **`render_scene` native handler double-pass with Redshift** — `native/src/handlers/render_handlers.cpp` was issuing `render … vfb:true …`, which on a Redshift renderer caused two full render passes per call: one into the VFB display buffer, then a second to satisfy the `outputFile:` save. Doubled render cost per tool call and doubled the window in which `RSScene is locked` / Scene.cpp:402 crashes could fire. Changed to `vfb:false` to match the Python fallback in `src/tools/render.py` (which was already correct). Reproduced in 822 HeissluftBallon envelope work 2026-04-20. Rebuild `mcp_bridge.gup` from `native/` (see README "Building from source") to pick up the fix.
 
 #### PR #2 review round
