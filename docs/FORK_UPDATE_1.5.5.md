@@ -13,17 +13,18 @@ The original checkout, environment, untracked files and local edits remain avail
 - Use **MCP Claim This Max** or **MCP Instances** in Max for default native routing. Old slot/TCP macros and toolbar scripts have been retired from the installation.
 - Upstream structured results, atomic operations and progressive discovery are retained. The installed full profile exposes all custom tools directly; progressive discovery also indexes the extensions.
 - The Redshift `vfb:false` fix is preserved in the rendering tool and native source.
-- The Max 2025 native bridge was rebuilt with the installed SDK. Other Max-year binaries are the upstream builds; the Python render path keeps the fix across versions.
-- The transport/executor fixes from the PR #2 review round are present only in `native/bin/mcp_bridge_2025.gup`, the single binary rebuilt in that round (Max 2025 is the only SDK on the build machine). `mcp_bridge_2023/2024/2026/2027.gup` still predate them and the `vfb:false` render fix; rebuild each against its matching SDK before shipping to those Max versions.
+- The Max 2025 and Max 2027 native bridges were rebuilt from source with their matching SDKs. Both contain the pipe-cancellation, executor-shutdown-gate and `vfb:false` fixes. The new 2027 binary has not been deployed or live-tested.
+- A repeat Max 2025 Release build matches the committed binary's size (2,135,552 bytes), imports and fix strings. Only two compiler-generated RTTI names differ among extracted strings; the committed binary was retained. The 2027 Release binary is 2,066,944 bytes. See [native build matrix and commands](../native/README.md).
+- `mcp_bridge_2023/2024/2026.gup` still predate the transport/executor and native `vfb:false` fixes; rebuild each against its matching SDK before shipping to those Max versions.
 - Compatible dependencies were refreshed in the isolated environment, including MCP 1.29.1. MCP remains pinned below 2 as required by the upstream API.
 - Upstream skill guidance and the fork reference are bundled for both Claude and Codex.
 
 ## Verification
 
-465 Python tests pass (430 upstream, 30 preserved fork tests and 5 new compatibility checks).
+551 Python tests pass in the native rebuild worktree with `uv run --frozen --no-sync python -m unittest discover -s tests`.
 Progressive discovery of fork extension schemas also passed a real stdio MCP handshake.
 The full tool catalog contains every prior tool name. Import dependencies in the restored workflows resolve.
-The native Max 2025 build succeeds. No render or scene edit is part of deployment verification.
+The native Max 2025 and Max 2027 Release builds succeed with MSVC 19.43 and no reported compiler/linker warnings. Native transport regression tests pass. No render or scene edit was performed for this rebuild.
 Live scene behavior still requires a running Max instance and cannot be established by mocked tests alone.
 
 ## Deployment and rollback
