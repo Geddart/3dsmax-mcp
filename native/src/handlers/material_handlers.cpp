@@ -321,7 +321,7 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
 
         const json material = {
             {"name", WideToUtf8(mtl->GetName().data())},
-            {"class", WideToUtf8(mtl->ClassName().data())},
+            {"class", SanitizeScriptName(WideToUtf8(mtl->ClassName().data()))},
             {"requestedClass", matClass},
             {"handle", mtlHandle},
         };
@@ -331,13 +331,13 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
             details["assigned"] = assigned;
             details["keys"] = failedKeys;
             details["applied"] = applied;
-            ThrowPartialApply("assign_material: created " + WideToUtf8(mtl->ClassName().data()) + " \"" +
+            ThrowPartialApply("assign_material: created " + SanitizeScriptName(WideToUtf8(mtl->ClassName().data())) + " \"" +
                               WideToUtf8(mtl->GetName().data()) + "\" but " + std::to_string(failedKeys.size()) +
                               " parameter(s) did not apply: " + failedKeys.dump(), details);
         }
 
         json result;
-        result["message"] = "Created " + WideToUtf8(mtl->ClassName().data()) + " \"" +
+        result["message"] = "Created " + SanitizeScriptName(WideToUtf8(mtl->ClassName().data())) + " \"" +
                             WideToUtf8(mtl->GetName().data()) + "\" and assigned to " +
                             std::to_string(assignCount) + " object(s)";
         result["material"] = material;
@@ -380,7 +380,7 @@ std::string NativeHandlers::SetMaterialProperty(const std::string& params, MCPBr
             static_cast<unsigned long long>(Animatable::GetHandleByAnim(mtl));
         const json material = {
             {"name", WideToUtf8(mtl->GetName().data())},
-            {"class", WideToUtf8(mtl->ClassName().data())},
+            {"class", SanitizeScriptName(WideToUtf8(mtl->ClassName().data()))},
             {"sub_material_index", subMatIndex},
             {"handle", mtlHandle},
         };
@@ -468,7 +468,7 @@ std::string NativeHandlers::SetMaterialProperties(const std::string& params, MCP
 
         const json material = {
             {"name", WideToUtf8(mtl->GetName().data())},
-            {"class", WideToUtf8(mtl->ClassName().data())},
+            {"class", SanitizeScriptName(WideToUtf8(mtl->ClassName().data()))},
             {"sub_material_index", subMatIndex},
             {"handle", mtlHandle},
         };
