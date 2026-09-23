@@ -713,7 +713,7 @@ static json InspectMaterialGraph(Mtl* root, const std::string& requestedName,
     ctx.includeValues = includeValues;
     ctx.verifyFiles = verifyFiles;
     ctx.scope = scope.empty() ? "wired" : Lower(scope);
-    ctx.maxDepth = std::min(6, std::max(0, depth));
+    ctx.maxDepth = std::min(16, std::max(0, depth));
     ctx.maxNodes = std::max(1, maxNodes);
 
     std::set<MtlBase*> stack;
@@ -1156,7 +1156,7 @@ std::string NativeHandlers::InspectMaterialNetwork(const std::string& params, MC
 
         std::string name = p.value("name", "");
         int subIdx = p.value("sub_material_index", 0);
-        int depth = p.value("depth", 3);
+        int depth = p.value("depth", 6);
         std::string scope = p.value("scope", "wired");
         bool includeValues = p.value("include_values", true);
         bool verifyFiles = p.value("verify_files", true);
