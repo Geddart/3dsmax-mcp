@@ -11,7 +11,7 @@ Integration of upstream **1.5.5** (`32af329`) on top of fork `72b454f` (0.5.3.1+
 review round on PR #2.
 
 > **Native binaries in this round:** Max 2025 and Max 2027 now carry the source fixes.
-> Both were rebuilt again on 2026-10-12 for the locale fix below and live-tested in Max 2025.
+> Both were rebuilt again on 2026-10-12 for the locale fix below; `scripts/verify_numeric_values.py` passed in Max 2025 (16/16) and Max 2027 (15/15, V-Ray not installed there).
 > `mcp_bridge_2023/2024/2026.gup` are unchanged and predate both the `vfb:false` render
 > fix and the overlapped-I/O transport; rebuild each against its matching SDK before shipping.
 
