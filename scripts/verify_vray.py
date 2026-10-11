@@ -9,7 +9,9 @@ Nothing is rendered. --quit closes the scratch Max afterwards (after asserting
 the scene is still Untitled).
 """
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -83,6 +85,15 @@ try:
     expect_error("int setting rejects 2.5", V.vray_set_settings, {"progressive_maxSamples": 2.5},
                  contains="expected an integer")
     check("rejected write left value", ms("renderers.current.progressive_maxSamples as string"), "50")
+    allowed = os.path.join(tempfile.gettempdir(), "3dsmax-mcp", "verify_vray.vrimg")
+    V.vray_set_settings({"output_rawFileName": allowed})
+    check("allowed output path stored", ms("renderers.current.output_rawFileName"), allowed)
+    expect_error("output path outside allowed dirs", V.vray_set_settings,
+                 {"output_rawFileName": os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "x.vrimg")},
+                 contains="Refusing to write")
+    check("refused path left value", ms("renderers.current.output_rawFileName"), allowed)
+    V.vray_set_settings({"output_rawFileName": ""})
+    check("output path cleared", ms("renderers.current.output_rawFileName"), "")
 
     # 3. render elements: LightSelect with one light + Cryptomatte
     light_cls = "VRayLight" if ms("(VRayLight != undefined) as string") == "true" else "Omnilight"
