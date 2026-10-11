@@ -69,6 +69,33 @@ def _finalize_create_result(
 _PLAIN_CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
+def _bridge_error_code(exc: MaxBridgeError) -> str:
+    """The structured ``code`` of a native error payload, or "" when unstructured."""
+    message = getattr(exc, "bridge_message", "")
+    try:
+        payload = _json.loads(message) if isinstance(message, str) else None
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("code"), str):
+        return payload["code"]
+    return ""
+
+
+def _is_unresolved_class_error(exc: MaxBridgeError) -> bool:
+    """True only when native create_object failed before creating anything."""
+    code = _bridge_error_code(exc)
+    if code and code != "PLUGIN_MISSING":
+        return False  # PARTIAL_APPLY and every other structured failure: never replay
+    message = getattr(exc, "bridge_message", "") or str(exc)
+    try:
+        payload = _json.loads(message)
+        if isinstance(payload, dict):
+            message = str(payload.get("message", message))
+    except (TypeError, ValueError):
+        pass
+    return str(message).startswith("Unknown object class")
+
+
 @mcp.tool()
 def get_object_properties(name: str = "", handle: int = 0) -> str:
     """Get compact properties of a named object (transform, class, material name).
@@ -347,7 +374,9 @@ def create_object(
             # MAXScript knows script class names the SDK ClassDesc lookup does not
             # (Freecamera, Targetcamera, ...). Any other failure may already have
             # committed, so replaying the constructor could duplicate the object.
-            if "Unknown object class" not in str(exc) or not _PLAIN_CLASS_NAME.fullmatch(type):
+            # PARTIAL_APPLY means the node WAS created (its handle is in the
+            # error details); retrying here would create a duplicate.
+            if not _is_unresolved_class_error(exc) or not _PLAIN_CLASS_NAME.fullmatch(type):
                 raise
 
     # ── MAXScript constructor (script class names, no native bridge) ──

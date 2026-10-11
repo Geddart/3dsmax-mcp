@@ -5,6 +5,8 @@
 
 #include <modstack.h>
 #include <iparamb2.h>
+#include <algorithm>
+#include <vector>
 
 using json = nlohmann::json;
 using namespace HandlerHelpers;
@@ -100,6 +102,8 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
         // (PB1 modifiers such as Extrude, unit/expression values) are applied
         // through MAXScript once the modifier is on the stack.
         std::vector<std::pair<std::string, std::string>> pendingParams;
+        json failedKeys = json::array();
+        json applied = json::object();
         if (!modParams.empty()) {
             // Reuse ParseParamString pattern from object_handlers
             // Simple key:value parsing
@@ -113,11 +117,12 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
                 std::string key = modParams.substr(keyStart, i - keyStart);
                 i++; // skip ':'
                 size_t valStart = i;
-                if (i < modParams.size() && modParams[i] == '[') {
+                if (i < modParams.size() && (modParams[i] == '[' || modParams[i] == '(')) {
+                    const char open = modParams[i], close = (open == '[') ? ']' : ')';
                     int depth = 1; i++;
                     while (i < modParams.size() && depth > 0) {
-                        if (modParams[i] == '[') depth++;
-                        else if (modParams[i] == ']') depth--;
+                        if (modParams[i] == open) depth++;
+                        else if (modParams[i] == close) depth--;
                         i++;
                     }
                 } else if (i < modParams.size() && modParams[i] == '"') {
@@ -131,7 +136,14 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
                     while (i < modParams.size() && modParams[i] != ' ') i++;
                 }
                 std::string val = modParams.substr(valStart, i - valStart);
-                if (!SetParamByName(mod, key, val, t)) pendingParams.emplace_back(key, val);
+                const SetOutcome outcome = SetParamByName(mod, key, val, t);
+                if (outcome.ok()) {
+                    applied[key] = outcome.applied;
+                } else if (outcome.status == SetStatus::Mismatch) {
+                    failedKeys.push_back(PartialKey(key, val, outcome.applied, outcome.hasApplied, outcome.reason));
+                } else {
+                    pendingParams.emplace_back(key, val);
+                }
             }
         }
 
@@ -143,9 +155,8 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
             dobj->AddModifier(mod);
         }
 
-        json failedParams = json::array();
-        if (!pendingParams.empty()) {
-            int stackIdx = -1;
+        int stackIdx = -1;
+        {
             Object* ref = node->GetObjectRef();
             if (ref && ref->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
                 IDerivedObject* d = (IDerivedObject*)ref;
@@ -153,26 +164,45 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
                     if (d->GetModifier(m) == mod) { stackIdx = m; break; }
                 }
             }
+        }
+        if (!pendingParams.empty()) {
             // SDK index 0 is the top of the stack == MAXScript modifiers[1].
             const std::string target = "(getAnimByHandle " + std::to_string(NodeHandle(node)) +
                                        ").modifiers[" + std::to_string(stackIdx + 1) + "]";
             for (auto& [key, val] : pendingParams) {
-                if (stackIdx < 0 || !TrySetViaMaxScript(target, key, val)) failedParams.push_back(key);
+                const SetOutcome outcome = (stackIdx < 0)
+                    ? NotHandled("modifier is not on the stack")
+                    : TrySetViaMaxScript(target, key, val);
+                if (outcome.ok()) {
+                    applied[key] = outcome.applied;
+                } else {
+                    failedKeys.push_back(PartialKey(key, val, outcome.applied, outcome.hasApplied, outcome.reason));
+                }
             }
             mod->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
         }
 
         ip->RedrawViews(t);
-        json result = NodeIdentityJson(node);
-        result["message"] = "Added " + WideToUtf8(mod->ClassName().data()) + " to " + WideToUtf8(node->GetName());
-        if (!failedParams.empty()) {
-            result["failedParams"] = failedParams;
-            result["warnings"] = json::array({"Parameters not applied: " + failedParams.dump()});
-        }
-        result["addedModifier"] = {
+        const json addedModifier = {
             {"name", WideToUtf8(mod->GetName(false).data())},
             {"class", WideToUtf8(mod->ClassName().data())},
+            {"index", stackIdx + 1},
         };
+        if (!failedKeys.empty()) {
+            // The modifier stays on the stack (PARTIAL_APPLY is committed):
+            // fix the listed keys on it, never add it again.
+            json details = NodeIdentityJson(node);
+            details["addedModifier"] = addedModifier;
+            details["keys"] = failedKeys;
+            details["applied"] = applied;
+            ThrowPartialApply("add_modifier: added " + WideToUtf8(mod->ClassName().data()) + " to " +
+                              WideToUtf8(node->GetName()) + " but " + std::to_string(failedKeys.size()) +
+                              " parameter(s) did not apply: " + failedKeys.dump(), details);
+        }
+        json result = NodeIdentityJson(node);
+        result["message"] = "Added " + WideToUtf8(mod->ClassName().data()) + " to " + WideToUtf8(node->GetName());
+        result["addedModifier"] = addedModifier;
+        result["applied"] = applied;
         result["stack"] = ModifierStackJson(node);
         return result.dump();
     });
@@ -500,6 +530,8 @@ std::string NativeHandlers::SetModifierProperty(const std::string& params, MCPBr
 
         std::wstring wModClass = modClassName.empty() ? L"" : Utf8ToWide(modClassName);
         json hits = json::array();
+        json failedTargets = json::array();
+        std::vector<unsigned long long> failedHandles;
         int modCount = 0;
 
         ip->DisableSceneRedraw();
@@ -514,21 +546,30 @@ std::string NativeHandlers::SetModifierProperty(const std::string& params, MCPBr
             auto tryModifier = [&](Modifier* mod, int idx) {
                 if (!mod) return;
                 if (!modClassName.empty() && !ModifierMatchesClass(mod, wModClass)) return;
-                if (!SetParamByName(mod, propName, propValue, t)) {
-                    const std::string target = "(getAnimByHandle " + std::to_string(NodeHandle(node)) +
-                                               ").modifiers[" + std::to_string(idx + 1) + "]";
-                    if (!TrySetViaMaxScript(target, propName, propValue)) return;
-                }
-
-                mod->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
-                modCount++;
-                hits.push_back({
+                const std::string target = "(getAnimByHandle " + std::to_string(NodeHandle(node)) +
+                                           ").modifiers[" + std::to_string(idx + 1) + "]";
+                const SetOutcome outcome = SetParamWithFallback(mod, target, propName, propValue, t);
+                if (outcome.hasApplied) mod->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
+                json entry = {
                     {"object", nodeName},
                     {"handle", NodeHandle(node)},
                     {"modifier", WideToUtf8(mod->GetName(false).data())},
                     {"index", idx + 1},
                     {"class", WideToUtf8(mod->ClassName().data())},
-                });
+                };
+                if (!outcome.ok()) {
+                    // A matched target that did not take the value: never skip it silently.
+                    json key = PartialKey(propName, propValue, outcome.applied, outcome.hasApplied, outcome.reason);
+                    key.update(entry);
+                    failedTargets.push_back(key);
+                    if (std::find(failedHandles.begin(), failedHandles.end(), NodeHandle(node)) == failedHandles.end()) {
+                        failedHandles.push_back(NodeHandle(node));
+                    }
+                    return;
+                }
+                modCount++;
+                entry["applied"] = outcome.applied;
+                hits.push_back(entry);
             };
 
             if (modIndex > 0) {
@@ -550,6 +591,17 @@ std::string NativeHandlers::SetModifierProperty(const std::string& params, MCPBr
 
         ip->EnableSceneRedraw();
         ip->RedrawViews(t);
+
+        if (!failedTargets.empty()) {
+            json details;
+            details["handles"] = failedHandles;
+            details["keys"] = failedTargets;
+            details["modified"] = hits;
+            ThrowPartialApply("set_modifier_property: " + propName + " did not apply on " +
+                              std::to_string(failedTargets.size()) + " of " +
+                              std::to_string(failedTargets.size() + hits.size()) + " matched modifier(s)",
+                              details);
+        }
 
         if (modCount == 0) {
             throw std::runtime_error(

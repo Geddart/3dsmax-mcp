@@ -690,7 +690,17 @@ std::string CommandDispatcher::Dispatch(
         if (transact) {
             result = gup->GetExecutor().ExecuteSync([&]() -> std::string {
                 NativeUndoTransaction tx(cmd_type);
-                std::string inner = invoke();
+                std::string inner;
+                try {
+                    inner = invoke();
+                } catch (const std::exception& e) {
+                    // PARTIAL_APPLY reports an object/modifier/material that WAS
+                    // created plus the keys that did not stick. Cancelling would
+                    // undo the creation and leave the reported handle dangling,
+                    // so commit what was applied; every other error rolls back.
+                    if (HandlerHelpers::IsPartialApplyError(e.what())) tx.Accept();
+                    throw;
+                }
                 if (ResultLooksLikeError(inner)) {
                     tx.Cancel();
                 } else {

@@ -1,0 +1,220 @@
+{
+ "checked": 1,
+ "failed": [],
+ "graphVersion": 2,
+ "graphs": [
+  {
+   "complete": true,
+   "edges": [
+    {
+     "aliases": [
+      "Base Color Map"
+     ],
+     "inputType": 2,
+     "kind": "map",
+     "nodeId": "n1",
+     "parentId": "n0",
+     "role": "base_color",
+     "slot": "base_color_map",
+     "slotKey": "map:1"
+    },
+    {
+     "aliases": [
+      "Map"
+     ],
+     "inputType": 2,
+     "kind": "map",
+     "nodeId": "n3",
+     "parentId": "n2",
+     "role": "map",
+     "slot": "map",
+     "slotKey": "map:0"
+    },
+    {
+     "aliases": [
+      "Roughness Map"
+     ],
+     "inputType": 2,
+     "kind": "map",
+     "nodeId": "n2",
+     "parentId": "n0",
+     "role": "roughness",
+     "slot": "roughness_map",
+     "slotKey": "map:4"
+    },
+    {
+     "aliases": [
+      "Bump Map"
+     ],
+     "inputType": 2,
+     "kind": "map",
+     "nodeId": "n4",
+     "parentId": "n0",
+     "role": "normal",
+     "slot": "bump_map",
+     "slotKey": "map:30"
+    }
+   ],
+   "fileManifest": [
+    {
+     "bytes": 0,
+     "exists": false,
+     "nodeClass": "Bitmap",
+     "nodeId": "n1",
+     "param": "fileName",
+     "path": "C:\\tex\\Wood_basecolor.png"
+    },
+    {
+     "bytes": 0,
+     "exists": false,
+     "nodeClass": "Bitmap",
+     "nodeId": "n3",
+     "param": "fileName",
+     "path": "C:\\tex\\Wood_normal.png"
+    },
+    {
+     "bytes": 0,
+     "exists": false,
+     "nodeClass": "Bitmap",
+     "nodeId": "n4",
+     "param": "fileName",
+     "path": "C:\\tex\\Missing_bump.png"
+    }
+   ],
+   "graphVersion": 2,
+   "hints": {
+    "replicateReady": false,
+    "textureFolderGuess": "C:\\tex",
+    "uniqueFileCount": 3,
+    "uniqueTextureFileCount": 3
+   },
+   "issues": [
+    {
+     "code": "FILE_MISSING",
+     "message": "Texture file is missing: C:\\tex\\Wood_basecolor.png",
+     "nodeId": "n1"
+    },
+    {
+     "code": "FILE_MISSING",
+     "message": "Texture file is missing: C:\\tex\\Wood_normal.png",
+     "nodeId": "n3"
+    },
+    {
+     "code": "FILE_MISSING",
+     "message": "Texture file is missing: C:\\tex\\Missing_bump.png",
+     "nodeId": "n4"
+    }
+   ],
+   "nodes": [
+    {
+     "class": "Phys. Material",
+     "handle": "31960",
+     "id": "n0",
+     "kind": "material",
+     "name": "RolesMat"
+    },
+    {
+     "class": "Bitmap",
+     "edge": "base_color_map",
+     "files": [
+      {
+       "bytes": 0,
+       "exists": false,
+       "param": "fileName",
+       "path": "C:\\tex\\Wood_basecolor.png"
+      }
+     ],
+     "handle": "31966",
+     "id": "n1",
+     "kind": "texture",
+     "name": "Bitmaptexture",
+     "parentId": "n0"
+    },
+    {
+     "class": "Color Correction",
+     "edge": "roughness_map",
+     "handle": "31988",
+     "id": "n2",
+     "kind": "texture",
+     "name": "Color_Correction",
+     "parentId": "n0"
+    },
+    {
+     "class": "Bitmap",
+     "edge": "map",
+     "files": [
+      {
+       "bytes": 0,
+       "exists": false,
+       "param": "fileName",
+       "path": "C:\\tex\\Wood_normal.png"
+      }
+     ],
+     "handle": "31977",
+     "id": "n3",
+     "kind": "texture",
+     "name": "Bitmaptexture",
+     "parentId": "n2"
+    },
+    {
+     "class": "Bitmap",
+     "edge": "bump_map",
+     "files": [
+      {
+       "bytes": 0,
+       "exists": false,
+       "param": "fileName",
+       "path": "C:\\tex\\Missing_bump.png"
+      }
+     ],
+     "handle": "31992",
+     "id": "n4",
+     "kind": "texture",
+     "name": "Bitmaptexture",
+     "parentId": "n0"
+    }
+   ],
+   "ok": true,
+   "owner": "",
+   "query": "RolesMat",
+   "resolvedVia": "unique_name",
+   "root": {
+    "class": "Phys. Material",
+    "handle": "31960",
+    "id": "n0",
+    "name": "RolesMat",
+    "rendererProfile": "generic",
+    "subMaterialIndex": 0
+   },
+   "truncated": {
+    "depthLimited": [],
+    "edgesOmitted": 0,
+    "nodesOmitted": 0
+   },
+   "warnings": [],
+   "wiredSlots": [
+    {
+     "inputType": 2,
+     "nodeId": "n1",
+     "role": "base_color",
+     "slot": "base_color_map"
+    },
+    {
+     "inputType": 2,
+     "nodeId": "n2",
+     "role": "roughness",
+     "slot": "roughness_map"
+    },
+    {
+     "inputType": 2,
+     "nodeId": "n4",
+     "role": "normal",
+     "slot": "bump_map"
+    }
+   ]
+  }
+ ],
+ "next_offset": null,
+ "offset": 0,
+ "total": 1
+}

@@ -39,6 +39,10 @@ class ErrorCode(str, Enum):
     HIERARCHY_CYCLE = "HIERARCHY_CYCLE"
     DUPLICATE_NAME = "DUPLICATE_NAME"
     PATCH_APPLY_FAILED = "PATCH_APPLY_FAILED"
+    # A write created/changed something but at least one requested key did not
+    # read back as requested. Never retryable: the created object already exists
+    # (error.details carries its handle and the per-key requested/applied values).
+    PARTIAL_APPLY = "PARTIAL_APPLY"
 
 
 class ToolEnvelope(BaseModel):

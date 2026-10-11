@@ -10,9 +10,9 @@ errors when `.tlog` paths exceed MAX_PATH.
 | --- | --- | --- |
 | 2023 | C++17 | Older binary; rebuild with matching SDK before shipping |
 | 2024 | C++17 | Older binary; rebuild with matching SDK before shipping |
-| 2025 | C++17 | Contains transport/executor and `vfb:false` fixes; rebuild verified against committed binary |
+| 2025 | C++17 | Rebuilt 2026-10-12 with write read-back (degrees/percent units, PARTIAL_APPLY); live acceptance `scripts/verify_numeric_values.py` passed in Max 2025 |
 | 2026 | C++17 | Older binary; rebuild with matching SDK before shipping |
-| 2027 | C++20 | Contains transport/executor and `vfb:false` fixes; live acceptance passed in Max 2027 (2026-09-10) |
+| 2027 | C++20 | Rebuilt 2026-10-12 from the same source as 2025 (read-back/PARTIAL_APPLY); native unit tests pass, not yet live-tested in Max 2027 |
 
 The 2023/2024/2026 binaries predate the transport/executor and `vfb:false` fixes.
 `MAX_SDK_VERSION` is defined by CMake as the target year (for example, 2027),
@@ -33,7 +33,12 @@ cmake --build C:\mcpwt\bld25 --config Release
 cmake -S native/tests -B C:\mcpwt\bldtests -G "Visual Studio 17 2022" -A x64
 cmake --build C:\mcpwt\bldtests --config Release
 & C:\mcpwt\bldtests\Release\transport_tests.exe
+& C:\mcpwt\bldtests\Release\number_text_tests.exe
+& C:\mcpwt\bldtests\Release\param_units_tests.exe
 ```
+
+Build serially (no `/m`) when other builds run on the machine: parallel
+MSBuild failed here with `cl : error D8040` (child process).
 
 The 2027 SDK was found at its default path,
 `C:\Program Files\Autodesk\3ds Max 2027 SDK\maxsdk`.

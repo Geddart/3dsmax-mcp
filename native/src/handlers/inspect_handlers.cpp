@@ -27,7 +27,7 @@ static std::string ReadPB2Value(IParamBlock2* pb, ParamID pid, ParamType2 ptype,
         case TYPE_COLOR_CHANNEL: {
             float f = 0;
             pb->GetValue(pid, t, f, FOREVER);
-            return mcp_bridge::number_text::FormatFloat(f);
+            return FormatPB2Float(ptype, f);  // degrees / 0-100 for angle / percent
         }
         case TYPE_INT:
         case TYPE_BOOL:
@@ -133,6 +133,8 @@ static json EnumPB2Properties(Animatable* anim, TimeValue t) {
                 std::string val = ReadPB2Value(pb, pid, pd.type, t);
                 prop["value"] = val;
                 prop["runtimeType"] = PB2TypeName(pd.type);
+                const std::string unit = PB2UnitLabel(pd.type);
+                if (!unit.empty()) prop["unit"] = unit;  // value is in MAXScript units
             }
 
             props.push_back(prop);
@@ -172,7 +174,7 @@ std::string NativeHandlers::InspectObject(const std::string& params, MCPBridgeGU
 
         // Class info
         ObjectState os = node->EvalWorldState(t);
-        result["class"] = os.obj ? WideToUtf8(os.obj->ClassName().data()) : "Unknown";
+        result["class"] = os.obj ? SanitizeScriptName(WideToUtf8(os.obj->ClassName().data())) : "Unknown";
         result["superclass"] = os.obj ? SuperClassName(os.obj->SuperClassID()) : "Unknown";
 
         // Base object class (under modifiers)
@@ -180,7 +182,7 @@ std::string NativeHandlers::InspectObject(const std::string& params, MCPBridgeGU
         while (baseObj && baseObj->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
             baseObj = ((IDerivedObject*)baseObj)->GetObjRef();
         }
-        result["baseObject"] = baseObj ? WideToUtf8(baseObj->ClassName().data()) : "Unknown";
+        result["baseObject"] = baseObj ? SanitizeScriptName(WideToUtf8(baseObj->ClassName().data())) : "Unknown";
 
         // Transform
         Matrix3 tm = node->GetNodeTM(t);
@@ -279,7 +281,7 @@ std::string NativeHandlers::InspectObject(const std::string& params, MCPBridgeGU
                 if (!mod) continue;
                 json modJ;
                 modJ["name"] = WideToUtf8(mod->GetName(false).data());
-                modJ["class"] = WideToUtf8(mod->ClassName().data());
+                modJ["class"] = SanitizeScriptName(WideToUtf8(mod->ClassName().data()));
                 modJ["enabled"] = mod->IsEnabled() ? true : false;
                 modJ["enabledInViews"] = mod->IsEnabledInViews() ? true : false;
                 modJ["enabledInRenders"] = mod->IsEnabledInRender() ? true : false;
@@ -293,7 +295,7 @@ std::string NativeHandlers::InspectObject(const std::string& params, MCPBridgeGU
         if (mtl) {
             json matJ;
             matJ["name"] = WideToUtf8(mtl->GetName().data());
-            matJ["class"] = WideToUtf8(mtl->ClassName().data());
+            matJ["class"] = SanitizeScriptName(WideToUtf8(mtl->ClassName().data()));
             result["material"] = matJ;
         }
         else {
@@ -332,7 +334,7 @@ std::string NativeHandlers::InspectProperties(const std::string& params, MCPBrid
                 baseObj = ((IDerivedObject*)baseObj)->GetObjRef();
             }
             tgt = baseObj;
-            className = baseObj ? WideToUtf8(baseObj->ClassName().data()) : "Unknown";
+            className = baseObj ? SanitizeScriptName(WideToUtf8(baseObj->ClassName().data())) : "Unknown";
         }
         else if (target == "modifier") {
             if (modIndex <= 0) throw std::runtime_error("modifier_index (1-based) is required for target=modifier");
@@ -347,13 +349,13 @@ std::string NativeHandlers::InspectProperties(const std::string& params, MCPBrid
             }
             Modifier* mod = dobj->GetModifier(idx);
             tgt = mod;
-            className = mod ? WideToUtf8(mod->ClassName().data()) : "Unknown";
+            className = mod ? SanitizeScriptName(WideToUtf8(mod->ClassName().data())) : "Unknown";
         }
         else if (target == "material") {
             Mtl* mtl = node->GetMtl();
             if (!mtl) throw std::runtime_error("No material on " + name);
             tgt = mtl;
-            className = WideToUtf8(mtl->ClassName().data());
+            className = SanitizeScriptName(WideToUtf8(mtl->ClassName().data()));
         }
         else {
             // "object" — enumerate node-level properties via base object PB2
@@ -365,7 +367,7 @@ std::string NativeHandlers::InspectProperties(const std::string& params, MCPBrid
             tgt = baseObj;
 
             ObjectState os = node->EvalWorldState(t);
-            className = os.obj ? WideToUtf8(os.obj->ClassName().data()) : "Unknown";
+            className = os.obj ? SanitizeScriptName(WideToUtf8(os.obj->ClassName().data())) : "Unknown";
         }
 
         result["class"] = className;
@@ -407,7 +409,7 @@ std::string NativeHandlers::GetMaterials(const std::string& params, MCPBridgeGUP
 
             json matJ;
             matJ["name"] = WideToUtf8(mtl->GetName().data());
-            matJ["class"] = WideToUtf8(mtl->ClassName().data());
+            matJ["class"] = SanitizeScriptName(WideToUtf8(mtl->ClassName().data()));
             matJ["subMtlCount"] = mtl->NumSubMtls();
 
             // Collect which nodes use this material
@@ -595,7 +597,7 @@ std::string NativeHandlers::GetDependencies(const std::string& params, MCPBridge
                 int total = 0;
                 int proc(ReferenceMaker* rmaker) override {
                     if (rmaker) {
-                        std::string cn = WideToUtf8(rmaker->ClassName().data());
+                        std::string cn = SanitizeScriptName(WideToUtf8(rmaker->ClassName().data()));
                         classCounts[cn]++;
                         total++;
                     }
@@ -710,7 +712,7 @@ static std::string ReadMtlParamValue(IParamBlock2* pb, ParamID pid, ParamType2 p
         case TYPE_COLOR_CHANNEL: {
             float f = 0;
             pb->GetValue(pid, t, f, FOREVER);
-            return mcp_bridge::number_text::FormatFloat(f);
+            return FormatPB2Float(ptype, f);  // degrees / 0-100 for angle / percent
         }
         case TYPE_INT:
         case TYPE_TIMEVALUE:
@@ -746,13 +748,13 @@ static std::string ReadMtlParamValue(IParamBlock2* pb, ParamID pid, ParamType2 p
             Texmap* tex = nullptr;
             pb->GetValue(pid, t, tex, FOREVER);
             if (!tex) return "undefined";
-            return WideToUtf8(tex->GetName().data()) + ":" + WideToUtf8(tex->ClassName().data());
+            return WideToUtf8(tex->GetName().data()) + ":" + SanitizeScriptName(WideToUtf8(tex->ClassName().data()));
         }
         case TYPE_MTL: {
             Mtl* m = nullptr;
             pb->GetValue(pid, t, m, FOREVER);
             if (!m) return "undefined";
-            return WideToUtf8(m->GetName().data()) + ":" + WideToUtf8(m->ClassName().data());
+            return WideToUtf8(m->GetName().data()) + ":" + SanitizeScriptName(WideToUtf8(m->ClassName().data()));
         }
         case TYPE_STRING:
         case TYPE_FILENAME: {
@@ -764,7 +766,7 @@ static std::string ReadMtlParamValue(IParamBlock2* pb, ParamID pid, ParamType2 p
             ReferenceTarget* ref = nullptr;
             pb->GetValue(pid, t, ref, FOREVER);
             if (!ref) return "undefined";
-            return WideToUtf8(ref->ClassName().data());
+            return SanitizeScriptName(WideToUtf8(ref->ClassName().data()));
         }
         default:
             return "<unsupported>";
@@ -952,6 +954,8 @@ std::string NativeHandlers::GetMaterialSlots(const std::string& params, MCPBridg
                 slot["name"] = paramName;
                 if (includeValues) {
                     slot["value"] = ReadMtlParamValue(pb, pid, pd.type, t);
+                    const std::string unit = PB2UnitLabel(pd.type);
+                    if (!unit.empty()) slot["unit"] = unit;  // degrees / percent, as MAXScript reports
                 }
 
                 // Route to the right category array
@@ -968,7 +972,7 @@ std::string NativeHandlers::GetMaterialSlots(const std::string& params, MCPBridg
         // Build result
         json result;
         result["name"] = WideToUtf8(targetMtl->GetName().data());
-        result["class"] = WideToUtf8(targetMtl->ClassName().data());
+        result["class"] = SanitizeScriptName(WideToUtf8(targetMtl->ClassName().data()));
         result["subMaterialIndex"] = subMatIndex;
         result["inspectedCount"] = scanned;
 
@@ -1078,10 +1082,10 @@ std::string NativeHandlers::ListPluginClasses(const std::string& params, MCPBrid
             if (!cn || !*cn) continue;
 
             json entry;
-            entry["name"] = WideToUtf8(cn);
+            entry["name"] = SanitizeScriptName(WideToUtf8(cn));
             const MCHAR* intName = cd->InternalName();
             if (intName && *intName) {
-                std::string iname = WideToUtf8(intName);
+                std::string iname = SanitizeScriptName(WideToUtf8(intName));
                 if (iname != entry["name"].get<std::string>()) entry["internalName"] = iname;
             }
             byCategory[catName].push_back(entry);

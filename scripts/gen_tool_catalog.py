@@ -22,6 +22,7 @@ from scripts.gen_tool_registry import (  # noqa: E402
 from scripts.gen_tool_smoke import CUSTOM, MUTATE_TOOLS, SKIP_DEFAULT  # noqa: E402
 
 MODULE_CATEGORY = {
+    "contact_check": "Modeling",
     "bridge": "Connection",
     "query_scene": "Scene",
     "capabilities": "Connection",
@@ -39,6 +40,7 @@ MODULE_CATEGORY = {
     "materials": "Materials",
     "material_ops": "Materials",
     "material_network": "Material Network",
+    "material_roles": "Material Network",
     "material_replace": "Materials",
     "palette_laydown": "Materials",
     "smart_import": "Smart Import",

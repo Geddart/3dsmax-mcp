@@ -37,6 +37,11 @@ struct InspectContext {
     int maxDepth = 3;
     int maxNodes = 80;
     int nodesOmitted = 0;
+    int edgesOmitted = 0;
+    int maxEdges = 6400;
+    json edges = json::array();
+    std::set<std::string> edgeKeys, depthLimited;
+    std::unordered_map<MtlBase*, int> expandedDepth;
     std::unordered_map<MtlBase*, std::string> ids;
     json nodes = json::array();
     json wiredSlots = json::array();
@@ -71,7 +76,7 @@ static std::string ParamName(const ParamDef& pd, ParamID pid) {
 }
 
 static std::string ClassName(MtlBase* base) {
-    return base ? WideToUtf8(base->ClassName().data()) : "";
+    return base ? SanitizeScriptName(WideToUtf8(base->ClassName().data())) : "";
 }
 
 static std::string BaseName(MtlBase* base) {
@@ -142,21 +147,31 @@ static std::string NormalizeBackslashes(std::string path) {
 }
 
 static std::filesystem::path FsPath(const std::string& path) {
-#if (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L) || __cplusplus >= 202002L
+#ifdef _WIN32
+    // Texture paths reach us as UTF-8 (WideToUtf8 of the Max string). Building a
+    // filesystem::path from a narrow string decodes it with the active code page,
+    // not UTF-8, so any path with non-ASCII characters (Greek, accents, Cyrillic)
+    // resolves to the wrong name and the texture is reported as missing even
+    // though it is there. Convert back to wide explicitly instead.
+    return std::filesystem::path(Utf8ToWide(path));
+#elif (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L) || __cplusplus >= 202002L
     return std::filesystem::path(path);
 #else
     return std::filesystem::u8path(path);
 #endif
 }
 
+static std::string FsPathUtf8(const std::filesystem::path& path) {
+    const auto text = path.u8string();
+    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
 static std::string FilenameOnly(const std::string& path) {
-    std::filesystem::path p(path);
-    return p.filename().string();
+    return FsPathUtf8(FsPath(path).filename());
 }
 
 static std::string ParentFolder(const std::string& path) {
-    std::filesystem::path p(path);
-    return p.parent_path().string();
+    return FsPathUtf8(FsPath(path).parent_path());
 }
 
 static int ExtractUdim(const std::string& path) {
@@ -184,7 +199,7 @@ static uintmax_t FileSizeOrZero(const std::string& path, bool* existsOut) {
 }
 
 static std::string ExtensionMismatchCode(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(FsPath(path), std::ios::binary);
     if (!f) return "";
     unsigned char bytes[8] = {};
     f.read((char*)bytes, sizeof(bytes));
@@ -277,7 +292,7 @@ static TextureFolderCatalog BuildTextureFolderCatalog(const std::string& folder)
 
     for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
         if (ec || !entry.is_regular_file()) continue;
-        std::string path = NormalizeBackslashes(entry.path().string());
+        std::string path = NormalizeBackslashes(FsPathUtf8(entry.path()));
         std::string fname = FilenameOnly(path);
         cat.byFilenameLower[Lower(fname)] = path;
 
@@ -344,7 +359,7 @@ static std::string ReadScalarValue(IParamBlock2* pb, ParamID pid, ParamType2 typ
         case TYPE_PCNT_FRAC:
         case TYPE_WORLD:
         case TYPE_COLOR_CHANNEL:
-            return mcp_bridge::number_text::FormatFloat(pb->GetFloat(pid, t, tabIndex));
+            return FormatPB2Float(type, pb->GetFloat(pid, t, tabIndex));  // degrees / 0-100 for angle / percent
         case TYPE_INT:
         case TYPE_BOOL:
         case TYPE_TIMEVALUE:
@@ -410,7 +425,7 @@ static void AppendFileMeta(json& files, const std::string& path, const std::stri
 }
 
 static void CollectPB2Values(MtlBase* base, const std::string& nodeId, InspectContext& ctx,
-                             json& values, json& files) {
+                             json& values, json& files, json& units) {
     int numPB = base->NumParamBlocks();
     for (int pbIdx = 0; pbIdx < numPB; ++pbIdx) {
         IParamBlock2* pb = base->GetParamBlock(pbIdx);
@@ -467,6 +482,9 @@ static void CollectPB2Values(MtlBase* base, const std::string& nodeId, InspectCo
                 std::string val = ReadScalarValue(pb, pid, pd.type, ctx.time);
                 if (!val.empty()) values[name] = val;
             }
+            // Angles are reported in degrees and percentages in 0-100 (MAXScript units).
+            const std::string unit = PB2UnitLabel(pd.type);
+            if (!unit.empty() && values.contains(name)) units[name] = unit;
         }
     }
 }
@@ -501,101 +519,135 @@ static std::vector<std::pair<MtlBase*, std::string>> PB2Children(MtlBase* base, 
     return out;
 }
 
+// A connection is identified by its owning slot, never by its target map.
+struct MaterialLink {
+    MtlBase* target;
+    std::string key, slot, kind;
+    int inputType;
+    std::vector<std::string> aliases;
+};
+
+static std::vector<MaterialLink> MaterialLinks(MtlBase* base, TimeValue t) {
+    std::vector<MaterialLink> links;
+    auto add = [&](MtlBase* child, const std::string& key, const std::string& slot,
+                   const std::string& kind, int inputType) {
+        if (!child || ShouldSkipMirrorChild(base, child)) return;
+        for (auto& link : links) if (link.key == key && link.target == child) {
+            if (slot != link.slot) {
+                const auto alias = inputType == 2 ? link.slot : slot;
+                if (std::find(link.aliases.begin(), link.aliases.end(), alias) == link.aliases.end()) link.aliases.push_back(alias);
+                if (inputType == 2) { link.slot = slot; link.inputType = 2; }
+            }
+            return;
+        }
+        links.push_back({child, key, slot, kind, inputType, {}});
+    };
+    if (base->SuperClassID() == MATERIAL_CLASS_ID) {
+        auto* mtl = static_cast<Mtl*>(base);
+        for (int i = 0; i < mtl->NumSubMtls(); ++i) {
+            MSTR label = mtl->GetSubMtlSlotName(i, false);
+            add(mtl->GetSubMtl(i), "material:" + std::to_string(i),
+                label.data() && *label.data() ? WideToUtf8(label.data()) : "subMaterial[" + std::to_string(i + 1) + "]",
+                "material", 0);
+        }
+    }
+    for (int i = 0; i < base->NumSubTexmaps(); ++i) {
+        MSTR label = base->GetSubTexmapSlotName(i, false);
+        add(base->GetSubTexmap(i), "map:" + std::to_string(i),
+            label.data() && *label.data() ? WideToUtf8(label.data()) : "map[" + std::to_string(i) + "]",
+            "map", base->MapSlotType(i));
+    }
+    for (int bi = 0; bi < base->NumParamBlocks(); ++bi) {
+        auto* pb = base->GetParamBlock(bi);
+        auto* desc = pb ? pb->GetDesc() : nullptr;
+        if (!desc) continue;
+        for (int pi = 0; pi < desc->count; ++pi) {
+            const auto pid = desc->IndextoID(pi);
+            const auto& pd = desc->GetParamDef(pid);
+            const auto type = BaseParamType(pd.type);
+            if (type != TYPE_TEXMAP && type != TYPE_MTL) continue;
+            const bool tab = IsTabParam(pd.type);
+            const int count = tab ? std::max(0, pb->Count(pid)) : 1;
+            for (int i = 0; i < count; ++i) {
+                MtlBase* child = type == TYPE_TEXMAP ? static_cast<MtlBase*>(pb->GetTexmap(pid, t, i))
+                                                    : static_cast<MtlBase*>(pb->GetMtl(pid, t, i));
+                if (!child) continue;
+                const std::string kind = type == TYPE_TEXMAP ? "map" : "material";
+                std::string key = "parameter:" + std::to_string(pb->ID()) + ":" + std::to_string(pid) + ":" + std::to_string(i);
+                int slot = type == TYPE_TEXMAP ? desc->GetSubTexNo(pid) : desc->GetSubMtlNo(pid);
+                if (slot >= 0) {
+                    slot += tab ? i : 0;
+                    if (type == TYPE_TEXMAP && slot < base->NumSubTexmaps() && base->GetSubTexmap(slot) == child)
+                        key = "map:" + std::to_string(slot);
+                    if (type == TYPE_MTL && base->SuperClassID() == MATERIAL_CLASS_ID) {
+                        auto* mtl = static_cast<Mtl*>(base);
+                        if (slot < mtl->NumSubMtls() && mtl->GetSubMtl(slot) == child) key = "material:" + std::to_string(slot);
+                    }
+                }
+                add(child, key, ParamName(pd, pid) + (tab ? "[" + std::to_string(i) + "]" : ""), kind, 2);
+            }
+        }
+    }
+    return links;
+}
+
 static void TraverseMaterialGraph(MtlBase* base, const std::string& parentId,
                                   const std::string& edge, int depth, InspectContext& ctx,
                                   std::set<MtlBase*>& stack) {
     if (!base) return;
-
     auto found = ctx.ids.find(base);
-    if (found != ctx.ids.end()) {
-        if (stack.count(base)) {
-            AddIssue(ctx.issues, "CIRCULAR_REF", found->second, "Circular material/map reference at edge " + edge);
+    if (found != ctx.ids.end() && stack.count(base)) {
+        AddIssue(ctx.issues, "CIRCULAR_REF", found->second, "Circular material/map reference at edge " + edge);
+        return;
+    }
+    if (found != ctx.ids.end() && ctx.expandedDepth[base] >= depth) return;
+    if (found == ctx.ids.end()) {
+        if ((int)ctx.nodes.size() >= ctx.maxNodes) { ctx.nodesOmitted++; return; }
+        std::string id = "n" + std::to_string(ctx.ids.size());
+        ctx.ids[base] = id;
+        json values = json::object(), files = json::array(), units = json::object();
+        CollectPB2Values(base, id, ctx, values, files, units);
+        json node = {{"id", id}, {"kind", KindName(base)}, {"class", ClassName(base)},
+                     {"name", BaseName(base)}, {"handle", std::to_string((uint64_t)Animatable::GetHandleByAnim(base))}};
+        if (!parentId.empty()) node["parentId"] = parentId;
+        if (!edge.empty()) node["edge"] = edge;
+        if (!files.empty()) node["files"] = files;
+        if (ctx.includeValues && !values.empty()) node["values"] = values;
+        if (ctx.includeValues && !units.empty()) node["valueUnits"] = units;
+        if (ContainsInsensitive(ClassName(base), "Image_tiles")) {
+            node["udim"] = {{"tileCount", files.size()}, {"valid", !files.empty()}};
+            if (files.empty()) AddIssue(ctx.issues, "EMPTY_TILE_LIST", id, "Image_tiles has no usable file paths.");
+            for (const auto& f : files) if (f.value("path", "").find('/') != std::string::npos)
+                AddIssue(ctx.issues, "PATH_FORMAT", id, "Image_tiles path should use Windows backslashes: " + f.value("path", ""));
         }
+        ctx.nodes.push_back(node);
+    }
+    const std::string id = ctx.ids.at(base);
+    ctx.expandedDepth[base] = depth;
+    auto links = MaterialLinks(base, ctx.time);
+    if (depth <= 0) {
+        if (!links.empty()) ctx.depthLimited.insert(id);
         return;
     }
-
-    if ((int)ctx.nodes.size() >= ctx.maxNodes) {
-        ctx.nodesOmitted++;
-        return;
-    }
-
-    std::string nodeId = "n" + std::to_string(ctx.ids.size());
-    ctx.ids[base] = nodeId;
+    ctx.depthLimited.erase(id);
     stack.insert(base);
-
-    json values = json::object();
-    json files = json::array();
-    CollectPB2Values(base, nodeId, ctx, values, files);
-
-    json node;
-    node["id"] = nodeId;
-    node["kind"] = KindName(base);
-    node["class"] = ClassName(base);
-    node["name"] = BaseName(base);
-    if (!parentId.empty()) node["parentId"] = parentId;
-    if (!edge.empty()) node["edge"] = edge;
-    if (!files.empty()) node["files"] = files;
-    if (ctx.includeValues && !values.empty()) node["values"] = values;
-
-    if (ContainsInsensitive(ClassName(base), "Image_tiles")) {
-        int tileCount = (int)files.size();
-        node["udim"] = {
-            {"tileCount", tileCount},
-            {"valid", tileCount > 0}
-        };
-        if (tileCount == 0) {
-            AddIssue(ctx.issues, "EMPTY_TILE_LIST", nodeId, "Image_tiles has no usable file paths.");
+    for (const auto& link : links) {
+        const auto key = id + "|" + link.key;
+        if (!ctx.edgeKeys.count(key) && ctx.edges.size() >= (size_t)ctx.maxEdges) { ctx.edgesOmitted++; continue; }
+        TraverseMaterialGraph(link.target, id, link.slot, depth - 1, ctx, stack);
+        auto target = ctx.ids.find(link.target);
+        if (target == ctx.ids.end()) continue;
+        if (!ctx.edgeKeys.count(key) && ctx.edges.size() >= (size_t)ctx.maxEdges) { ctx.edgesOmitted++; continue; }
+        if (ctx.edgeKeys.insert(key).second) {
+            ctx.edges.push_back({{"parentId", id}, {"nodeId", target->second}, {"slot", link.slot},
+                {"slotKey", link.key}, {"kind", link.kind}, {"inputType", link.inputType},
+                {"role", InferRole(link.slot)}, {"aliases", link.aliases}});
         }
-        for (const auto& f : files) {
-            std::string p = f.value("path", "");
-            if (p.find('/') != std::string::npos) {
-                AddIssue(ctx.issues, "PATH_FORMAT", nodeId, "Image_tiles path should use Windows backslashes: " + p);
-            }
-        }
-    }
-
-    ctx.nodes.push_back(node);
-
-    if (depth <= 0) return;
-
-    if (base->SuperClassID() == MATERIAL_CLASS_ID) {
-        Mtl* mtl = static_cast<Mtl*>(base);
-        for (int i = 0; i < mtl->NumSubMtls(); ++i) {
-            Mtl* sub = mtl->GetSubMtl(i);
-            if (!sub) continue;
-            MSTR slot = mtl->GetSubMtlSlotName(i, false);
-            std::string slotName = slot.data() && *slot.data() ? WideToUtf8(slot.data()) : ("subMaterial[" + std::to_string(i + 1) + "]");
-            TraverseMaterialGraph(sub, nodeId, slotName, depth - 1, ctx, stack);
-        }
-    }
-
-    for (int i = 0; i < base->NumSubTexmaps(); ++i) {
-        Texmap* tex = base->GetSubTexmap(i);
-        if (!tex) continue;
-        if (ShouldSkipMirrorChild(base, tex)) continue;
-        MSTR slot = base->GetSubTexmapSlotName(i, false);
-        std::string slotName = slot.data() && *slot.data() ? WideToUtf8(slot.data()) : ("map[" + std::to_string(i) + "]");
-        TraverseMaterialGraph(tex, nodeId, slotName, depth - 1, ctx, stack);
-        if (parentId.empty()) {
-            auto childId = ctx.ids.find(tex);
-            if (childId != ctx.ids.end()) {
-                AddWiredSlot(ctx, slotName, base->MapSlotType(i), InferRole(slotName), childId->second);
-            }
-        }
-    }
-
-    for (const auto& child : PB2Children(base, ctx.time)) {
-        if (ShouldSkipMirrorChild(base, child.first)) continue;
-        TraverseMaterialGraph(child.first, nodeId, child.second, depth - 1, ctx, stack);
-        if (parentId.empty()) {
-            auto childId = ctx.ids.find(child.first);
-            if (childId != ctx.ids.end()) {
-                AddWiredSlot(ctx, child.second, 2, InferRole(child.second), childId->second);
-            }
-        }
+        if (parentId.empty()) AddWiredSlot(ctx, link.slot, link.inputType, InferRole(link.slot), target->second);
     }
     stack.erase(base);
 }
+
 
 static Mtl* FindMaterialByNameRecursive(Mtl* mtl, const std::string& name, std::set<Mtl*>& seen) {
     if (!mtl || seen.count(mtl)) return nullptr;
@@ -698,8 +750,9 @@ static json InspectMaterialGraph(Mtl* root, const std::string& requestedName,
     ctx.includeValues = includeValues;
     ctx.verifyFiles = verifyFiles;
     ctx.scope = scope.empty() ? "wired" : Lower(scope);
-    ctx.maxDepth = std::min(6, std::max(0, depth));
-    ctx.maxNodes = std::max(1, maxNodes);
+    ctx.maxDepth = std::min(16, std::max(0, depth));
+    ctx.maxNodes = std::min(2000, std::max(1, maxNodes));
+    ctx.maxEdges = std::min(64000, ctx.maxNodes * 32);
 
     std::set<MtlBase*> stack;
     TraverseMaterialGraph(root, "", "", ctx.maxDepth, ctx, stack);
@@ -715,12 +768,15 @@ static json InspectMaterialGraph(Mtl* root, const std::string& requestedName,
         {"subMaterialIndex", subMaterialIndex},
         {"rendererProfile", DetectProfile(root)}
     };
+    result["graphVersion"] = 2;
+    result["edges"] = ctx.edges;
     result["wiredSlots"] = ctx.wiredSlots;
     result["nodes"] = FilterNodesForScope(ctx.nodes, ctx.scope);
     json issueSplit = SplitIssues(ctx.issues);
     result["issues"] = issueSplit["blocking"];
     result["warnings"] = issueSplit["warnings"];
-    result["truncated"] = {{"nodesOmitted", ctx.nodesOmitted}};
+    result["truncated"] = {{"nodesOmitted", ctx.nodesOmitted}, {"edgesOmitted", ctx.edgesOmitted}, {"depthLimited", ctx.depthLimited}};
+    result["complete"] = ctx.nodesOmitted == 0 && ctx.edgesOmitted == 0 && ctx.depthLimited.empty();
 
     std::string folderGuess;
     std::set<std::string> uniquePaths;
@@ -737,7 +793,7 @@ static json InspectMaterialGraph(Mtl* root, const std::string& requestedName,
         }
     }
 
-    bool replicateReady = ctx.nodesOmitted == 0;
+    bool replicateReady = result["complete"].get<bool>();
     for (const auto& issue : result["issues"]) {
         if (IsBlockingIssue(issue.value("code", ""))) {
             replicateReady = false;
@@ -769,6 +825,82 @@ static json InspectMaterialGraph(Mtl* root, const std::string& requestedName,
     return result;
 }
 
+static void GatherMaterials(Mtl* material, std::vector<Mtl*>& out, std::set<Mtl*>& seen) {
+    if (!material || !seen.insert(material).second) return;
+    out.push_back(material);
+    for (int i = 0; i < material->NumSubMtls(); ++i) GatherMaterials(material->GetSubMtl(i), out, seen);
+}
+
+// A batch is read in one main-thread invocation, using pointers resolved in this
+// scene. In particular, scene scans must not round-trip through material names.
+static json InspectRoleGraphs(const json& p) {
+    const bool scan = p.value("scan_scene", false);
+    const auto names = p.value("names", std::vector<std::string>{});
+    const int limit = p.value("limit", 25), offset = p.value("offset", 0);
+    const int depth = p.value("depth", 8), maxNodes = p.value("max_nodes", 400);
+    if (depth < 1 || depth > 16 || maxNodes < 1 || maxNodes > 2000)
+        throw std::runtime_error("depth must be 1..16 and max_nodes 1..2000.");
+    if (limit < 1 || limit > 200 || offset < 0 || names.size() > 200 || scan == !names.empty())
+        throw std::runtime_error("Supply names or scan_scene, limit 1..200, and a nonnegative offset.");
+    std::vector<INode*> nodes;
+    CollectNodes(GetCOREInterface()->GetRootNode(), nodes);
+    std::vector<Mtl*> roots, materials;
+    std::set<Mtl*> rootSet, seen;
+    for (auto* node : nodes) if (auto* mtl = node->GetMtl()) {
+        if (rootSet.insert(mtl).second) roots.push_back(mtl);
+        if (!scan) GatherMaterials(mtl, materials, seen);
+    }
+    if (!scan) if (auto* lib = GetCOREInterface()->GetSceneMtls()) for (int i = 0; i < lib->NumSubs(); ++i) {
+        auto* mtl = dynamic_cast<Mtl*>(lib->SubAnim(i));
+        if (mtl) GatherMaterials(mtl, materials, seen);
+    }
+    std::sort(roots.begin(), roots.end(), [](Mtl* a, Mtl* b) {
+        auto an = Lower(BaseName(a)), bn = Lower(BaseName(b));
+        return an != bn ? an < bn : Animatable::GetHandleByAnim(a) < Animatable::GetHandleByAnim(b);
+    });
+    const size_t total = scan ? roots.size() : names.size();
+    const size_t start = std::min(total, (size_t)offset);
+    const size_t end = std::min(total, start + (size_t)limit);
+    json graphs = json::array(), failed = json::array();
+    for (size_t i = start; i < end; ++i) {
+        const std::string query = scan ? BaseName(roots[i]) : names[i];
+        try {
+            Mtl* root = scan ? roots[i] : nullptr;
+            std::string owner;
+            if (!scan) {
+                std::set<Mtl*> matches;
+                int matchingNodes = 0;
+                for (auto* node : nodes) if (SameName(WideToUtf8(node->GetName()), query)) {
+                    matchingNodes++;
+                    if (auto* mtl = node->GetMtl()) { matches.insert(mtl); owner = WideToUtf8(node->GetName()); }
+                }
+                for (auto* mtl : materials) if (SameName(BaseName(mtl), query)) matches.insert(mtl);
+                if (matchingNodes > 1 || matches.size() > 1) {
+                    failed.push_back({{"material", query}, {"code", "AMBIGUOUS_TARGET"}, {"retryable", false},
+                        {"error", "Name is ambiguous; use a uniquely named object with the intended material."}});
+                    continue;
+                }
+                if (matches.empty()) {
+                    failed.push_back({{"material", query}, {"code", "NOT_FOUND"}, {"retryable", false},
+                        {"error", "No material resolves from this object or material name."}});
+                    continue;
+                }
+                root = *matches.begin();
+            }
+            auto graph = InspectMaterialGraph(root, query, scan ? "scene" : "unique_name", 0,
+                depth, "wired", false, true, maxNodes);
+            graph["root"]["handle"] = std::to_string((uint64_t)Animatable::GetHandleByAnim(root));
+            graph["owner"] = owner;
+            graphs.push_back(std::move(graph));
+        } catch (const std::exception& e) {
+            failed.push_back({{"material", query}, {"code", "INSPECTION_FAILED"}, {"retryable", false}, {"error", e.what()}});
+        }
+    }
+    return {{"graphVersion", 2}, {"graphs", graphs}, {"failed", failed}, {"total", total},
+            {"checked", end - start}, {"offset", start}, {"next_offset", end < total ? json(end) : json(nullptr)}};
+}
+
+
 static std::string RemappedPath(const std::string& oldPath,
                                 const std::unordered_map<std::string, std::string>& pathMap,
                                 const std::string& textureFolder,
@@ -789,12 +921,12 @@ static std::string RemappedPath(const std::string& oldPath,
     if (!textureFolder.empty() && !filename.empty()) {
         std::filesystem::path p = FsPath(textureFolder) / FsPath(filename);
         std::error_code ec;
-        if (std::filesystem::exists(p, ec) && !ec) return NormalizeBackslashes(p.string());
+        if (std::filesystem::exists(p, ec) && !ec) return NormalizeBackslashes(FsPathUtf8(p));
         if (catalog) {
             std::string catalogPath = LookupCatalogPath(catalog, filename);
             if (!catalogPath.empty()) return catalogPath;
         }
-        return NormalizeBackslashes(p.string());
+        return NormalizeBackslashes(FsPathUtf8(p));
     }
     return oldPath;
 }
@@ -1139,9 +1271,11 @@ std::string NativeHandlers::InspectMaterialNetwork(const std::string& params, MC
         json p = json::parse(params, nullptr, false);
         if (p.is_discarded()) throw std::runtime_error("Invalid JSON params");
 
+        if (p.value("action", "inspect") == "roles") return InspectRoleGraphs(p).dump();
+
         std::string name = p.value("name", "");
         int subIdx = p.value("sub_material_index", 0);
-        int depth = p.value("depth", 3);
+        int depth = p.value("depth", 6);
         std::string scope = p.value("scope", "wired");
         bool includeValues = p.value("include_values", true);
         bool verifyFiles = p.value("verify_files", true);
