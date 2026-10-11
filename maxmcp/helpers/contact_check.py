@@ -298,9 +298,13 @@ _SCRIPT_TEMPLATE = r'''(
     local result = undefined
     try (
         local t0 = timeStamp()
-        local tol = %(tol)s
-        local near = %(near)s
-        if tol <= 0 do tol = units.decodeValue "0.1mm"
+        -- "as float": Python formats 1.0 as "1", a MAXScript Integer, and
+        -- formattedPrint of an Integer with a float format prints garbage.
+        local tol = (%(tol)s) as float
+        local near = (%(near)s) as float
+        -- units.decodeValue parses with the Windows locale ("0.1mm" is 0.0 on a
+        -- decimal-comma system), so only whole-number unit strings are decoded.
+        if tol <= 0 do tol = (units.decodeValue "1mm") / 10.0
         if near <= 0 do near = units.decodeValue "10mm"
         if near < tol do near = tol
         local eps = tol * 0.01
