@@ -208,16 +208,19 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
             mtl->SetName(wname.c_str());
         }
 
-        // Set params via IParamBlock2
+        // Set params via IParamBlock2; the rest (shader sub-blocks, FRGBA with
+        // units, PB1 materials) go through MAXScript after assignment.
+        std::vector<std::pair<std::string, std::string>> pendingMtlParams;
         if (!matParams.empty()) {
             auto kvPairs = ParseMtlParams(matParams);
             for (auto& [key, val] : kvPairs) {
-                SetParamByName((Animatable*)mtl, key, val, t);
+                if (!SetParamByName((Animatable*)mtl, key, val, t)) pendingMtlParams.emplace_back(key, val);
             }
         }
 
         // Assign to nodes
         int assignCount = 0;
+        INode* firstAssigned = nullptr;
         json notFound = json::array();
         json assigned = json::array();
         std::set<INode*> seen;
@@ -225,6 +228,7 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
             INode* node = FindNodeByHandle(handle);
             if (node && seen.insert(node).second) {
                 node->SetMtl(mtl);
+                if (!firstAssigned) firstAssigned = node;
                 assigned.push_back(NodeIdentityJson(node));
                 assignCount++;
             } else if (!node) {
@@ -248,9 +252,17 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
             INode* node = matches[0];
             if (node && seen.insert(node).second) {
                 node->SetMtl(mtl);
+                if (!firstAssigned) firstAssigned = node;
                 assigned.push_back(NodeIdentityJson(node));
                 assignCount++;
             }
+        }
+
+        json failedMtlParams = json::array();
+        for (auto& [key, val] : pendingMtlParams) {
+            const bool ok = firstAssigned && TrySetViaMaxScript(
+                "(getAnimByHandle " + std::to_string(NodeHandle(firstAssigned)) + ").material", key, val);
+            if (!ok) failedMtlParams.push_back(key);
         }
 
         mtl->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
@@ -268,6 +280,10 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
         result["assigned"] = assigned;
         result["assignedCount"] = assignCount;
         result["notFound"] = notFound;
+        if (!failedMtlParams.empty()) {
+            result["failedParams"] = failedMtlParams;
+            result["warnings"] = json::array({"Material parameters not applied: " + failedMtlParams.dump()});
+        }
         return result.dump();
     });
 }

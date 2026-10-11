@@ -137,11 +137,10 @@ std::string NativeHandlers::GetObjectProperties(const std::string& params, MCPBr
 
 // ── Parse a Point3 from string "[x,y,z]" or "x,y,z" ────────────
 static bool ParsePoint3(const std::string& s, Point3& out) {
-    std::string clean = s;
-    clean.erase(std::remove(clean.begin(), clean.end(), '['), clean.end());
-    clean.erase(std::remove(clean.begin(), clean.end(), ']'), clean.end());
-    clean.erase(std::remove(clean.begin(), clean.end(), ' '), clean.end());
-    return sscanf(clean.c_str(), "%f,%f,%f", &out.x, &out.y, &out.z) == 3;
+    double v[3] = {0, 0, 0};
+    if (!mcp_bridge::number_text::ParseDoubleList(s, v, 3)) return false;  // locale-independent
+    out = Point3(static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2]));
+    return true;
 }
 
 // ── Parse a Color from string "(color r g b)" or "r,g,b" or named ──
@@ -158,22 +157,16 @@ static bool ParseColor(const std::string& s, DWORD& out) {
     if (lower == "orange")  { out = RGB(255,165,0); return true; }
     if (lower == "gray" || lower == "grey") { out = RGB(128,128,128); return true; }
 
-    // Parse "(color r g b)" format
-    int r, g, b;
-    if (sscanf(s.c_str(), "(color %d %d %d)", &r, &g, &b) == 3 ||
-        sscanf(s.c_str(), "color %d %d %d", &r, &g, &b) == 3) {
-        out = RGB(r, g, b);
-        return true;
+    // "(color r g b)" (0-255) or "[r,g,b]" / "r,g,b", parsed locale-independently.
+    double v[4] = {0, 0, 0, 0};
+    int n = 0;
+    if (!mcp_bridge::number_text::ParseMaxColor(s, v, n) &&
+        !mcp_bridge::number_text::ParseDoubleList(s, v, 3)) {
+        return false;
     }
-    // Parse "[r,g,b]" or "r,g,b"
-    std::string clean = s;
-    clean.erase(std::remove(clean.begin(), clean.end(), '['), clean.end());
-    clean.erase(std::remove(clean.begin(), clean.end(), ']'), clean.end());
-    if (sscanf(clean.c_str(), "%d,%d,%d", &r, &g, &b) == 3) {
-        out = RGB(r, g, b);
-        return true;
-    }
-    return false;
+    auto clamp255 = [](double c) { return int(c < 0 ? 0 : (c > 255 ? 255 : c + 0.5)); };
+    out = RGB(clamp255(v[0]), clamp255(v[1]), clamp255(v[2]));
+    return true;
 }
 
 // ── native:set_object_property (Pure SDK) ───────────────────────
@@ -269,6 +262,13 @@ std::string NativeHandlers::SetObjectProperty(const std::string& params, MCPBrid
             baseObj->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
             ip->RedrawViews(t);
             return propertyResult("Set " + prop + " on " + WideToUtf8(node->GetName()));
+        }
+
+        // Not settable through IParamBlock2 (legacy PB1 object, unit/expression
+        // value, non-PB property): let MAXScript evaluate it exactly.
+        if (TrySetViaMaxScript("getAnimByHandle " + std::to_string(NodeHandle(node)), prop, value)) {
+            ip->RedrawViews(t);
+            return propertyResult("Set " + prop + " on " + WideToUtf8(node->GetName()) + " (MAXScript)");
         }
 
         throw std::runtime_error("Property not found or cannot set: " + prop);
@@ -487,6 +487,7 @@ std::string NativeHandlers::CreateObject(const std::string& params, MCPBridgeGUP
         Point3 posOverride(0, 0, 0);
         bool hasPos = false;
         bool anyParamFailed = false;
+        json failedParams = json::array();
         auto kvPairs = BuildCreateObjectParams(p, type);
 
         if (!kvPairs.empty()) {
@@ -498,29 +499,20 @@ std::string NativeHandlers::CreateObject(const std::string& params, MCPBridgeGUP
                 if (lkey == "pos") {
                     if (ParsePoint3(val, posOverride)) {
                         hasPos = true;
+                    } else {
+                        failedParams.push_back("pos");
                     }
                     continue;
                 }
 
-                // Try setting on base object's PB2
+                // Try setting on base object's PB2; whatever it cannot set
+                // (PB1/legacy objects like Capsule, Hedra; unit or expression
+                // values) is applied through MAXScript by node handle.
                 if (!SetParamByName(obj, key, val, t)) {
                     anyParamFailed = true;
+                    const std::string target = "(getAnimByHandle " + std::to_string(NodeHandle(node)) + ")";
+                    if (!TrySetViaMaxScript(target, key, val)) failedParams.push_back(key);
                 }
-            }
-
-            // If any PB2 param failed (e.g. PB1/legacy objects like Capsule, Hedra),
-            // fall back to MAXScript to apply all params at once
-            if (anyParamFailed) {
-                std::string nodeName = WideToUtf8(node->GetName());
-                std::string ms = "(";
-                for (auto& [key, val] : kvPairs) {
-                    std::string lkey = key;
-                    std::transform(lkey.begin(), lkey.end(), lkey.begin(), ::tolower);
-                    if (lkey == "pos") continue; // handled separately
-                    ms += "$'" + JsonEscape(nodeName) + "'." + key + " = " + val + "; ";
-                }
-                ms += "\"OK\")";
-                try { RunMAXScript(ms); } catch (...) {}
             }
         }
 
@@ -531,8 +523,14 @@ std::string NativeHandlers::CreateObject(const std::string& params, MCPBridgeGUP
         obj->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
         ip->RedrawViews(t);
 
-        return SpatialSnapshot::BuildCreateObjectResult(
-            node, t, type, posOverride, hasPos, posMode).dump();
+        json created = SpatialSnapshot::BuildCreateObjectResult(
+            node, t, type, posOverride, hasPos, posMode);
+        (void)anyParamFailed;
+        if (!failedParams.empty() && created.is_object()) {
+            created["failedParams"] = failedParams;
+            created["warnings"] = json::array({"Parameters not applied: " + failedParams.dump()});
+        }
+        return created.dump();
     });
 }
 

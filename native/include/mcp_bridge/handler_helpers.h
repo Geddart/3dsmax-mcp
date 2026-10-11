@@ -20,10 +20,13 @@
 #include <maxscript/foundation/strings.h>
 #include <maxscript/maxwrapper/mxsobjects.h>
 #include <CoreFunctions.h>
+#include "mcp_bridge/number_text.h"
 
 class MCPBridgeGUP;
 
 namespace HandlerHelpers {
+
+namespace nt = mcp_bridge::number_text;
 
 using json = nlohmann::json;
 
@@ -324,7 +327,7 @@ inline std::string RunMAXScript(const std::string& script) {
         return std::to_string(fpv.i);
     }
     if (fpv.type == TYPE_FLOAT) {
-        return std::to_string(fpv.f);
+        return nt::FormatFloat(fpv.f);  // never std::to_string: locale decimal comma
     }
     if (fpv.type == TYPE_BOOL) {
         return fpv.i ? "true" : "false";
@@ -333,6 +336,35 @@ inline std::string RunMAXScript(const std::string& script) {
     // Never re-evaluate the script to stringify the result: scripts with side
     // effects (e.g. "max undo") would run twice.
     return "OK";
+}
+
+// A bare MAXScript identifier (property name) — the only shape we splice into
+// fallback scripts, so a caller-supplied name can never inject code.
+inline bool IsPlainIdentifier(const std::string& s) {
+    if (s.empty() || s.size() > 128) return false;
+    const unsigned char c0 = static_cast<unsigned char>(s[0]);
+    if (!(std::isalpha(c0) || c0 == '_')) return false;
+    for (unsigned char c : s) {
+        if (!(std::isalnum(c) || c == '_')) return false;
+    }
+    return true;
+}
+
+// Assign `target.prop = (value)` through MAXScript, for parameters the
+// IParamBlock2 path cannot reach (PB1 modifiers such as Extrude, shader
+// sub-blocks, values with units or expressions). `targetExpr` must be built by
+// the bridge itself (handles/indices), never from caller text. Returns true
+// only when MAXScript completed the assignment.
+inline bool TrySetViaMaxScript(const std::string& targetExpr, const std::string& prop,
+                               const std::string& value) {
+    if (!IsPlainIdentifier(prop) || value.empty()) return false;
+    const std::string ms = "(local __mcp_t = " + targetExpr + "; __mcp_t." + prop +
+                           " = (" + value + "); \"__MCP_SET_OK__\")";
+    try {
+        return RunMAXScript(ms) == "__MCP_SET_OK__";
+    } catch (...) {
+        return false;
+    }
 }
 
 // ── JSON escape utility ─────────────────────────────────────────
@@ -523,7 +555,11 @@ inline ClassDesc* FindClassDescByName(const std::string& className, SClass_ID su
 // Returns true if the param was set successfully.
 inline bool SetPB2ParamFromString(IParamBlock2* pb, ParamID pid, ParamType2 ptype,
                                   const std::string& valStr, TimeValue t) {
-    // Strip the TYPE_TAB flag for base type comparison
+    // Every numeric parse is locale-independent and must consume the whole
+    // string. Anything else (units, expressions, "4,5") returns false so the
+    // caller falls back to MAXScript, which evaluates it exactly. Never store
+    // a partially parsed value: Max's CRT locale follows the Windows region,
+    // and a German locale turns std::stof("4.5") into 4.
     int baseType = ptype & ~TYPE_TAB;
 
     switch (baseType) {
@@ -532,7 +568,8 @@ inline bool SetPB2ParamFromString(IParamBlock2* pb, ParamID pid, ParamType2 ptyp
     case TYPE_PCNT_FRAC:
     case TYPE_WORLD:
     case TYPE_COLOR_CHANNEL: {
-        float f = std::stof(valStr);
+        float f = 0.0f;
+        if (!nt::ParseFloat(valStr, f)) return false;
         return pb->SetValue(pid, t, f) != 0;
     }
     case TYPE_INT:
@@ -540,38 +577,47 @@ inline bool SetPB2ParamFromString(IParamBlock2* pb, ParamID pid, ParamType2 ptyp
     case TYPE_TIMEVALUE:
     case TYPE_RADIOBTN_INDEX:
     case TYPE_INDEX: {
-        // Handle "true"/"false" for bools
         if (valStr == "true" || valStr == "on") return pb->SetValue(pid, t, 1) != 0;
         if (valStr == "false" || valStr == "off") return pb->SetValue(pid, t, 0) != 0;
-        int i = std::stoi(valStr);
+        int i = 0;
+        if (!nt::ParseInt(valStr, i)) return false;
         return pb->SetValue(pid, t, i) != 0;
     }
     case TYPE_POINT3:
     case TYPE_RGBA: {
-        // Parse multiple formats:
-        // "[x,y,z]" or "x,y,z" — direct Point3
-        // "(color r g b)" or "color r g b" — MAXScript color (0-255 range for RGBA)
-        std::string s = valStr;
-        float x = 0, y = 0, z = 0;
-
-        // Try "(color r g b)" format
-        if (sscanf(s.c_str(), "(color %f %f %f)", &x, &y, &z) == 3 ||
-            sscanf(s.c_str(), "color %f %f %f", &x, &y, &z) == 3) {
-            // For RGBA type, values are 0-255 in MAXScript but stored as 0-1 internally
-            if (baseType == TYPE_RGBA) {
-                // Actually Max PB2 RGBA stores as 0-255 Point3 for some materials
-                // and 0-1 for others. Pass through as-is — the PB2 handles scaling.
-            }
-            Point3 pt(x, y, z);
+        // "(color r g b)" is MAXScript colour syntax with 0-255 components;
+        // TYPE_RGBA stores a Color with 0-1 components, so scale it down.
+        // "[x,y,z]" is passed through unchanged (already in storage units).
+        double v[4] = {0, 0, 0, 0};
+        int n = 0;
+        if (nt::ParseMaxColor(valStr, v, n)) {
+            const double k = (baseType == TYPE_RGBA) ? (1.0 / 255.0) : 1.0;
+            Point3 pt(static_cast<float>(v[0] * k), static_cast<float>(v[1] * k), static_cast<float>(v[2] * k));
             return pb->SetValue(pid, t, pt) != 0;
         }
-
-        // Try "[x,y,z]" or "x,y,z"
-        s.erase(std::remove(s.begin(), s.end(), '['), s.end());
-        s.erase(std::remove(s.begin(), s.end(), ']'), s.end());
-        if (sscanf(s.c_str(), "%f,%f,%f", &x, &y, &z) == 3) {
-            Point3 pt(x, y, z);
+        if (nt::ParseDoubleList(valStr, v, 3)) {
+            Point3 pt(static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2]));
             return pb->SetValue(pid, t, pt) != 0;
+        }
+        return false;
+    }
+    case TYPE_POINT4:
+    case TYPE_FRGBA: {
+        double v[4] = {0, 0, 0, 1};
+        int n = 0;
+        if (nt::ParseMaxColor(valStr, v, n)) {
+            const double k = (baseType == TYPE_FRGBA) ? (1.0 / 255.0) : 1.0;
+            const double a = (n == 4) ? v[3] * k : 1.0;
+            Point4 p4(static_cast<float>(v[0] * k), static_cast<float>(v[1] * k), static_cast<float>(v[2] * k), static_cast<float>(a));
+            return pb->SetValue(pid, t, p4) != 0;
+        }
+        if (nt::ParseDoubleList(valStr, v, 4)) {
+            Point4 p4(static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2]), static_cast<float>(v[3]));
+            return pb->SetValue(pid, t, p4) != 0;
+        }
+        if (nt::ParseDoubleList(valStr, v, 3)) {
+            Point4 p4(static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2]), 1.0f);
+            return pb->SetValue(pid, t, p4) != 0;
         }
         return false;
     }

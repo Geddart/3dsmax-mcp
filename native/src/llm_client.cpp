@@ -1,3 +1,4 @@
+#include "mcp_bridge/number_text.h"
 #include "mcp_bridge/llm_client.h"
 #include "mcp_bridge/handler_helpers.h"
 #include "mcp_bridge/bridge_gup.h"
@@ -216,7 +217,7 @@ void LLMClient::Init() {
     try { g_config.maxTokens = std::stoi(maxTokensStr); } catch (...) { g_config.maxTokens = 4096; }
 
     std::string temp    = ReadIni(ini, "llm", "temperature", "0.7");
-    try { g_config.temperature = std::stof(temp); } catch (...) { g_config.temperature = 0.7f; }
+    if (!mcp_bridge::number_text::ParseFloat(temp, g_config.temperature)) g_config.temperature = 0.7f;
 
     g_config.promptMode = ReadIniChoice(
         ini, "llm", "prompt_mode", "compact", {"compact", "full", "none"});

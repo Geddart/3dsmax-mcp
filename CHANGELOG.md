@@ -11,7 +11,7 @@ Integration of upstream **1.5.5** (`32af329`) on top of fork `72b454f` (0.5.3.1+
 review round on PR #2.
 
 > **Native binaries in this round:** Max 2025 and Max 2027 now carry the source fixes.
-> The 2027 binary was rebuilt with its matching SDK and has not yet been live-tested.
+> Both were rebuilt again on 2026-10-12 for the locale fix below and live-tested in Max 2025.
 > `mcp_bridge_2023/2024/2026.gup` are unchanged and predate both the `vfb:false` render
 > fix and the overlapped-I/O transport; rebuild each against its matching SDK before shipping.
 
@@ -149,8 +149,16 @@ review round on PR #2.
   seen on the next call. The cache is dropped by `select_max_instance`, `release_max_instance` and
   any `ConnectionError`/`TimeoutError` out of a send, so a vanished Max is re-resolved at once.
 
+### Fixed (de-DE locale round, 2026-10-12)
+- `create_object` with a script class name (`Freecamera`, `Targetcamera`) no longer fails with PLUGIN_MISSING: an "Unknown object class" error is routed to the MAXScript constructor. Other native failures are no longer replayed through MAXScript, which could duplicate an object after a lost response (same fix upstream made in 1.6.7).
+- New live acceptance `scripts/verify_numeric_values.py` replays the reported cases (fractions, Point3, PB1 Extrude, Physical/Standard/V-Ray colours, Freecamera, float results) through the real tools with MAXScript read-back.
+- `tests/test_max_client.py` no longer reads the operator's real `MCP_UI_DENY_PIDS`; the fence tests failed whenever a protected PID was configured.
+
 <!-- native -->
 ### Fixed (native bridge)
+- **Fractional values silently truncated on non-English Windows (de-DE)** — Max's CRT locale follows the Windows region, so `std::stof("4.5")` returned 4 and `sscanf("%f,%f,%f")` could not parse `[-276.8,-3.5,-3]`. Every native setter (create_object, set_object_property, add_modifier, set_modifier_property, assign_material) dropped fractions while reporting success, positions were ignored, and float results came back as `4,500000`. All native number parsing/formatting now goes through the SDK-free `mcp_bridge/number_text.h` (`std::from_chars`/`std::to_chars`, whole-string strict parse). Regression test `native/tests/number_text_tests.cpp` runs under a German locale and first proves the trap is live.
+- **Colours ×255 / skipped** — `(color r g b)` (0-255) was stored unscaled into 0-1 `TYPE_RGBA` params, and `TYPE_FRGBA` (Physical Material `base_color`) was not handled at all. Both now scale correctly; readback formats colours in 0-255.
+- **PB1 parameters silently ignored** — Extrude `amount` and other legacy param blocks failed in the PB2 setter and the handlers ignored the failure. add_modifier, set_modifier_property, set_object_property, create_object and assign_material now fall back to MAXScript (by anim handle) and report keys that still fail in `failedParams`/`warnings`. `modifier_class` also accepts the MAXScript class name (`Extrude`) besides the SDK name (`ExtrudeMod`).
 - **Max hung on exit for up to 120 s per in-flight request** — `MCPBridgeGUP::Stop()` joined the pipe client threads (`StopPipe()`) *before* shutting the executor down. A client thread inside `CommandDispatcher::Dispatch` -> `MainThreadExecutor::ExecuteSync` was waiting for a `WM_MCP_EXECUTE` that the main thread could no longer pump, because it was blocked in `std::thread::join()` on that same thread. New `MainThreadExecutor::BeginShutdown()` is now the first thing `Stop()` calls: it closes a submission gate (later `ExecuteSync` calls from background threads throw immediately instead of posting) and completes every queued/deferred work item with an error, so the joins below it return at once.
 - **Leaked work items on shutdown** — `MainThreadExecutor::Shutdown()` called `DestroyWindow()` while `WM_MCP_EXECUTE` messages were still queued. Windows discards those messages, leaking the heap `shared_ptr<WorkItem>` each one owns and leaving its waiter to sleep out the full timeout. `DrainPendingWork()` now `PeekMessage`-drains the queue first, deletes the raw pointers and wakes each waiter with an error.
 - **`CompletePipeIO` swallowed real wait failures** — `WAIT_FAILED` (and a null shutdown event) were indistinguishable from "shutdown was signalled". Both are now reported via `OutputDebugString` (`LogPipeIOFailure`); the cancel-and-drain behaviour is unchanged.

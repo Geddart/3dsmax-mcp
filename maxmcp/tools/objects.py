@@ -1,6 +1,7 @@
 import json as _json
 import re
 
+from ..max_client import MaxBridgeError
 from ..server import mcp, client
 from ..coerce import FloatList, IntList, StrList
 from ..helpers.maxscript import safe_string
@@ -63,6 +64,9 @@ def _finalize_create_result(
             pass
 
     return _json.dumps({"name": name, "type": type, "warning": "spatial snapshot unavailable"})
+
+
+_PLAIN_CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 @mcp.tool()
@@ -338,10 +342,15 @@ def create_object(
                 pos=pos,
                 pos_mode=mode,
             )
-        except RuntimeError:
-            pass
+        except MaxBridgeError as exc:
+            # Only an unresolved class name is safe to retry: nothing was created.
+            # MAXScript knows script class names the SDK ClassDesc lookup does not
+            # (Freecamera, Targetcamera, ...). Any other failure may already have
+            # committed, so replaying the constructor could duplicate the object.
+            if "Unknown object class" not in str(exc) or not _PLAIN_CLASS_NAME.fullmatch(type):
+                raise
 
-    # ── MAXScript fallback (TCP) ──────────────────────────────────
+    # ── MAXScript constructor (script class names, no native bridge) ──
     maxscript = build_create_object_maxscript(
         type=type,
         name=name,

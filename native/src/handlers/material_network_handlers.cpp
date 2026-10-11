@@ -1,3 +1,4 @@
+#include "mcp_bridge/number_text.h"
 #include "mcp_bridge/native_handlers.h"
 #include "mcp_bridge/handler_helpers.h"
 #include "mcp_bridge/bridge_gup.h"
@@ -343,7 +344,7 @@ static std::string ReadScalarValue(IParamBlock2* pb, ParamID pid, ParamType2 typ
         case TYPE_PCNT_FRAC:
         case TYPE_WORLD:
         case TYPE_COLOR_CHANNEL:
-            return std::to_string(pb->GetFloat(pid, t, tabIndex));
+            return mcp_bridge::number_text::FormatFloat(pb->GetFloat(pid, t, tabIndex));
         case TYPE_INT:
         case TYPE_BOOL:
         case TYPE_TIMEVALUE:
@@ -352,18 +353,20 @@ static std::string ReadScalarValue(IParamBlock2* pb, ParamID pid, ParamType2 typ
             return std::to_string(pb->GetInt(pid, t, tabIndex));
         case TYPE_POINT2: {
             Point2 pt = pb->GetPoint2(pid, t, tabIndex);
-            return "[" + std::to_string(pt.x) + "," + std::to_string(pt.y) + "]";
+            const float v[2] = {pt.x, pt.y};
+            return mcp_bridge::number_text::FormatList(v, 2);
         }
         case TYPE_POINT3:
         case TYPE_RGBA: {
             Point3 pt = pb->GetPoint3(pid, t, tabIndex);
-            return "[" + std::to_string(pt.x) + "," + std::to_string(pt.y) + "," + std::to_string(pt.z) + "]";
+            const float v[3] = {pt.x, pt.y, pt.z};
+            return mcp_bridge::number_text::FormatList(v, 3);
         }
         case TYPE_POINT4:
         case TYPE_FRGBA: {
             Point4 pt = pb->GetPoint4(pid, t, tabIndex);
-            return "[" + std::to_string(pt.x) + "," + std::to_string(pt.y) + "," +
-                   std::to_string(pt.z) + "," + std::to_string(pt.w) + "]";
+            const float v[4] = {pt.x, pt.y, pt.z, pt.w};
+            return mcp_bridge::number_text::FormatList(v, 4);
         }
         case TYPE_STRING:
         case TYPE_FILENAME: {

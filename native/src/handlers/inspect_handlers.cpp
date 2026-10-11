@@ -1,3 +1,4 @@
+#include "mcp_bridge/number_text.h"
 #include "mcp_bridge/native_handlers.h"
 #include "mcp_bridge/handler_helpers.h"
 #include "mcp_bridge/bridge_gup.h"
@@ -26,7 +27,7 @@ static std::string ReadPB2Value(IParamBlock2* pb, ParamID pid, ParamType2 ptype,
         case TYPE_COLOR_CHANNEL: {
             float f = 0;
             pb->GetValue(pid, t, f, FOREVER);
-            return std::to_string(f);
+            return mcp_bridge::number_text::FormatFloat(f);
         }
         case TYPE_INT:
         case TYPE_BOOL:
@@ -41,7 +42,8 @@ static std::string ReadPB2Value(IParamBlock2* pb, ParamID pid, ParamType2 ptype,
         case TYPE_RGBA: {
             Point3 pt(0, 0, 0);
             pb->GetValue(pid, t, pt, FOREVER);
-            return "[" + std::to_string(pt.x) + "," + std::to_string(pt.y) + "," + std::to_string(pt.z) + "]";
+            const float v[3] = {pt.x, pt.y, pt.z};
+            return mcp_bridge::number_text::FormatList(v, 3);
         }
         case TYPE_STRING:
         case TYPE_FILENAME: {
@@ -53,7 +55,8 @@ static std::string ReadPB2Value(IParamBlock2* pb, ParamID pid, ParamType2 ptype,
         case TYPE_FRGBA: {
             Point4 p4(0, 0, 0, 0);
             pb->GetValue(pid, t, p4, FOREVER);
-            return "[" + std::to_string(p4.x) + "," + std::to_string(p4.y) + "," + std::to_string(p4.z) + "," + std::to_string(p4.w) + "]";
+            const float v[4] = {p4.x, p4.y, p4.z, p4.w};
+            return mcp_bridge::number_text::FormatList(v, 4);
         }
         default:
             return "<unsupported>";
@@ -707,9 +710,7 @@ static std::string ReadMtlParamValue(IParamBlock2* pb, ParamID pid, ParamType2 p
         case TYPE_COLOR_CHANNEL: {
             float f = 0;
             pb->GetValue(pid, t, f, FOREVER);
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%.6g", f);
-            return buf;
+            return mcp_bridge::number_text::FormatFloat(f);
         }
         case TYPE_INT:
         case TYPE_TIMEVALUE:
@@ -729,22 +730,17 @@ static std::string ReadMtlParamValue(IParamBlock2* pb, ParamID pid, ParamType2 p
             if (baseType == TYPE_FRGBA) {
                 Point4 p4(0, 0, 0, 0);
                 pb->GetValue(pid, t, p4, FOREVER);
-                char buf[128];
-                snprintf(buf, sizeof(buf), "(color %.6g %.6g %.6g)", p4.x * 255.0f, p4.y * 255.0f, p4.z * 255.0f);
-                return buf;
+                return mcp_bridge::number_text::FormatMaxColor(p4.x, p4.y, p4.z, true);
             }
+            // TYPE_RGBA stores a 0-1 Color; MAXScript colour syntax is 0-255.
             Point3 pt(0, 0, 0);
             pb->GetValue(pid, t, pt, FOREVER);
-            char buf[128];
-            snprintf(buf, sizeof(buf), "(color %g %g %g)", pt.x, pt.y, pt.z);
-            return buf;
+            return mcp_bridge::number_text::FormatMaxColor(pt.x, pt.y, pt.z, true);
         }
         case TYPE_POINT3: {
             Point3 pt(0, 0, 0);
             pb->GetValue(pid, t, pt, FOREVER);
-            char buf[128];
-            snprintf(buf, sizeof(buf), "(color %g %g %g)", pt.x, pt.y, pt.z);
-            return buf;
+            return mcp_bridge::number_text::FormatMaxColor(pt.x, pt.y, pt.z, false);
         }
         case TYPE_TEXMAP: {
             Texmap* tex = nullptr;

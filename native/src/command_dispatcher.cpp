@@ -1,3 +1,4 @@
+#include "mcp_bridge/number_text.h"
 #include "mcp_bridge/command_dispatcher.h"
 #include "mcp_bridge/bridge_gup.h"
 #include "mcp_bridge/native_handlers.h"
@@ -376,7 +377,7 @@ static std::string HandleMaxScript(
             return std::to_string(fpv.i);
         }
         if (fpv.type == TYPE_FLOAT) {
-            return std::to_string(fpv.f);
+            return mcp_bridge::number_text::FormatFloat(fpv.f);  // locale-independent
         }
         if (fpv.type == TYPE_BOOL) {
             return fpv.i ? "true" : "false";

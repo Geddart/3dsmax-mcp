@@ -58,6 +58,20 @@ static int FindModifierIndex(INode* node, const std::string& modName) {
 }
 
 // ── native:add_modifier (Pure SDK) ──────────────────────────
+// A modifier matches a requested class by SDK class name ("ExtrudeMod"),
+// by ClassDesc internal/MAXScript name ("Extrude"), or by its stack name.
+static bool ModifierMatchesClass(Modifier* mod, const std::wstring& wanted) {
+    if (!mod || wanted.empty()) return false;
+    if (_wcsicmp(mod->ClassName().data(), wanted.c_str()) == 0) return true;
+    if (_wcsicmp(mod->GetName(false).data(), wanted.c_str()) == 0) return true;
+    ClassDesc* cd = GetCOREInterface()->GetDllDir().ClassDir().FindClass(mod->SuperClassID(), mod->ClassID());
+    if (cd) {
+        if (cd->InternalName() && _wcsicmp(cd->InternalName(), wanted.c_str()) == 0) return true;
+        if (cd->ClassName() && _wcsicmp(cd->ClassName(), wanted.c_str()) == 0) return true;
+    }
+    return false;
+}
+
 std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP* gup) {
     return gup->GetExecutor().ExecuteSync([&params]() -> std::string {
         json p = json::parse(params, nullptr, false);
@@ -82,7 +96,10 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
         Modifier* mod = (Modifier*)ip->CreateInstance(cd->SuperClassID(), cd->ClassID());
         if (!mod) throw std::runtime_error("Failed to create modifier: " + modClass);
 
-        // Set params via IParamBlock2 if provided
+        // Set params via IParamBlock2 if provided. Params the PB2 path cannot set
+        // (PB1 modifiers such as Extrude, unit/expression values) are applied
+        // through MAXScript once the modifier is on the stack.
+        std::vector<std::pair<std::string, std::string>> pendingParams;
         if (!modParams.empty()) {
             // Reuse ParseParamString pattern from object_handlers
             // Simple key:value parsing
@@ -114,7 +131,7 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
                     while (i < modParams.size() && modParams[i] != ' ') i++;
                 }
                 std::string val = modParams.substr(valStart, i - valStart);
-                SetParamByName(mod, key, val, t);
+                if (!SetParamByName(mod, key, val, t)) pendingParams.emplace_back(key, val);
             }
         }
 
@@ -126,9 +143,32 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
             dobj->AddModifier(mod);
         }
 
+        json failedParams = json::array();
+        if (!pendingParams.empty()) {
+            int stackIdx = -1;
+            Object* ref = node->GetObjectRef();
+            if (ref && ref->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
+                IDerivedObject* d = (IDerivedObject*)ref;
+                for (int m = 0; m < d->NumModifiers(); ++m) {
+                    if (d->GetModifier(m) == mod) { stackIdx = m; break; }
+                }
+            }
+            // SDK index 0 is the top of the stack == MAXScript modifiers[1].
+            const std::string target = "(getAnimByHandle " + std::to_string(NodeHandle(node)) +
+                                       ").modifiers[" + std::to_string(stackIdx + 1) + "]";
+            for (auto& [key, val] : pendingParams) {
+                if (stackIdx < 0 || !TrySetViaMaxScript(target, key, val)) failedParams.push_back(key);
+            }
+            mod->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
+        }
+
         ip->RedrawViews(t);
         json result = NodeIdentityJson(node);
         result["message"] = "Added " + WideToUtf8(mod->ClassName().data()) + " to " + WideToUtf8(node->GetName());
+        if (!failedParams.empty()) {
+            result["failedParams"] = failedParams;
+            result["warnings"] = json::array({"Parameters not applied: " + failedParams.dump()});
+        }
         result["addedModifier"] = {
             {"name", WideToUtf8(mod->GetName(false).data())},
             {"class", WideToUtf8(mod->ClassName().data())},
@@ -473,11 +513,12 @@ std::string NativeHandlers::SetModifierProperty(const std::string& params, MCPBr
 
             auto tryModifier = [&](Modifier* mod, int idx) {
                 if (!mod) return;
-                if (!modClassName.empty()) {
-                    const MCHAR* cn = mod->ClassName().data();
-                    if (_wcsicmp(cn, wModClass.c_str()) != 0) return;
+                if (!modClassName.empty() && !ModifierMatchesClass(mod, wModClass)) return;
+                if (!SetParamByName(mod, propName, propValue, t)) {
+                    const std::string target = "(getAnimByHandle " + std::to_string(NodeHandle(node)) +
+                                               ").modifiers[" + std::to_string(idx + 1) + "]";
+                    if (!TrySetViaMaxScript(target, propName, propValue)) return;
                 }
-                if (!SetParamByName(mod, propName, propValue, t)) return;
 
                 mod->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
                 modCount++;

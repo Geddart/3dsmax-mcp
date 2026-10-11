@@ -1,3 +1,4 @@
+#include "mcp_bridge/number_text.h"
 #include "mcp_bridge/native_handlers.h"
 #include "mcp_bridge/handler_helpers.h"
 #include "mcp_bridge/bridge_gup.h"
@@ -22,17 +23,14 @@ static std::string CompactValue(Animatable* sa, TimeValue t) {
             float fVal = 0;
             Interval valid = FOREVER;
             ctrl->GetValue(t, &fVal, valid, CTRL_ABSOLUTE);
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%.6g", fVal);
-            return buf;
+            return mcp_bridge::number_text::FormatFloat(fVal);
         }
         if (scid == CTRL_POINT3_CLASS_ID || scid == CTRL_POSITION_CLASS_ID) {
             Point3 pt(0, 0, 0);
             Interval valid = FOREVER;
             ctrl->GetValue(t, &pt, valid, CTRL_ABSOLUTE);
-            char buf[128];
-            snprintf(buf, sizeof(buf), "[%.4g,%.4g,%.4g]", pt.x, pt.y, pt.z);
-            return buf;
+            const float v[3] = {pt.x, pt.y, pt.z};
+            return mcp_bridge::number_text::FormatList(v, 3);
         }
     }
     catch (...) {}
@@ -458,7 +456,7 @@ std::string NativeHandlers::AssignController(const std::string& params, MCPBridg
                         ms += "  if tgt != undefined do ctrl.addTarget tgt " + std::to_string(frame) + "\n";
                     } else {
                         ms += "  if tgt != undefined do ctrl.appendTarget tgt " +
-                              std::to_string(weight) + "\n";
+                              mcp_bridge::number_text::FormatFloat(weight) + "\n";
                     }
                 }
             }
@@ -469,7 +467,7 @@ std::string NativeHandlers::AssignController(const std::string& params, MCPBridg
             std::string valStr;
             auto vt = val.type();
             if (vt == json::value_t::string) valStr = val.get<std::string>();
-            else if (vt == json::value_t::number_float) valStr = std::to_string(val.get<double>());
+            else if (vt == json::value_t::number_float) valStr = mcp_bridge::number_text::FormatDouble(val.get<double>());
             else if (vt == json::value_t::number_integer || vt == json::value_t::number_unsigned) valStr = std::to_string(val.get<int>());
             else if (vt == json::value_t::boolean) valStr = val.get<bool>() ? "true" : "false";
             else valStr = val.dump();
@@ -580,7 +578,7 @@ std::string NativeHandlers::SetControllerProps(const std::string& params, MCPBri
             std::string valStr;
             auto vt = val.type();
             if (vt == json::value_t::string) valStr = val.get<std::string>();
-            else if (vt == json::value_t::number_float) valStr = std::to_string(val.get<double>());
+            else if (vt == json::value_t::number_float) valStr = mcp_bridge::number_text::FormatDouble(val.get<double>());
             else if (vt == json::value_t::number_integer || vt == json::value_t::number_unsigned) valStr = std::to_string(val.get<int>());
             else if (vt == json::value_t::boolean) valStr = val.get<bool>() ? "true" : "false";
             else valStr = val.dump();
@@ -674,7 +672,7 @@ std::string NativeHandlers::AddControllerTarget(const std::string& params, MCPBr
         } else if (cls == "Link_Constraint") {
             ms = "$'" + safeName + "'" + sep + safePath + ".controller.addTarget (getNodeByName \"" + safeTgt + "\") " + std::to_string(frame);
         } else if (lowerCls.find("constraint") != std::string::npos) {
-            ms = "$'" + safeName + "'" + sep + safePath + ".controller.appendTarget (getNodeByName \"" + safeTgt + "\") " + std::to_string(weight);
+            ms = "$'" + safeName + "'" + sep + safePath + ".controller.appendTarget (getNodeByName \"" + safeTgt + "\") " + mcp_bridge::number_text::FormatFloat(weight);
         } else {
             throw std::runtime_error("Controller type '" + cls + "' does not support node targets. Use float_script or constraint controllers.");
         }

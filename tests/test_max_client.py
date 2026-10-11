@@ -37,6 +37,12 @@ def _instance(pid, **extra):
 
 
 class MaxClientTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # The operator's real deny list must never leak into fence tests.
+        env = patch.dict("os.environ", {"MCP_UI_DENY_PIDS": ""}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_explicit_instance_wins_over_environment_default(self):
         with patch.dict('os.environ', {'MCP_MAX_PIPE': 'pipe-env'}):
             self.assertEqual(MaxClient(pipe_name='pipe-selected')._resolve_pipe_name(), 'pipe-selected')

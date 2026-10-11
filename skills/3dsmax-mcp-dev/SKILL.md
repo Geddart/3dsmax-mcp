@@ -156,6 +156,9 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 
 ## MCP Tool Pitfalls
 
+- Native bridge numbers: Max's CRT locale follows the Windows region, so on a German system `std::stof`/`sscanf("%f")`/`printf("%g")`/`std::to_string(float)` read "4.5" as 4 and write 4.5 as "4,5". In native code use only `mcp_bridge/number_text.h` (`from_chars`/`to_chars`); never call `setlocale` (process-global, changes Max). Live check: `scripts/verify_numeric_values.py <scratch PID>`.
+- PB2 colours: `(color r g b)` is 0-255 MAXScript syntax but `TYPE_RGBA`/`TYPE_FRGBA` store 0-1, so the native setter divides by 255; `[x,y,z]` passes through unscaled.
+- Native param setters return false for anything they cannot parse exactly (PB1 modifiers like Extrude, units, expressions); the handler then assigns via MAXScript by anim handle (`getAnimByHandle`, NOT `maxOps.getNodeByHandle` — `NodeHandle()` is an anim handle). Keys that still fail come back in `failedParams`/`warnings`, never as silent success.
 - `set_modifier_property`: `name` + `modifier_index` (1-based) for one modifier; `modifier_class` + `names` for batch. Inspect with `inspect_properties(target="modifier")` first.
 - `smart_import`: default `lod_filter="lod0"`. Shared maps match on asset id; variant meshes in a bundle folder with `Textures/` share one material key — omit `name_pattern` for all variants.
 - `palette_laydown`: `sample_mode="random_per_subfolder"` for large per-subfolder asset libraries; `overflow_mode="palette_then_library"` when more than 24 picks.
