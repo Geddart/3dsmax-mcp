@@ -138,6 +138,13 @@ For Data Channel or Max Creation Graph work, read [procedural-graphs.md](procedu
 - `manage_scene` (hold/fetch/reset/save/info)
 - `get_state_sets`, `get_camera_sequence`
 
+### Added 2026-10-12 (every file-writing tool here goes through `path_policy`: `[safe_mode] allowed_dirs`, the open scene's folder, or `%TEMP%\3dsmax-mcp`; refused paths fail with `SAFE_MODE` before anything is written)
+- **camera** toolset: `set_camera` (position + right/up/back basis or look-at; lens from `fov_deg` / `f_px` / `focal_mm`; Physical shift; clip; every value read back), `export_camera` / `import_camera` (JSON `3dsmax-mcp/camera@1`), `project_points` (world -> render pixels, top-left origin, y down), `capture_camera` (exact render frame over a plate, `shaded` or `wire`). Shift is a fraction of render WIDTH on both axes.
+- **vray** toolset: `vray_set_renderer`, `vray_get_settings`, `vray_set_settings` (typed from the live value, read back, unknown names fail before any write), `vray_list_render_elements`, `vray_add_render_element` (LightSelect, Cryptomatte), `vray_remove_render_element`, `vray_get_object_properties`, `vray_set_object_properties`.
+- **scene_files** toolset: `export_geometry` (evaluated mesh to OBJ/JSON, written inside Max), `save_scene_versioned` (next `_V###`, never overwrites, retargets render-output / element / V-Ray paths), `scene_setup` (units, fps, frame range, render size, pixel aspect; read back).
+- **rendering**: `render_float_exr` — unclamped full-frame float (or half) EXR; V-Ray raw image file, Max EXR writer otherwise; header read back.
+- **materials**: `material_roles`. **modeling**: `contact_check`.
+
 ## When to Use `execute_maxscript`
 
 **Almost never.** Only when there is genuinely no dedicated tool:
@@ -158,7 +165,13 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 
 - Native bridge numbers: Max's CRT locale follows the Windows region, so on a German system `std::stof`/`sscanf("%f")`/`printf("%g")`/`std::to_string(float)` read "4.5" as 4 and write 4.5 as "4,5". In native code use only `mcp_bridge/number_text.h` (`from_chars`/`to_chars`); never call `setlocale` (process-global, changes Max). Live check: `scripts/verify_numeric_values.py <scratch PID>`.
 - PB2 colours: `(color r g b)` is 0-255 MAXScript syntax but `TYPE_RGBA`/`TYPE_FRGBA` store 0-1, so the native setter divides by 255; `[x,y,z]` passes through unscaled.
-- Native param setters return false for anything they cannot parse exactly (PB1 modifiers like Extrude, units, expressions); the handler then assigns via MAXScript by anim handle (`getAnimByHandle`, NOT `maxOps.getNodeByHandle` — `NodeHandle()` is an anim handle). Keys that still fail come back in `failedParams`/`warnings`, never as silent success.
+- Native param setters return NotHandled for anything they cannot parse exactly (PB1 modifiers like Extrude, units, expressions); the handler then assigns via MAXScript by anim handle (`getAnimByHandle`, NOT `maxOps.getNodeByHandle` — `NodeHandle()` is an anim handle). Every write, native or MAXScript, is read back.
+- Native setters fail loud: a key that did not stick raises `PARTIAL_APPLY` (retryable=false; `details.handle(s)`, `details.keys[{key, requested, applied|null, reason}]`) from create_object, set_object_property, add_modifier, set_modifier_property, assign_material, set_material_property(ies) and transform_object. The created object/modifier/material STAYS in the scene (the dispatcher commits the undo hold) — fix the listed keys on `details.handle`, never re-run the create. assign_material with a failed key leaves the material assigned to NO node.
+- Bridge units match MAXScript: angle params are degrees and percentage params 0-100, on write and in every inspect output (`unit` / `valueUnits`). Bridges before 2026-10-12 stored sliceFrom "30" as 30 radians and Standard opacity "50" as 5000 %.
+- `Cylinder.sliceOn` silently ignores writes (reads back false); the real parameter is `slice`. An integer param given 12.5 is truncated — now reported as PARTIAL_APPLY with applied 12.
+- `inspect_material_network` reads six levels deep by default (max 16); wrapper chains (CC > mix > CC > bitmap) were `complete=false` at the old depth 3.
+- Corona registers classes with a leading carriage return; every bridge result uses MAXScript's own substitution (`_CoronaPhysicalMtl`). Phoenix FD classes are `PHX*` / `PhoenixFD*` (there is no `phoenixfdliquid`).
+- `material_roles` resolves texture-map roles (base colour, roughness, normal, ...) from the material wiring and audits wrong slots and missing files; `contact_check` is read-only and reports penetrating / intersecting / touching / near_gap mesh pairs with world-space sample points.
 - `set_modifier_property`: `name` + `modifier_index` (1-based) for one modifier; `modifier_class` + `names` for batch. Inspect with `inspect_properties(target="modifier")` first.
 - `smart_import`: default `lod_filter="lod0"`. Shared maps match on asset id; variant meshes in a bundle folder with `Textures/` share one material key — omit `name_pattern` for all variants.
 - `palette_laydown`: `sample_mode="random_per_subfolder"` for large per-subfolder asset libraries; `overflow_mode="palette_then_library"` when more than 24 picks.
@@ -198,6 +211,15 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 - **.NET strings**: convert to MAXScript strings before string methods
 - Controller/wire paths: normalize display tokens like `[#Z Position]` to `[#z_position]`
 - Native pipes are the only transport; if a selected Max exits, rediscover and select an instance instead of retrying a slot/port.
+- `Integer == Float` converts the float to an integer (`12 == 12.5` is true). Compare numeric read-backs with a tolerance, never with `==`.
+- `(Standardmaterial)` with no arguments is the CLASS, not an instance — write `Standardmaterial()`. The native class lookup (FindClassDescByName) does not find Standardmaterial, so it goes through the MAXScript constructor path.
+- In bridge-built MAXScript, `case classOf v of (Color: ... Point4: ...)` inside a `collect` failed to parse (Max 2025); use an if/else chain.
+- Locale (de-DE): `units.decodeValue` parses with the Windows locale, so `"0.1mm"` decodes to 0.0 and `"1.5cm"` to 1.0 — use whole units (`(units.decodeValue "1mm") / 10.0`). Python formats `1.0` as `"1"`, which MAXScript reads as an Integer, and `formattedPrint` of an Integer with `".7g"` prints 4.94e-324 — coerce with `as float`. `formattedPrint` itself writes '.'.
+- Exact, locale-free float read-back: return `bit.floatAsInt v` and decode the IEEE-754 bit pattern in Python (camera tools do this).
+- `Nf` time literals are converted to ticks at parse time with the CURRENT frame rate: set `frameRate` first, then the range with plain integers, or the range lands on the wrong frames.
+- An open Render Setup dialog writes its stale values back over `renderWidth`/`renderHeight` edits, and `rendLockImageAspectRatio` constrains them: close the dialog and release the lock around size edits, restoring both even when a setter throws (`scene_setup` does).
+- Max's OBJ exporter takes its settings from a shared per-user ini (ZBrush preset, Y/Z flip, .mtl side files) that cannot be set per call — `export_geometry` writes OBJ/JSON from MAXScript instead.
+- A handler exception inside the dispatcher's NativeUndoTransaction cancels theHold: anything that reports a created handle together with an error must commit the hold first (PARTIAL_APPLY does).
 
 ## Dialogs and long operations
 
@@ -274,6 +296,14 @@ These are the rules that break scenes silently. The full list lives in
 ### RailClone
 - The style graph **cannot** be built via MAXScript. Load a pre-built style from the library
   (`$.railclone.loadLibraryItemByPath ...`), then drive only the exposed parameters
+
+### V-Ray
+- `render() outputFile:".exr"` with V-Ray (CPU or GPU) clamps at 1.0: it saves Max's frame buffer, which is not 32-bit by default (`use_32bit_buffer` / `output_force32bit_3dsmax_vfb` off). Use `render_float_exr`, which writes V-Ray's raw image file (`render_scene` still clamps).
+- V-Ray GPU's own `output_*` properties are read-only copies: set them on `renderers.current.V_Ray_settings`, which also holds `colorMapping_*`. The raw file gets a `.0000` frame suffix.
+- An active V-Ray frame-buffer region crops the raw EXR's dataWindow, and `vfbControl` answers OK for every flag (even unknown ones), so region state cannot be queried — `render_float_exr` pads the file to the full frame and reports `paddedFrom`.
+- Renderer class names carry the build (`V_Ray_7__update_4_hotfix_2_DR2`, `V_Ray_GPU_7__...`): find them by pattern in `RendererClass.classes`. A fresh GPU instance resets its settings — `vray_set_renderer` stashes the outgoing instance so a CPU->GPU->CPU round trip keeps them.
+- V-Ray object properties are node user props (`VRay_Matte_Enable = True`, floats `%f` in the CRT locale: `VRay_Matte_Alpha = -1,000000` on de-DE). The Object Properties dialog parses them with that locale, so a '.'-written `-0.5` displays as 0,0 — use `vray_set_object_properties`, which writes the session separator.
+- VRayLightSelect `mode` and VRayCryptomatte `id_type` integers follow the Render Setup dropdown order (verified on V-Ray 7.40.04; `id_type=2` is "Node material name"); `lights_exclude_type` 1 = include, 0 = exclude.
 
 ## MAXScript Reference (bundled)
 

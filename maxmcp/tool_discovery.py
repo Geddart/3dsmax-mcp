@@ -63,16 +63,17 @@ TOOLSET_SPECS = (
     ),
     ToolsetSpec(
         "modeling",
-        "Modifier stacks, booleans, splines, and explicit polygon vertex editing.",
-        ("modifiers", "booleans", "splines", "poly_edit"),
+        "Modifier stacks, booleans, splines, explicit polygon vertex editing, and mesh contact/penetration checks.",
+        ("modifiers", "booleans", "splines", "poly_edit", "contact_check"),
     ),
     ToolsetSpec(
         "materials",
-        "Materials, texture maps, material networks, palettes, replacement, and smart import.",
+        "Materials, texture maps, material networks, map-role audits, palettes, replacement, and smart import.",
         (
             "materials",
             "material_ops",
             "material_network",
+            "material_roles",
             "palette_laydown",
             "smart_import",
             "material_replace",
@@ -140,8 +141,23 @@ TOOLSET_SPECS = (
     ),
     ToolsetSpec(
         "rendering",
-        "Render configuration and render automation drivers.",
-        ("render", "render_automations"),
+        "Render configuration, render automation drivers, and unclamped float EXR renders.",
+        ("render", "render_automations", "render_exr"),
+    ),
+    ToolsetSpec(
+        "vray",
+        "V-Ray CPU/GPU renderer switch, typed settings with read-back, render elements, and object properties.",
+        ("vray",),
+    ),
+    ToolsetSpec(
+        "camera",
+        "Camera match: build cameras from solved data, JSON export/import, world-to-pixel projection, plate-overlay captures.",
+        ("camera",),
+    ),
+    ToolsetSpec(
+        "scene_files",
+        "Geometry export to OBJ/JSON, versioned save-as with render-path retargeting, and scene units/fps/range/resolution setup.",
+        ("scene_files",),
     ),
     ToolsetSpec(
         "chat",

@@ -68,6 +68,12 @@ _READ_ONLY_TOOLS = {
     "mcg_list_graphs",
     "mcg_inspect_graph",
     "mcg_search_operators",
+    "material_roles",
+    "contact_check",
+    "project_points",
+    "vray_get_settings",
+    "vray_list_render_elements",
+    "vray_get_object_properties",
 }
 
 _DESTRUCTIVE_TOOLS = {
@@ -90,6 +96,7 @@ _DESTRUCTIVE_TOOLS = {
     "undo_last",
     "mcg_cleanup_workspace",
     "mcg_reload_operators",
+    "vray_remove_render_element",
 }
 
 _IDEMPOTENT_TOOLS = {
@@ -118,6 +125,12 @@ _IDEMPOTENT_TOOLS = {
     "mcg_list_graphs",
     "mcg_inspect_graph",
     "mcg_search_operators",
+    "material_roles",
+    "contact_check",
+    "project_points",
+    "vray_get_settings",
+    "vray_list_render_elements",
+    "vray_get_object_properties",
 }
 
 
@@ -220,9 +233,11 @@ CORE_TOOL_MODULES = (
     "booleans",
     "splines",
     "poly_edit",
+    "contact_check",
     "materials",
     "material_ops",
     "material_network",
+    "material_roles",
     "palette_laydown",
     "smart_import",
     "material_replace",
@@ -248,6 +263,7 @@ SPECIALTY_TOOL_MODULES = (
     "railclone",
     "render",
     "render_automations",
+    "render_exr",
     "scattering",
     "state_sets",
     "tyflow",
@@ -256,6 +272,9 @@ SPECIALTY_TOOL_MODULES = (
     "tyflow_manifest",
     "tyflow_census",
     "wire_params",
+    "camera",
+    "vray",
+    "scene_files",
 )
 
 
