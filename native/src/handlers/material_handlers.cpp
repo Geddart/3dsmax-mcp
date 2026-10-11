@@ -129,10 +129,29 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
         if (!mtl) {
             // Fallback: some plugins (Arnold, scripted materials) don't register
             // in DllDir under their MAXScript class name. Create via MAXScript.
+            if (!IsPlainIdentifier(matClass)) {
+                throw std::runtime_error("Unknown material class: " + matClass);
+            }
             std::string nameParam = matName.empty() ? "" : " name:\"" + JsonEscape(matName) + "\"";
-            std::string script = "(" + matClass + nameParam + " " + matParams + ")";
+            // `(Standardmaterial)` without arguments is the CLASS, not an instance:
+            // an argument-less constructor needs the explicit `()`.
+            std::string script = "(" + matClass + (nameParam.empty() ? std::string("()") : nameParam) + ")";
             try {
-                RunMAXScript("global __mcp_tmp_mtl = " + script);
+                const std::string created = RunMAXScript(
+                    "global __mcp_tmp_mtl = " + script + "; "
+                    "if (superClassOf __mcp_tmp_mtl) == material then \"__MCP_MTL_OK__\" else \"not a material\"");
+                if (created != "__MCP_MTL_OK__") {
+                    throw std::runtime_error("Unknown material class: " + matClass);
+                }
+                // Params are assigned one by one and read back (instead of
+                // constructor keywords, which MAXScript silently ignores when unknown).
+                json failedKeys = json::array();
+                json applied = json::object();
+                for (auto& [key, val] : ParseMtlParams(matParams)) {
+                    const SetOutcome outcome = TrySetViaMaxScript("__mcp_tmp_mtl", key, val);
+                    if (outcome.ok()) applied[key] = outcome.applied;
+                    else failedKeys.push_back(PartialKey(key, val, outcome.applied, outcome.hasApplied, outcome.reason));
+                }
                 // Now assign via MAXScript too since we can't get the Mtl* back easily
                 int assignCount = 0;
                 json notFound = json::array();
@@ -141,9 +160,8 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
                 for (unsigned long long handle : handles) {
                     INode* node = FindNodeByHandle(handle);
                     if (node && seen.insert(node).second) {
-                        std::string nodeName = WideToUtf8(node->GetName());
-                        std::string assignScript = "(getNodeByName \"" + JsonEscape(nodeName) +
-                            "\").material = __mcp_tmp_mtl";
+                        std::string assignScript = "(getAnimByHandle " + std::to_string(NodeHandle(node)) +
+                            ").material = __mcp_tmp_mtl";
                         RunMAXScript(assignScript);
                         assigned.push_back(NodeIdentityJson(node));
                         assignCount++;
@@ -167,9 +185,8 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
                     }
                     INode* node = matches[0];
                     if (node && seen.insert(node).second) {
-                        std::string nodeName = WideToUtf8(node->GetName());
-                        std::string assignScript = "(getNodeByName \"" + JsonEscape(nodeName) +
-                            "\").material = __mcp_tmp_mtl";
+                        std::string assignScript = "(getAnimByHandle " + std::to_string(NodeHandle(node)) +
+                            ").material = __mcp_tmp_mtl";
                         RunMAXScript(assignScript);
                         assigned.push_back(NodeIdentityJson(node));
                         assignCount++;
@@ -178,19 +195,42 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
                 // Get the material name back
                 std::string mtlName = RunMAXScript("__mcp_tmp_mtl.name");
                 std::string mtlClass = RunMAXScript("(classOf __mcp_tmp_mtl) as string");
+                std::string mtlHandle = RunMAXScript("(getHandleByAnim __mcp_tmp_mtl) as string");
                 ip->RedrawViews(t);
 
-                json result;
-                result["message"] = "Created " + mtlClass + " \"" + mtlName +
-                    "\" and assigned to " + std::to_string(assignCount) + " object(s)";
-                result["material"] = {
+                json material = {
                     {"name", mtlName},
                     {"class", mtlClass},
                     {"requestedClass", matClass},
                 };
+                {
+                    // getHandleByAnim formats like "12345P"; keep the digits.
+                    unsigned long long h = 0ULL;
+                    for (char c : mtlHandle) {
+                        if (c < '0' || c > '9') break;
+                        h = h * 10ULL + static_cast<unsigned long long>(c - '0');
+                    }
+                    if (h) material["handle"] = h;
+                }
+                if (!failedKeys.empty()) {
+                    json details;
+                    details["material"] = material;
+                    details["assigned"] = assigned;
+                    details["keys"] = failedKeys;
+                    details["applied"] = applied;
+                    ThrowPartialApply("assign_material: created " + mtlClass + " \"" + mtlName + "\" but " +
+                                      std::to_string(failedKeys.size()) + " parameter(s) did not apply: " +
+                                      failedKeys.dump(), details);
+                }
+
+                json result;
+                result["message"] = "Created " + mtlClass + " \"" + mtlName +
+                    "\" and assigned to " + std::to_string(assignCount) + " object(s)";
+                result["material"] = material;
                 result["assigned"] = assigned;
                 result["assignedCount"] = assignCount;
                 result["notFound"] = notFound;
+                result["applied"] = applied;
                 return result.dump();
             } catch (const std::exception& e) {
                 std::string message = e.what();
@@ -211,10 +251,16 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
         // Set params via IParamBlock2; the rest (shader sub-blocks, FRGBA with
         // units, PB1 materials) go through MAXScript after assignment.
         std::vector<std::pair<std::string, std::string>> pendingMtlParams;
+        json failedKeys = json::array();
+        json applied = json::object();
         if (!matParams.empty()) {
             auto kvPairs = ParseMtlParams(matParams);
             for (auto& [key, val] : kvPairs) {
-                if (!SetParamByName((Animatable*)mtl, key, val, t)) pendingMtlParams.emplace_back(key, val);
+                const SetOutcome outcome = SetParamByName((Animatable*)mtl, key, val, t);
+                if (outcome.ok()) applied[key] = outcome.applied;
+                else if (outcome.status == SetStatus::Mismatch)
+                    failedKeys.push_back(PartialKey(key, val, outcome.applied, outcome.hasApplied, outcome.reason));
+                else pendingMtlParams.emplace_back(key, val);
             }
         }
 
@@ -258,32 +304,47 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
             }
         }
 
-        json failedMtlParams = json::array();
+        // The material itself is the MAXScript target (by anim handle), so the
+        // fallback works even when no node was assigned.
+        const unsigned long long mtlHandle =
+            static_cast<unsigned long long>(Animatable::GetHandleByAnim(mtl));
+        const std::string mtlTarget = "(getAnimByHandle " + std::to_string(mtlHandle) + ")";
+        (void)firstAssigned;
         for (auto& [key, val] : pendingMtlParams) {
-            const bool ok = firstAssigned && TrySetViaMaxScript(
-                "(getAnimByHandle " + std::to_string(NodeHandle(firstAssigned)) + ").material", key, val);
-            if (!ok) failedMtlParams.push_back(key);
+            const SetOutcome outcome = TrySetViaMaxScript(mtlTarget, key, val);
+            if (outcome.ok()) applied[key] = outcome.applied;
+            else failedKeys.push_back(PartialKey(key, val, outcome.applied, outcome.hasApplied, outcome.reason));
         }
 
         mtl->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
         ip->RedrawViews(t);
 
+        const json material = {
+            {"name", WideToUtf8(mtl->GetName().data())},
+            {"class", WideToUtf8(mtl->ClassName().data())},
+            {"requestedClass", matClass},
+            {"handle", mtlHandle},
+        };
+        if (!failedKeys.empty()) {
+            json details;
+            details["material"] = material;
+            details["assigned"] = assigned;
+            details["keys"] = failedKeys;
+            details["applied"] = applied;
+            ThrowPartialApply("assign_material: created " + WideToUtf8(mtl->ClassName().data()) + " \"" +
+                              WideToUtf8(mtl->GetName().data()) + "\" but " + std::to_string(failedKeys.size()) +
+                              " parameter(s) did not apply: " + failedKeys.dump(), details);
+        }
+
         json result;
         result["message"] = "Created " + WideToUtf8(mtl->ClassName().data()) + " \"" +
                             WideToUtf8(mtl->GetName().data()) + "\" and assigned to " +
                             std::to_string(assignCount) + " object(s)";
-        result["material"] = {
-            {"name", WideToUtf8(mtl->GetName().data())},
-            {"class", WideToUtf8(mtl->ClassName().data())},
-            {"requestedClass", matClass},
-        };
+        result["material"] = material;
         result["assigned"] = assigned;
         result["assignedCount"] = assignCount;
         result["notFound"] = notFound;
-        if (!failedMtlParams.empty()) {
-            result["failedParams"] = failedMtlParams;
-            result["warnings"] = json::array({"Material parameters not applied: " + failedMtlParams.dump()});
-        }
+        result["applied"] = applied;
         return result.dump();
     });
 }
@@ -312,41 +373,43 @@ std::string NativeHandlers::SetMaterialProperty(const std::string& params, MCPBr
         Interface* ip = GetCOREInterface();
         TimeValue t = ip->GetTime();
 
-        auto propertyResult = [&](const std::string& message) -> std::string {
-            json result = NodeIdentityJson(node);
-            result["message"] = message;
-            result["property"] = prop;
-            result["value"] = value;
-            result["material"] = {
-                {"name", WideToUtf8(mtl->GetName().data())},
-                {"class", WideToUtf8(mtl->ClassName().data())},
-                {"sub_material_index", subMatIndex},
-            };
-            return result.dump();
+        if (!IsPropertyPath(prop)) {
+            throw std::runtime_error("Invalid material property name: " + prop);
+        }
+        const unsigned long long mtlHandle =
+            static_cast<unsigned long long>(Animatable::GetHandleByAnim(mtl));
+        const json material = {
+            {"name", WideToUtf8(mtl->GetName().data())},
+            {"class", WideToUtf8(mtl->ClassName().data())},
+            {"sub_material_index", subMatIndex},
+            {"handle", mtlHandle},
         };
 
-        // Pure SDK path: try IParamBlock2 first
-        if (SetParamByName((Animatable*)mtl, prop, value, t)) {
-            mtl->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
-            ip->RedrawViews(t);
-            return propertyResult("Set " + WideToUtf8(mtl->GetName().data()) + "." + prop);
+        // IParamBlock2 first; texture map / material references held in MAXScript
+        // globals (value="FresnelGlow"), shader sub-blocks and dotted paths
+        // ("diffuseMap.coords.U_Tiling") go through MAXScript on the material
+        // itself, addressed by anim handle — never by (possibly duplicate) node name.
+        const SetOutcome outcome = SetParamWithFallback(
+            (Animatable*)mtl, "(getAnimByHandle " + std::to_string(mtlHandle) + ")", prop, value, t,
+            /*allowPath=*/true);
+        mtl->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
+        ip->RedrawViews(t);
+
+        if (!outcome.ok()) {
+            json details = NodeIdentityJson(node);
+            details["material"] = material;
+            details["keys"] = json::array({PartialKey(prop, value, outcome.applied, outcome.hasApplied, outcome.reason)});
+            ThrowPartialApply("set_material_property: " + prop + " not applied on " +
+                              WideToUtf8(mtl->GetName().data()) + " (" + outcome.reason + ")", details);
         }
 
-        // For texture map / material reference assignments that reference a MAXScript
-        // global variable (e.g. value="FresnelGlow"), we must resolve the variable name
-        // to a pointer. This is the ONE case where pure SDK can't work — MAXScript globals
-        // have no SDK accessor. We use a single targeted RunMAXScript call.
-        std::string matExpr;
-        if (subMatIndex > 0)
-            matExpr = "(getNodeByName \"" + JsonEscape(name) + "\").material[" + std::to_string(subMatIndex) + "]";
-        else
-            matExpr = "(getNodeByName \"" + JsonEscape(name) + "\").material";
-
-        std::string script = "try (" + matExpr + "." + prop + " = " + value +
-                             "; \"Set " + JsonEscape(prop) + "\") catch (\"Error: \" + getCurrentException())";
-        std::string result = RunMAXScript(script);
-        ip->RedrawViews(t);
-        return propertyResult(result);
+        json result = NodeIdentityJson(node);
+        result["message"] = "Set " + WideToUtf8(mtl->GetName().data()) + "." + prop;
+        result["property"] = prop;
+        result["value"] = value;
+        result["applied"] = outcome.applied;
+        result["material"] = material;
+        return result.dump();
     });
 }
 
@@ -375,43 +438,56 @@ std::string NativeHandlers::SetMaterialProperties(const std::string& params, MCP
 
         json okList = json::array();
         json errList = json::array();
+        json failedKeys = json::array();
+        json applied = json::object();
 
-        // Build MAXScript mat expression for fallback
-        std::string matExpr;
-        if (subMatIndex > 0)
-            matExpr = "(getNodeByName \"" + JsonEscape(name) + "\").material[" + std::to_string(subMatIndex) + "]";
-        else
-            matExpr = "(getNodeByName \"" + JsonEscape(name) + "\").material";
+        // MAXScript fallback target: the material itself, by anim handle.
+        const unsigned long long mtlHandle =
+            static_cast<unsigned long long>(Animatable::GetHandleByAnim(mtl));
+        const std::string matExpr = "(getAnimByHandle " + std::to_string(mtlHandle) + ")";
 
         for (auto& [prop, value] : properties) {
-            // Try pure SDK IParamBlock2 first
-            if (SetParamByName((Animatable*)mtl, prop, value, t)) {
-                okList.push_back(prop);
+            if (!IsPropertyPath(prop)) {
+                failedKeys.push_back(PartialKey(prop, value, "", false, "invalid property name"));
+                errList.push_back(prop + ": invalid property name");
                 continue;
             }
-
-            // Fallback for texture map / reference assignments
-            try {
-                std::string script = matExpr + "." + prop + " = " + value;
-                RunMAXScript(script);
+            const SetOutcome outcome = SetParamWithFallback(
+                (Animatable*)mtl, matExpr, prop, value, t, /*allowPath=*/true);
+            if (outcome.ok()) {
                 okList.push_back(prop);
-            } catch (...) {
-                errList.push_back(prop + ": failed to set");
+                applied[prop] = outcome.applied;
+            } else {
+                failedKeys.push_back(PartialKey(prop, value, outcome.applied, outcome.hasApplied, outcome.reason));
+                errList.push_back(prop + ": " + outcome.reason);
             }
         }
 
         mtl->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
         ip->RedrawViews(t);
 
-        json result = NodeIdentityJson(node);
-        result["message"] = "Set " + std::to_string(okList.size()) + " properties on " +
-                            WideToUtf8(mtl->GetName().data());
-        result["material"] = {
+        const json material = {
             {"name", WideToUtf8(mtl->GetName().data())},
             {"class", WideToUtf8(mtl->ClassName().data())},
             {"sub_material_index", subMatIndex},
+            {"handle", mtlHandle},
         };
+        if (!failedKeys.empty()) {
+            json details = NodeIdentityJson(node);
+            details["material"] = material;
+            details["keys"] = failedKeys;
+            details["applied"] = applied;
+            ThrowPartialApply("set_material_properties: " + std::to_string(failedKeys.size()) + " of " +
+                              std::to_string(properties.size()) + " properties did not apply on " +
+                              WideToUtf8(mtl->GetName().data()), details);
+        }
+
+        json result = NodeIdentityJson(node);
+        result["message"] = "Set " + std::to_string(okList.size()) + " properties on " +
+                            WideToUtf8(mtl->GetName().data());
+        result["material"] = material;
         result["propertiesSet"] = okList;
+        result["applied"] = applied;
         result["errors"] = errList;
         return result.dump();
     });
@@ -500,9 +576,9 @@ std::string NativeHandlers::CreateShellMaterial(const std::string& params, MCPBr
         // Shell Material publishes these as PB2 integer parameters. Set both
         // explicitly instead of relying on class-version defaults.
         const bool setRender = SetParamByName(
-            shellMaterial, "renderMtlIndex", std::to_string(renderSlot), t);
+            shellMaterial, "renderMtlIndex", std::to_string(renderSlot), t).ok();
         const bool setViewport = SetParamByName(
-            shellMaterial, "viewportMtlIndex", std::to_string(viewportSlot), t);
+            shellMaterial, "viewportMtlIndex", std::to_string(viewportSlot), t).ok();
         if (!setRender || !setViewport) {
             shellMaterial->DeleteThis();
             throw std::runtime_error("Shell_Material slot parameters are unavailable");

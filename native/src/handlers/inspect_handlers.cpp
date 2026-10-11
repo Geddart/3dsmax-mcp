@@ -27,7 +27,7 @@ static std::string ReadPB2Value(IParamBlock2* pb, ParamID pid, ParamType2 ptype,
         case TYPE_COLOR_CHANNEL: {
             float f = 0;
             pb->GetValue(pid, t, f, FOREVER);
-            return mcp_bridge::number_text::FormatFloat(f);
+            return FormatPB2Float(ptype, f);  // degrees / 0-100 for angle / percent
         }
         case TYPE_INT:
         case TYPE_BOOL:
@@ -133,6 +133,8 @@ static json EnumPB2Properties(Animatable* anim, TimeValue t) {
                 std::string val = ReadPB2Value(pb, pid, pd.type, t);
                 prop["value"] = val;
                 prop["runtimeType"] = PB2TypeName(pd.type);
+                const std::string unit = PB2UnitLabel(pd.type);
+                if (!unit.empty()) prop["unit"] = unit;  // value is in MAXScript units
             }
 
             props.push_back(prop);
@@ -710,7 +712,7 @@ static std::string ReadMtlParamValue(IParamBlock2* pb, ParamID pid, ParamType2 p
         case TYPE_COLOR_CHANNEL: {
             float f = 0;
             pb->GetValue(pid, t, f, FOREVER);
-            return mcp_bridge::number_text::FormatFloat(f);
+            return FormatPB2Float(ptype, f);  // degrees / 0-100 for angle / percent
         }
         case TYPE_INT:
         case TYPE_TIMEVALUE:
@@ -952,6 +954,8 @@ std::string NativeHandlers::GetMaterialSlots(const std::string& params, MCPBridg
                 slot["name"] = paramName;
                 if (includeValues) {
                     slot["value"] = ReadMtlParamValue(pb, pid, pd.type, t);
+                    const std::string unit = PB2UnitLabel(pd.type);
+                    if (!unit.empty()) slot["unit"] = unit;  // degrees / percent, as MAXScript reports
                 }
 
                 // Route to the right category array

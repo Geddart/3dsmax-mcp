@@ -344,7 +344,7 @@ static std::string ReadScalarValue(IParamBlock2* pb, ParamID pid, ParamType2 typ
         case TYPE_PCNT_FRAC:
         case TYPE_WORLD:
         case TYPE_COLOR_CHANNEL:
-            return mcp_bridge::number_text::FormatFloat(pb->GetFloat(pid, t, tabIndex));
+            return FormatPB2Float(type, pb->GetFloat(pid, t, tabIndex));  // degrees / 0-100 for angle / percent
         case TYPE_INT:
         case TYPE_BOOL:
         case TYPE_TIMEVALUE:
@@ -410,7 +410,7 @@ static void AppendFileMeta(json& files, const std::string& path, const std::stri
 }
 
 static void CollectPB2Values(MtlBase* base, const std::string& nodeId, InspectContext& ctx,
-                             json& values, json& files) {
+                             json& values, json& files, json& units) {
     int numPB = base->NumParamBlocks();
     for (int pbIdx = 0; pbIdx < numPB; ++pbIdx) {
         IParamBlock2* pb = base->GetParamBlock(pbIdx);
@@ -467,6 +467,9 @@ static void CollectPB2Values(MtlBase* base, const std::string& nodeId, InspectCo
                 std::string val = ReadScalarValue(pb, pid, pd.type, ctx.time);
                 if (!val.empty()) values[name] = val;
             }
+            // Angles are reported in degrees and percentages in 0-100 (MAXScript units).
+            const std::string unit = PB2UnitLabel(pd.type);
+            if (!unit.empty() && values.contains(name)) units[name] = unit;
         }
     }
 }
@@ -525,7 +528,8 @@ static void TraverseMaterialGraph(MtlBase* base, const std::string& parentId,
 
     json values = json::object();
     json files = json::array();
-    CollectPB2Values(base, nodeId, ctx, values, files);
+    json units = json::object();
+    CollectPB2Values(base, nodeId, ctx, values, files, units);
 
     json node;
     node["id"] = nodeId;
@@ -536,6 +540,7 @@ static void TraverseMaterialGraph(MtlBase* base, const std::string& parentId,
     if (!edge.empty()) node["edge"] = edge;
     if (!files.empty()) node["files"] = files;
     if (ctx.includeValues && !values.empty()) node["values"] = values;
+    if (ctx.includeValues && !units.empty()) node["valueUnits"] = units;
 
     if (ContainsInsensitive(ClassName(base), "Image_tiles")) {
         int tileCount = (int)files.size();

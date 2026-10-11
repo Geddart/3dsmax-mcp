@@ -6,6 +6,8 @@
 #include <iparamb2.h>
 #include <istdplug.h>
 #include <decomp.h>
+#include <algorithm>
+#include <cmath>
 #include <set>
 #include <unordered_map>
 
@@ -187,38 +189,62 @@ std::string NativeHandlers::SetObjectProperty(const std::string& params, MCPBrid
         std::string lprop = prop;
         std::transform(lprop.begin(), lprop.end(), lprop.begin(), ::tolower);
 
-        auto propertyResult = [&](const std::string& message) -> std::string {
+        auto propertyResult = [&](const std::string& message, const std::string& applied) -> std::string {
             json result = NodeIdentityJson(node);
             result["message"] = message;
             result["property"] = prop;
             result["value"] = value;
+            result["applied"] = applied;  // read back after the write
             if (lprop == "pos" || lprop == "position") {
                 result["spatial"] = SpatialSnapshot::BuildSpatialSnapshot(node, t);
             }
             return result.dump();
         };
+        // Fail loud: the property was requested and did not end up as asked.
+        auto partial = [&](const std::string& applied, bool hasApplied, const std::string& reason) {
+            json details = NodeIdentityJson(node);
+            details["keys"] = json::array({PartialKey(prop, value, applied, hasApplied, reason)});
+            ThrowPartialApply("set_object_property: " + prop + " not applied on " +
+                              WideToUtf8(node->GetName()) + " (" + reason + ")", details);
+        };
+        auto parseBool = [&](bool& out) -> bool {
+            std::string lv = value;
+            std::transform(lv.begin(), lv.end(), lv.begin(), ::tolower);
+            if (lv == "true" || lv == "1" || lv == "on") { out = true; return true; }
+            if (lv == "false" || lv == "0" || lv == "off") { out = false; return true; }
+            return false;
+        };
+        auto boolText = [](bool b) { return std::string(b ? "true" : "false"); };
 
-        // ── Node-level properties (direct SDK) ──────────────────
+        // ── Node-level properties (direct SDK, read back) ───────
         if (lprop == "pos" || lprop == "position") {
             Point3 pt;
-            if (ParsePoint3(value, pt)) {
-                Matrix3 tm = node->GetNodeTM(t);
-                tm.SetTrans(pt);
-                node->SetNodeTM(t, tm);
-                ip->RedrawViews(t);
-                return propertyResult("Set pos on " + WideToUtf8(node->GetName()));
+            if (!ParsePoint3(value, pt)) partial("", false, "cannot parse Point3 from the value");
+            Matrix3 tm = node->GetNodeTM(t);
+            tm.SetTrans(pt);
+            node->SetNodeTM(t, tm);
+            ip->RedrawViews(t);
+            const Point3 got = node->GetNodeTM(t).GetTrans();
+            const float gl[3] = {got.x, got.y, got.z};
+            const std::string applied = mcp_bridge::number_text::FormatList(gl, 3);
+            const double w[3] = {pt.x, pt.y, pt.z};
+            const double g[3] = {got.x, got.y, got.z};
+            if (!mcp_bridge::param_units::ComponentsMatch(w, g, 3, 1e-4)) {
+                partial(applied, true, "node position differs after the write (locked or constrained controller?)");
             }
-            throw std::runtime_error("Cannot parse Point3 from: " + value);
+            return propertyResult("Set pos on " + WideToUtf8(node->GetName()), applied);
         }
 
         if (lprop == "wirecolor") {
             DWORD col;
-            if (ParseColor(value, col)) {
-                node->SetWireColor(col);
-                ip->RedrawViews(t);
-                return propertyResult("Set wirecolor on " + WideToUtf8(node->GetName()));
-            }
-            throw std::runtime_error("Cannot parse color from: " + value);
+            if (!ParseColor(value, col)) partial("", false, "cannot parse a colour from the value");
+            node->SetWireColor(col);
+            ip->RedrawViews(t);
+            const DWORD got = node->GetWireColor();
+            const std::string applied = "(color " + std::to_string(GetRValue(got)) + " " +
+                                        std::to_string(GetGValue(got)) + " " + std::to_string(GetBValue(got)) + ")";
+            if ((got & 0xFFFFFF) != (col & 0xFFFFFF)) partial(applied, true, "wirecolor differs after the write");
+            return propertyResult("Set wirecolor on " + WideToUtf8(node->GetName()), applied);
         }
 
         if (lprop == "name") {
@@ -227,51 +253,50 @@ std::string NativeHandlers::SetObjectProperty(const std::string& params, MCPBrid
             if (wval.size() >= 2 && wval.front() == L'"' && wval.back() == L'"')
                 wval = wval.substr(1, wval.size() - 2);
             node->SetName(wval.c_str());
-            return propertyResult("Set name on " + WideToUtf8(node->GetName()));
+            const std::string applied = WideToUtf8(node->GetName());
+            if (Utf8ToWide(applied) != wval) partial(applied, true, "name differs after the write");
+            return propertyResult("Set name on " + applied, applied);
         }
 
-        if (lprop == "ishidden" || lprop == "hidden") {
-            bool v = (value == "true" || value == "1" || value == "on");
-            node->Hide(v ? TRUE : FALSE);
+        if (lprop == "ishidden" || lprop == "hidden" || lprop == "isfrozen" || lprop == "frozen" ||
+            lprop == "renderable") {
+            bool v = false;
+            if (!parseBool(v)) partial("", false, "expected true/false");
+            bool got = false;
+            std::string label;
+            if (lprop == "ishidden" || lprop == "hidden") {
+                node->Hide(v ? TRUE : FALSE);
+                got = node->IsHidden() != 0;
+                label = "isHidden";
+            } else if (lprop == "isfrozen" || lprop == "frozen") {
+                node->Freeze(v ? TRUE : FALSE);
+                got = node->IsFrozen() != 0;
+                label = "isFrozen";
+            } else {
+                node->SetRenderable(v ? TRUE : FALSE);
+                got = node->Renderable() != 0;
+                label = "renderable";
+            }
             ip->RedrawViews(t);
-            return propertyResult("Set isHidden on " + WideToUtf8(node->GetName()));
+            if (got != v) partial(boolText(got), true, label + " differs after the write");
+            return propertyResult("Set " + label + " on " + WideToUtf8(node->GetName()), boolText(got));
         }
 
-        if (lprop == "isfrozen" || lprop == "frozen") {
-            bool v = (value == "true" || value == "1" || value == "on");
-            node->Freeze(v ? TRUE : FALSE);
-            ip->RedrawViews(t);
-            return propertyResult("Set isFrozen on " + WideToUtf8(node->GetName()));
-        }
-
-        if (lprop == "renderable") {
-            bool v = (value == "true" || value == "1" || value == "on");
-            node->SetRenderable(v ? TRUE : FALSE);
-            return propertyResult("Set renderable on " + WideToUtf8(node->GetName()));
-        }
-
-        // ── Base object IParamBlock2 properties ─────────────────
-        ObjectState os = node->EvalWorldState(t);
+        // ── Base object IParamBlock2 properties, then MAXScript ──
         Object* baseObj = node->GetObjectRef();
         // Walk past derived objects to get the base
         while (baseObj && baseObj->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
             baseObj = ((IDerivedObject*)baseObj)->GetObjRef();
         }
 
-        if (baseObj && SetParamByName(baseObj, prop, value, t)) {
-            baseObj->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
-            ip->RedrawViews(t);
-            return propertyResult("Set " + prop + " on " + WideToUtf8(node->GetName()));
-        }
-
-        // Not settable through IParamBlock2 (legacy PB1 object, unit/expression
-        // value, non-PB property): let MAXScript evaluate it exactly.
-        if (TrySetViaMaxScript("getAnimByHandle " + std::to_string(NodeHandle(node)), prop, value)) {
-            ip->RedrawViews(t);
-            return propertyResult("Set " + prop + " on " + WideToUtf8(node->GetName()) + " (MAXScript)");
-        }
-
-        throw std::runtime_error("Property not found or cannot set: " + prop);
+        // Whatever IParamBlock2 cannot write (legacy PB1 object, unit/expression
+        // value, non-PB property) MAXScript evaluates exactly, by anim handle.
+        const SetOutcome outcome = SetParamWithFallback(
+            baseObj, "(getAnimByHandle " + std::to_string(NodeHandle(node)) + ")", prop, value, t);
+        if (baseObj) baseObj->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
+        ip->RedrawViews(t);
+        if (!outcome.ok()) partial(outcome.applied, outcome.hasApplied, outcome.reason);
+        return propertyResult("Set " + prop + " on " + WideToUtf8(node->GetName()), outcome.applied);
     });
 }
 
@@ -295,13 +320,14 @@ static std::vector<std::pair<std::string, std::string>> ParseParamString(const s
 
         // Parse value — handle brackets and quotes
         size_t valStart = i;
-        if (i < s.size() && s[i] == '[') {
-            // Scan to matching ']'
+        if (i < s.size() && (s[i] == '[' || s[i] == '(')) {
+            // Scan to the matching ']' / ')' so "(2 * 3.25)" stays one value
+            const char open = s[i], close = (open == '[') ? ']' : ')';
             int depth = 1;
             i++;
             while (i < s.size() && depth > 0) {
-                if (s[i] == '[') depth++;
-                else if (s[i] == ']') depth--;
+                if (s[i] == open) depth++;
+                else if (s[i] == close) depth--;
                 i++;
             }
         } else if (i < s.size() && s[i] == '"') {
@@ -410,9 +436,12 @@ static void MergeJsonParams(const json& source,
     }
 }
 
+// `defaultKeys` receives the (lower-case) keys the bridge added itself, which
+// the caller did not request.
 static std::vector<std::pair<std::string, std::string>> BuildCreateObjectParams(
     const json& payload,
-    const std::string& type) {
+    const std::string& type,
+    std::set<std::string>* defaultKeys = nullptr) {
 
     std::vector<std::pair<std::string, std::string>> kvPairs;
 
@@ -440,6 +469,7 @@ static std::vector<std::pair<std::string, std::string>> BuildCreateObjectParams(
     for (const auto& [key, value] : ParseParamString(DefaultCreateObjectParams(type))) {
         if (!HasParam(kvPairs, key)) {
             kvPairs.push_back({key, value});
+            if (defaultKeys) defaultKeys->insert(ToLowerCopy(key));
         }
     }
 
@@ -483,37 +513,39 @@ std::string NativeHandlers::CreateObject(const std::string& params, MCPBridgeGUP
             node->SetName(wname.c_str());
         }
 
-        // Parse and apply params via IParamBlock2
+        // Apply params: IParamBlock2 first, MAXScript by anim handle for the
+        // rest (PB1/legacy objects like Capsule, Hedra; unit or expression
+        // values). Every key is read back.
         Point3 posOverride(0, 0, 0);
         bool hasPos = false;
-        bool anyParamFailed = false;
-        json failedParams = json::array();
-        auto kvPairs = BuildCreateObjectParams(p, type);
+        std::set<std::string> defaultKeys;
+        json failedKeys = json::array();        // requested keys that did not stick
+        json failedDefaults = json::array();    // bridge defaults that did not stick (warn only)
+        json applied = json::object();
+        auto kvPairs = BuildCreateObjectParams(p, type, &defaultKeys);
+        const std::string target = "(getAnimByHandle " + std::to_string(NodeHandle(node)) + ")";
 
-        if (!kvPairs.empty()) {
-            for (auto& [key, val] : kvPairs) {
-                std::string lkey = key;
-                std::transform(lkey.begin(), lkey.end(), lkey.begin(), ::tolower);
+        for (auto& [key, val] : kvPairs) {
+            const std::string lkey = ToLowerCopy(key);
 
-                // Handle pos specially — it's a node-level property
-                if (lkey == "pos") {
-                    if (ParsePoint3(val, posOverride)) {
-                        hasPos = true;
-                    } else {
-                        failedParams.push_back("pos");
-                    }
-                    continue;
+            // pos is a node-level placement, applied (and reported) by pos_mode below.
+            if (lkey == "pos") {
+                if (ParsePoint3(val, posOverride)) {
+                    hasPos = true;
+                } else {
+                    failedKeys.push_back(PartialKey(key, val, "", false, "cannot parse Point3 from the value"));
                 }
-
-                // Try setting on base object's PB2; whatever it cannot set
-                // (PB1/legacy objects like Capsule, Hedra; unit or expression
-                // values) is applied through MAXScript by node handle.
-                if (!SetParamByName(obj, key, val, t)) {
-                    anyParamFailed = true;
-                    const std::string target = "(getAnimByHandle " + std::to_string(NodeHandle(node)) + ")";
-                    if (!TrySetViaMaxScript(target, key, val)) failedParams.push_back(key);
-                }
+                continue;
             }
+
+            const SetOutcome outcome = SetParamWithFallback(obj, target, key, val, t);
+            if (outcome.ok()) {
+                applied[key] = outcome.applied;
+                continue;
+            }
+            json entry = PartialKey(key, val, outcome.applied, outcome.hasApplied, outcome.reason);
+            if (defaultKeys.count(lkey)) failedDefaults.push_back(entry);
+            else failedKeys.push_back(entry);
         }
 
         // Apply placement using shared spatial semantics.
@@ -523,12 +555,27 @@ std::string NativeHandlers::CreateObject(const std::string& params, MCPBridgeGUP
         obj->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
         ip->RedrawViews(t);
 
+        if (!failedKeys.empty()) {
+            // The node stays (the dispatcher commits PARTIAL_APPLY): report its
+            // handle so the caller fixes keys on it instead of re-creating it.
+            json details = NodeIdentityJson(node);
+            details["created"] = true;
+            details["keys"] = failedKeys;
+            details["applied"] = applied;
+            if (!failedDefaults.empty()) details["defaultsNotApplied"] = failedDefaults;
+            ThrowPartialApply("create_object: created " + WideToUtf8(node->GetName()) + " but " +
+                              std::to_string(failedKeys.size()) + " requested parameter(s) did not apply: " +
+                              failedKeys.dump(), details);
+        }
+
         json created = SpatialSnapshot::BuildCreateObjectResult(
             node, t, type, posOverride, hasPos, posMode);
-        (void)anyParamFailed;
-        if (!failedParams.empty() && created.is_object()) {
-            created["failedParams"] = failedParams;
-            created["warnings"] = json::array({"Parameters not applied: " + failedParams.dump()});
+        if (created.is_object()) {
+            created["applied"] = applied;
+            if (!failedDefaults.empty()) {
+                created["failedParams"] = failedDefaults;
+                created["warnings"] = json::array({"Default parameters not applied: " + failedDefaults.dump()});
+            }
         }
         return created.dump();
     });
@@ -616,13 +663,49 @@ std::string NativeHandlers::TransformObject(const std::string& params, MCPBridge
         std::string coordSys = p.value("coordinate_system", "world");
 
         bool didSomething = false;
+        namespace pu = mcp_bridge::param_units;
+        namespace ntx = mcp_bridge::number_text;
+        json failedKeys = json::array();
+        json applied = json::object();
+        auto listText = [](const json& arr) {
+            std::string out = "[";
+            for (size_t i = 0; i < arr.size(); ++i) {
+                if (i) out += ",";
+                out += arr[i].is_number() ? ntx::FormatDouble(arr[i].get<double>()) : arr[i].dump();
+            }
+            return out + "]";
+        };
+        auto quatOf = [](const Matrix3& tm, double out[4]) {
+            AffineParts parts;
+            decomp_affine(tm, &parts);
+            out[0] = parts.q.x; out[1] = parts.q.y; out[2] = parts.q.z; out[3] = parts.q.w;
+        };
+        auto det3 = [](const Matrix3& m) {
+            const Point3 a = m.GetRow(0), b = m.GetRow(1), c = m.GetRow(2);
+            return static_cast<double>(DotProd(a, CrossProd(b, c)));
+        };
 
-        // Move
+        // Move — read back: the world translation must change by the offset.
         if (p.contains("move") && p["move"].type() == json::value_t::array && p["move"].size() == 3) {
             Point3 offset(p["move"][0].get<float>(), p["move"][1].get<float>(), p["move"][2].get<float>());
+            const Point3 before = node->GetNodeTM(t).GetTrans();
             Matrix3 tmAxis;  // identity by default in Max 2026
             node->Move(t, tmAxis, offset, TRUE, TRUE, PIV_NONE, TRUE);
             didSomething = true;
+            const Point3 delta = node->GetNodeTM(t).GetTrans() - before;
+            const float dl[3] = {delta.x, delta.y, delta.z};
+            const std::string got = ntx::FormatList(dl, 3);
+            applied["move"] = got;
+            bool ok = true;
+            for (int i = 0; i < 3; ++i) {
+                const double tol = 1e-4 * std::max({1.0, std::fabs(static_cast<double>(before[i])),
+                                                    std::fabs(static_cast<double>(offset[i]))});
+                if (std::fabs(static_cast<double>(delta[i]) - offset[i]) > tol) ok = false;
+            }
+            if (!ok) {
+                failedKeys.push_back(PartialKey("move", listText(p["move"]), got, true,
+                    "world position changed by a different offset (locked axis or position constraint/controller?)"));
+            }
         }
 
         // Rotate
@@ -645,8 +728,23 @@ std::string NativeHandlers::TransformObject(const std::string& params, MCPBridge
             Quat combined = qx * qy * qz;
             AngAxis finalAA(combined);
 
+            double qBefore[4], qAfter[4];
+            quatOf(node->GetNodeTM(t), qBefore);
             node->Rotate(t, tmAxis, finalAA, TRUE, TRUE, PIV_NONE, TRUE);
             didSomething = true;
+            // Read back: the orientation must have turned by the requested
+            // angle (axis-order independent; q and -q are the same pose).
+            quatOf(node->GetNodeTM(t), qAfter);
+            const double want = pu::CanonicalRotationAngle(finalAA.angle);
+            const double got = pu::QuatRelativeAngle(qBefore, qAfter);
+            const std::string gotText = ntx::FormatDouble(pu::StorageToUser(pu::UnitKind::Degrees, got));
+            applied["rotate"] = "rotated by " + gotText + " deg";
+            if (std::fabs(got - want) > 1e-3) {
+                failedKeys.push_back(PartialKey("rotate", listText(p["rotate"]),
+                    "rotated by " + gotText + " deg (requested " +
+                    ntx::FormatDouble(pu::StorageToUser(pu::UnitKind::Degrees, want)) + " deg)", true,
+                    "orientation changed by a different angle (locked axis or rotation constraint/controller?)"));
+            }
         }
 
         // Scale
@@ -661,9 +759,30 @@ std::string NativeHandlers::TransformObject(const std::string& params, MCPBridge
             } else {
                 throw std::runtime_error("scale must be [s] or [x,y,z]");
             }
+            const double detBefore = det3(node->GetNodeTM(t));
             Matrix3 tmAxis;
             node->Scale(t, tmAxis, scaleVal, TRUE, TRUE, PIV_NONE, TRUE);
             didSomething = true;
+            // Read back: scaling by (sx,sy,sz) about any axes multiplies the
+            // node's volume (3x3 determinant) by sx*sy*sz.
+            const double detAfter = det3(node->GetNodeTM(t));
+            const double want = static_cast<double>(scaleVal.x) * scaleVal.y * scaleVal.z;
+            const double got = (std::fabs(detBefore) > 1e-20) ? detAfter / detBefore : 0.0;
+            applied["scale"] = "volume x" + ntx::FormatDouble(got);
+            if (!pu::FloatsMatch(want, got, 1e-4)) {
+                failedKeys.push_back(PartialKey("scale", listText(sv), "volume x" + ntx::FormatDouble(got), true,
+                    "node volume changed by a different factor than requested (locked scale or scale controller?)"));
+            }
+        }
+
+        if (!failedKeys.empty()) {
+            ip->RedrawViews(t);
+            json details = NodeIdentityJson(node);
+            details["keys"] = failedKeys;
+            details["applied"] = applied;
+            details["spatial"] = SpatialSnapshot::BuildSpatialSnapshot(node, t);
+            ThrowPartialApply("transform_object: " + std::to_string(failedKeys.size()) +
+                              " transform(s) did not apply as requested on " + WideToUtf8(node->GetName()), details);
         }
 
         if (!didSomething) {
@@ -678,6 +797,7 @@ std::string NativeHandlers::TransformObject(const std::string& params, MCPBridge
         json result = SpatialSnapshot::BuildSpatialSnapshot(node, t);
         result["message"] = "Transformed " + WideToUtf8(node->GetName());
         result["coordinateSystem"] = coordSys;
+        result["applied"] = applied;
         return result.dump();
     });
 }
