@@ -15,9 +15,12 @@ its own float image:
 * Any other renderer: render into an HDR (float) bitmap and save it through
   Max's OpenEXR writer with ``fopenexr.setSaveRegion false``.
 
-Every renderer property it touches is restored afterwards. The render is
-always full frame (``renderType:#view``); the written file's header is read
-back and ``dataWindow == displayWindow`` is reported (warning otherwise). The
+Every renderer property it touches is restored afterwards. Max renders the
+full view (``renderType:#view``), but an active V-Ray VFB region still
+crops the raw file (dataWindow = region) and its on/off state cannot be
+queried from MAXScript (``vfbControl`` answers OK to any flag), so the tool
+does not toggle it: it reads the header back and pads a cropped file to
+``dataWindow == displayWindow`` in place (zeros outside, ``paddedFrom``). The
 output path must pass :func:`maxmcp.path_policy.resolve_write_path` with the
 open scene's folder as ``scene_dir``.
 """
@@ -28,7 +31,7 @@ import os
 import time
 from pathlib import Path
 
-from ..helpers.exr import ExrError, read_header
+from ..helpers.exr import ExrError, pad_to_display_window, read_header
 from ..path_policy import PathNotAllowedError, resolve_write_path
 from ..server import client, mcp
 from ..tool_response import run_in_thread
@@ -167,8 +170,9 @@ def render_float_exr(
     Use when: an EXR must keep values above 1.0 (comp, grading, lighting
     checks) — `render_scene`'s `outputFile` path clamps with V-Ray.
     V-Ray (CPU/GPU) writes its raw image file; other renderers save an HDR
-    bitmap. The frame is always full (no region), and the header is read
-    back: `exr.fullFrame` is dataWindow == displayWindow.
+    bitmap. The header is read back; a region-cropped file (V-Ray VFB region
+    render) is padded to the full frame (zeros outside, `paddedFrom`), so
+    `exr.fullFrame` (dataWindow == displayWindow) holds.
     width/height 0 = current render size. half=True writes 16-bit half
     float, else 32-bit float. apply_color_mapping=False keeps V-Ray colour
     mapping out of the file. output_path must be inside an allowed folder
@@ -183,8 +187,8 @@ def render_float_exr(
         return _error(str(exc), code="SAFE_MODE")
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        target.unlink()  # never mistake a previous render for this one
+    # A previous file at the target is left alone until this render succeeds;
+    # _find_written only accepts files written after `started`.
     started = time.time()
     script = build_render_float_exr_maxscript(
         str(target),
@@ -232,6 +236,18 @@ def render_float_exr(
     result["bytes"] = os.path.getsize(written)
     try:
         header = read_header(written)
+        if not header.full_frame and not (header.tiled or header.multipart):
+            # A V-Ray VFB region (or any crop) leaves dataWindow smaller than the
+            # frame; comp expects the full frame, so pad with zeros in place.
+            padded_from = pad_to_display_window(written)
+            if padded_from is not None:
+                result["paddedFrom"] = list(padded_from)
+                warnings.append(
+                    f"Only the region {list(padded_from)} was rendered (V-Ray VFB region render is on?); "
+                    "the EXR was padded to the full frame with zeros outside it"
+                )
+                header = read_header(written)
+                result["bytes"] = os.path.getsize(written)
     except (ExrError, OSError) as exc:
         warnings.append(f"Could not read the EXR header back: {exc}")
     else:

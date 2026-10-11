@@ -114,6 +114,31 @@ try:
     if cpu:
         vray_case("vray_cpu", cpu)
 
+    # The Kaschmir case: a V-Ray VFB region render crops the raw file's
+    # dataWindow; the tool must deliver it padded to the full frame.
+    ms(f"renderers.current = {gpu or cpu}()")
+    ms("vfbControl #setregion 20 10 100 60")
+    ms("vfbControl #regionrender true")
+    target = out_dir / "vray_region.exr"
+    r = json.loads(render_float_exr(output_path=str(target), width=W, height=H, camera="mcpExrCam", timeout=600))
+    print("\n== region render:", json.dumps({k: r.get(k) for k in ("paddedFrom", "warnings", "exr")})[:500])
+    ms("vfbControl #regionrender false")
+    if "output" in r:
+        header, rows = read_pixels(r["output"])
+        region = r.get("paddedFrom")
+        check("region: the raw file was cropped (paddedFrom reported)", bool(region), str(region))
+        check("region: padded to dataWindow == displayWindow == full frame",
+              header.data_window == header.display_window == (0, 0, W - 1, H - 1),
+              f"{header.data_window} / {header.display_window}")
+        if region:
+            cx, cy = (region[0] + region[2]) // 2, (region[1] + region[3]) // 2
+            inside = rows["R"][cy][cx]
+            outside = rows["R"][H - 1][W - 1]
+            check("region: rendered pixels kept in place and unclamped", inside > 1.0, f"R({cx},{cy})={inside}")
+            check("region: padding outside the region is 0", outside == 0.0, f"R({W - 1},{H - 1})={outside}")
+    else:
+        check("region render succeeded", False, json.dumps(r)[:400])
+
     # Non-V-Ray fallback: Scanline into an HDR bitmap, saved by Max's EXR writer.
     ms("renderers.current = Default_Scanline_Renderer()")
     ms('(local p = $mcpExrPlane; p.material = Standardmaterial diffuse:white selfIllumAmount:100)')

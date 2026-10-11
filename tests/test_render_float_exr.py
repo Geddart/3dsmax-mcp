@@ -4,12 +4,20 @@ import json
 import os
 import struct
 import tempfile
+import time
 import unittest
 import zlib
 from pathlib import Path
 from unittest.mock import patch
 
-from maxmcp.helpers.exr import ExrError, read_header, read_pixels
+from maxmcp.helpers.exr import (
+    ExrError,
+    _undo_zip,
+    _zip_encode,
+    pad_to_display_window,
+    read_header,
+    read_pixels,
+)
 from maxmcp.tools import render_exr
 from maxmcp.tools.render_exr import build_render_float_exr_maxscript, render_float_exr
 
@@ -18,7 +26,8 @@ def _attr(name: str, type_name: str, value: bytes) -> bytes:
     return name.encode() + b"\0" + type_name.encode() + b"\0" + struct.pack("<i", len(value)) + value
 
 
-def _zip_encode(raw: bytes) -> bytes:
+def _reference_zip_encode(raw: bytes) -> bytes:
+    """Straightforward per-byte encoder (independent of the module's fast one)."""
     half = (len(raw) + 1) // 2
     t = bytearray(len(raw))
     t[:half] = raw[0::2]
@@ -30,7 +39,7 @@ def _zip_encode(raw: bytes) -> bytes:
 
 
 def write_exr(path: Path, width: int, height: int, value_fn, *, pixel_type: int = 2,
-              compression: int = 0, data_window=None) -> None:
+              compression: int = 0, data_window=None, extra_attr: bool = False) -> None:
     """Minimal scanline EXR writer (channels B, G, R) used only by these tests."""
     dw = data_window or (0, 0, width - 1, height - 1)
     channels = b""
@@ -38,6 +47,8 @@ def write_exr(path: Path, width: int, height: int, value_fn, *, pixel_type: int 
         channels += name.encode() + b"\0" + struct.pack("<iB3xii", pixel_type, 0, 1, 1)
     channels += b"\0"
     header = struct.pack("<iI", 20000630, 2)
+    if extra_attr:
+        header += _attr("owner", "string", b"mcp-test")
     header += _attr("channels", "chlist", channels)
     header += _attr("compression", "compression", bytes([compression]))
     header += _attr("dataWindow", "box2i", struct.pack("<4i", *dw))
@@ -53,7 +64,7 @@ def write_exr(path: Path, width: int, height: int, value_fn, *, pixel_type: int 
         for y in range(y0, min(y0 + lines_per_chunk, dw_h)):
             for channel in ("B", "G", "R"):
                 raw += struct.pack(f"<{dw_w}{fmt}", *[value_fn(channel, x, y) for x in range(dw_w)])
-        payload = raw if compression == 0 else _zip_encode(raw)
+        payload = raw if compression == 0 else _reference_zip_encode(raw)
         if compression and len(payload) >= len(raw):
             payload = raw
         chunks.append(struct.pack("<ii", dw[1] + y0, len(payload)) + payload)
@@ -102,6 +113,31 @@ class ExrReaderTests(unittest.TestCase):
         self.assertFalse(header.full_frame)
         self.assertEqual(header.summary()["dataWindow"], [2, 1, 9, 5])
         self.assertEqual(header.summary()["displayWindow"], [0, 0, 15, 7])
+
+    def test_zip_filter_round_trip(self) -> None:
+        payload = bytes((i * 37 + (i >> 3)) & 0xFF for i in range(4099))
+        self.assertEqual(_undo_zip(zlib.decompress(_zip_encode(payload))), payload)
+        self.assertEqual(_undo_zip(zlib.decompress(_zip_encode(b"\x07"))), b"\x07")
+
+    def test_pad_region_render_to_full_frame(self) -> None:
+        for pixel_type, compression in ((2, 0), (1, 3), (2, 2)):
+            path = self.dir / f"region_{pixel_type}_{compression}.exr"
+            write_exr(path, 16, 8, lambda c, x, y: 5.0 + x + 10 * y, pixel_type=pixel_type,
+                      compression=compression, data_window=(3, 2, 9, 5), extra_attr=True)
+            before = read_header(path)
+            self.assertEqual(pad_to_display_window(path), (3, 2, 9, 5))
+            header, rows = read_pixels(path)
+            self.assertTrue(header.full_frame)
+            self.assertEqual(header.compression, "zip")
+            self.assertEqual([c.pixel_type for c in header.channels], [c.pixel_type for c in before.channels])
+            self.assertIn(("owner", "string", b"mcp-test"), header.raw_attributes)
+            # Region pixels land where they belong: data x=0,y=0 -> frame (3,2).
+            self.assertEqual(rows["R"][2][3], 5.0)
+            self.assertEqual(rows["R"][5][9], 5.0 + 6 + 30)
+            self.assertEqual(rows["R"][0][0], 0.0)
+            self.assertEqual(rows["G"][7][15], 0.0)
+            self.assertEqual(rows["R"][3][2], 0.0)
+            self.assertIsNone(pad_to_display_window(path))  # already full frame
 
     def test_rejects_non_exr(self) -> None:
         path = self.dir / "x.exr"
@@ -164,6 +200,40 @@ class RenderFloatExrToolTests(unittest.TestCase):
         self.assertTrue(result["exr"]["fullFrame"])
         self.assertEqual(result["propertiesSet"], ["output_saveRawFile=true", "output_rawExrUseHalf=false"])
         self.assertNotIn("warnings", result)
+
+    def test_region_cropped_render_is_padded(self) -> None:
+        target = self.scene_dir / "region.exr"
+
+        def fake_send(command, timeout=None):
+            if command == "maxFilePath":
+                return {"result": str(self.scene_dir) + "\\"}
+            write_exr(target, 16, 8, lambda c, x, y: 5.0, compression=2, data_window=(3, 2, 9, 5))
+            return {"result": "MCPEXR|OK|V_Ray_7|vray_raw|output_saveRawFile=true"}
+
+        with patch.object(render_exr.client, "send_command", side_effect=fake_send):
+            result = json.loads(render_float_exr(output_path=str(target), width=16, height=8))
+        self.assertEqual(result["paddedFrom"], [3, 2, 9, 5])
+        self.assertTrue(result["exr"]["fullFrame"])
+        self.assertTrue(any("padded" in w for w in result["warnings"]))
+        _, rows = read_pixels(target)
+        self.assertEqual(rows["R"][2][3], 5.0)
+        self.assertEqual(rows["R"][0][0], 0.0)
+
+    def test_failed_render_keeps_previous_file(self) -> None:
+        target = self.scene_dir / "keep.exr"
+        target.write_bytes(b"previous render")
+        old = time.time() - 3600
+        os.utime(target, (old, old))
+
+        def fake_send(command, timeout=None):
+            if command == "maxFilePath":
+                return {"result": str(self.scene_dir) + "\\"}
+            return {"result": "MCPEXR|OK|V_Ray_7|vray_raw|"}  # claims success, writes nothing
+
+        with patch.object(render_exr.client, "send_command", side_effect=fake_send):
+            result = json.loads(render_float_exr(output_path=str(target)))
+        self.assertIn("no EXR was written", result["error"])
+        self.assertEqual(target.read_bytes(), b"previous render")
 
     def test_render_error_is_reported(self) -> None:
         def fake_send(command, timeout=None):

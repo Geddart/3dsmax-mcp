@@ -211,6 +211,21 @@ try:
     r = json.loads(transform_object(name="bF", move=[10.5, 0, 0], rotate=[0, 0, 30], scale=[2]))
     check_num("transform_object move read-back", ms("$bF.pos.x"), 10.5)
     check("transform_object reports applied", sorted((r.get("applied") or {}).keys()), ["move", "rotate", "scale"])
+    # No false PARTIAL_APPLY on a parented, rotated, non-uniformly scaled node.
+    ms('(local p = Point name:"tP" pos:[5,5,0]; p.rotation = eulerAngles 10 20 30; '
+       'local b = Box name:"tB" length:5 width:5 height:5 pos:[10,0,0]; b.parent = p; '
+       'rotate b (eulerAngles 15 0 40); scale b [1,2,0.5]; "ok")')
+    for coord in ("world", "local"):
+        try:
+            r = json.loads(transform_object(name="tB", move=[1, 2, 3], rotate=[10, 20, 30],
+                                            scale=[1.5, 1, 2], coordinate_system=coord))
+            check(f"transform_object {coord} on parented/rotated/non-uniform node succeeds",
+                  sorted((r.get("applied") or {}).keys()), ["move", "rotate", "scale"])
+        except MaxBridgeError as exc:
+            err = _error_from_exception(exc)
+            check(f"transform_object {coord} on parented/rotated/non-uniform node succeeds",
+                  err.get("code"), "no error")
+            print("   details:", json.dumps(err.get("details"))[:600])
 finally:
     ms("delete objects")
     release_max_instance()
