@@ -767,7 +767,8 @@ def set_camera(
     correction and distortion so the camera is a pure pinhole. Raises when any
     read-back value differs from what was written. Returns the export_camera JSON.
     """
-    return apply_camera(**{k: v for k, v in locals().items()})
+    params = dict(locals())  # must stay the first statement: forwards exactly the tool arguments
+    return apply_camera(**params)
 
 
 @mcp.tool()
@@ -1046,7 +1047,7 @@ mcpResult
 def capture_camera(
     camera: str,
     plate_path: str = "",
-    size: list[int] | int | None = None,
+    size: list[int] | int | str | None = None,
     mode: str = "shaded",
     opacity: float = 0.5,
     output_path: str = "",
