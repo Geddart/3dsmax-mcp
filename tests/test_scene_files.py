@@ -276,6 +276,9 @@ class SceneSetupTests(unittest.TestCase):
         self.assertLess(script.index("frameRate = 25"), script.index("animationRange = interval 10 250"))
         self.assertNotIn("interval 10f", script)
         self.assertIn("rendLockImageAspectRatio = false", script)
+        self.assertIn("local touchRender = true", script)
+        self.assertLess(script.index("rendLockImageAspectRatio = false"), script.index("renderWidth = 1920"))
+        self.assertLess(script.index("renderPixelAspect = 1.25"), script.index("rendLockImageAspectRatio = lockImg"))
         self.assertIn("renderPixelAspect = 1.25", script)
         self.assertEqual(res["previous"]["units"], "centimeters")
         self.assertIn("units", res["changed"])
@@ -298,6 +301,7 @@ class SceneSetupTests(unittest.TestCase):
         scene_files.scene_setup(display_units="ft")
         self.assertIn("units.DisplayType = #us", fake.calls[0])
         self.assertIn("units.USType = #dec_ft", fake.calls[0])
+        self.assertIn("local touchRender = false", fake.calls[0])
 
 
 if __name__ == "__main__":

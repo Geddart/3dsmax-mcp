@@ -264,7 +264,8 @@ def main() -> int:
             check(True, "versioned save outside allowed roots refused")
 
         # ---- scene_setup round trip
-        first = scene_files.scene_setup(units="mm", display_units="cm", fps=25, frame_range=[10, 250],
+        prev_lock = ms("rendLockImageAspectRatio") == "true"
+        first =scene_files.scene_setup(units="mm", display_units="cm", fps=25, frame_range=[10, 250],
                                         render_size=[1921, 1081], pixel_aspect=1.25)
         cur = first["current"]
         check(cur["units"] == "millimeters" and cur["metric_type"] == "centimeters" and cur["fps"] == 25
@@ -283,6 +284,18 @@ def main() -> int:
                                        pixel_aspect=prev["pixel_aspect"])
         restored = {k: back["current"][k] for k in prev}
         check(restored == prev, "scene_setup restores previous values", back["current"])
+        # Render Setup open + image-aspect lock on: values must stick, dialog and lock come back.
+        ms("rendLockImageAspectRatio = true; renderSceneDialog.open(); true")
+        locked = scene_files.scene_setup(render_size=[1001, 333])
+        state = ms_json('("{\\"open\\":" + (renderSceneDialog.isOpen() as string) + ",\\"lock\\":" + '
+                        '(rendLockImageAspectRatio as string) + ",\\"w\\":" + (renderWidth as string) + '
+                        '",\\"h\\":" + (renderHeight as string) + "}")')
+        check(state == {"open": True, "lock": True, "w": 1001, "h": 333}
+              and locked["current"]["render_width"] == 1001,
+              "scene_setup with Render Setup open and aspect lock on", state)
+        ms("renderSceneDialog.close(); true")
+        scene_files.scene_setup(render_size=[prev["render_width"], prev["render_height"]])
+        ms(f"rendLockImageAspectRatio = {'true' if prev_lock else 'false'}; true")
         try:
             scene_files.scene_setup(frame_range=[5, 5])
             check(False, "scene_setup rejects empty range")

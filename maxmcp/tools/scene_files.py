@@ -781,9 +781,22 @@ _SETUP_TEMPLATE = "(" + r'''
     )
     local before = mcpSfState()
     local err = ""
+    -- Render-size edits: close Render Setup (it would write its stale values back) and
+    -- release the image-aspect lock; both are restored even when a setter throws.
+    local touchRender = @TOUCH_RENDER@
+    local dlgOpen = renderSceneDialog.isOpen()
+    local lockImg = rendLockImageAspectRatio
+    if touchRender do (
+        if dlgOpen do renderSceneDialog.close()
+        rendLockImageAspectRatio = false
+    )
     try (
 @BODY@
     ) catch (err = getCurrentException())
+    if touchRender do (
+        rendLockImageAspectRatio = lockImg
+        if dlgOpen and not (renderSceneDialog.isOpen()) do renderSceneDialog.open()
+    )
     local after = mcpSfState()
     if err != "" then (
         local e = substituteString (substituteString err "\\" "/") "\"" "'"
@@ -819,18 +832,12 @@ def build_setup_body(
         # Plain integers: an `Nf` literal is converted to ticks at parse time with the OLD frame
         # rate, so after a frameRate change it would land on the wrong frame.
         lines.append(f"animationRange = interval {int(frame_range[0])} {int(frame_range[1])}")
-    if render_size is not None or pixel_aspect is not None:
-        lines.append("local dlgOpen = renderSceneDialog.isOpen()")
-        lines.append("if dlgOpen do renderSceneDialog.close()")
-        lines.append("local lockImg = rendLockImageAspectRatio")
-        lines.append("rendLockImageAspectRatio = false")
-        if render_size is not None:
-            lines.append(f"renderWidth = {int(render_size[0])}")
-            lines.append(f"renderHeight = {int(render_size[1])}")
-        if pixel_aspect is not None:
-            lines.append(f"renderPixelAspect = {_ms_float(pixel_aspect)}")
-        lines.append("rendLockImageAspectRatio = lockImg")
-        lines.append("if dlgOpen do renderSceneDialog.open()")
+    # Render Setup close/reopen and the aspect-lock release live in _SETUP_TEMPLATE.
+    if render_size is not None:
+        lines.append(f"renderWidth = {int(render_size[0])}")
+        lines.append(f"renderHeight = {int(render_size[1])}")
+    if pixel_aspect is not None:
+        lines.append(f"renderPixelAspect = {_ms_float(pixel_aspect)}")
     return "\n".join("        " + line for line in lines)
 
 
@@ -909,7 +916,8 @@ def scene_setup(
 
     body = build_setup_body(system_units=sys_unit, display=display, fps=fps_i, frame_range=rng,
                             render_size=size, pixel_aspect=aspect)
-    script = _SETUP_TEMPLATE.replace("@BODY@", body)
+    script = _SETUP_TEMPLATE.replace("@BODY@", body).replace(
+        "@TOUCH_RENDER@", _ms_bool(size is not None or aspect is not None))
     response = client.send_command(script)
     raw = response.get("result", "")
     try:
