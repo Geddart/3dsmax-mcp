@@ -51,6 +51,22 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual(result["delta"]["added"][0]["name"], "NewBox")
         self.assertEqual(result["object"]["class"], "Box")
 
+    def test_create_object_verified_reads_name_from_json_report(self) -> None:
+        report = '{"name":"Box042","class":"Box","bbox":{"center":[0,0,2.5]}}'
+        with (
+            patch("maxmcp.tools.fork_snapshots.get_scene_delta", side_effect=['{"baseline":true}', '{"added":[{"name":"Box042"}]}']),
+            patch("maxmcp.tools.objects.create_object", return_value=report),
+            patch("maxmcp.tools.selection.select_objects", return_value="Selected 1 of 1 objects") as select,
+            patch("maxmcp.tools.inspect.inspect_object", return_value='{"name":"Box042","class":"Box"}') as inspect,
+        ):
+            result = json.loads(create_object_verified("Box"))
+
+        self.assertEqual(result["created"], "Box042")
+        self.assertEqual(result["createResult"]["class"], "Box")
+        select.assert_called_once_with(names=["Box042"])
+        inspect.assert_called_with("Box042")
+        self.assertEqual(result["object"]["name"], "Box042")
+
     def test_assign_material_verified_returns_slots_and_objects(self) -> None:
         with (
             patch("maxmcp.tools.fork_snapshots.get_scene_delta", side_effect=['{"baseline":true}', '{"modified":[{"name":"Box001"}]}']),

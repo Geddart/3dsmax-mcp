@@ -1147,6 +1147,8 @@ hideByCategory.lights = true; hideByCategory.cameras = true; hideByCategory.help
 hideByCategory.spacewarps = true; hideByCategory.bones = true
 completeRedraw()
 local da = gw.getViewportDib captureAlpha:true
+-- the DIB is in physical pixels; gw.getWinSizeX/Y are DPI-scaled logical pixels
+local dibSize = (da.width as string) + "," + (da.height as string)
 da.filename = "{_ms_path(frame_path)}"
 save da
 close da
@@ -1156,7 +1158,7 @@ local db = gw.getViewportDib captureAlpha:true
 db.filename = "{_ms_path(clean_path)}"
 save db
 close db
-mcpResult = (gw.getWinSizeX() as string) + "," + (gw.getWinSizeY() as string)
+mcpResult = dibSize
 """
             raw = _send(_state_save_restore_script(inner), timeout=300.0).strip().strip('"')
             vw, vh = (int(v) for v in raw.split(","))

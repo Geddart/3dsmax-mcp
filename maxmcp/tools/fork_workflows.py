@@ -174,7 +174,13 @@ def create_object_verified(
     from .fork_snapshots import get_scene_delta
 
     _load_json(get_scene_delta(capture=True), {})
-    created_name = create_object(type=type, name=name, params=params)
+    create_result = create_object(type=type, name=name, params=params)
+    # create_object returns a JSON report (name, class, bbox, ...) since 1.5.5;
+    # older builds returned the bare node name.
+    created_name = create_result
+    parsed = _load_json(create_result, None) if isinstance(create_result, str) else create_result
+    if isinstance(parsed, dict):
+        created_name = str(parsed.get("name") or "")
     delta = _load_json(get_scene_delta(), {})
 
     if select_created and created_name:
@@ -184,6 +190,7 @@ def create_object_verified(
 
     return json.dumps({
         "created": created_name,
+        "createResult": parsed if isinstance(parsed, dict) else None,
         "selectResult": select_result,
         "delta": delta,
         "object": _load_json(inspect_object(created_name), {"raw": inspect_object(created_name)}),
