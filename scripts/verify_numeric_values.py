@@ -14,6 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import json
+import os
+import tempfile
 
 from maxmcp.server import client
 from maxmcp.max_client import MaxBridgeError
@@ -177,6 +179,20 @@ try:
                          name="cE", property="heightsegs", value="12.5")
     keys = (err.get("details") or {}).get("keys") or [{}]
     check("mismatch reports the applied value", str(keys[0].get("applied")), "12")
+
+    # 10b. Safe mode: a value is spliced into MAXScript, so the blocklist applies to it.
+    #      The marker file must never appear; the write must not report success.
+    marker = os.path.join(tempfile.gettempdir(), "3dsmax-mcp", "safe_mode_bypass_probe.txt")
+    if os.path.exists(marker):
+        os.remove(marker)
+    probe = f'(DOSCommand "echo x > \\"{marker}\\""; 7)'
+    try:
+        r = set_object_property(name="cE", property="height", value=probe)
+        bypassed = '"error"' not in str(r) and "PARTIAL_APPLY" not in str(r)
+    except Exception:  # noqa: BLE001 - refusal is the expected outcome
+        bypassed = False
+    check("safe-mode blocked call in a property value is refused", bypassed, False)
+    check("safe-mode blocked call did not run", os.path.exists(marker), False)
 
     # 11. Unsettable key on create_object: node is KEPT, handle reported, no duplicate.
     err = expect_partial("create_object bogusprop -> PARTIAL_APPLY", create_object,

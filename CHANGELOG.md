@@ -226,6 +226,33 @@ full profile now has 275 tools, and progressive discovery still exposes 3 (25 to
 - `scripts/verify_upstream_picks.py` compared contact_check defaults at 1e-9 against a 7-digit
   `as string`; failed in an inch-unit scene (Max 2027). Now relative 1e-6 against `.9g`.
 
+### Fixed (gpt-6-astra review of the workstream round, 2026-10-12)
+- **Safe-mode bypass through property values** (found in the final diff review): the bridge splices
+  caller value text into its own MAXScript (`TrySetViaMaxScript` fallbacks used by create_object,
+  set_object_property, add_modifier, set_modifier_property, materials; `introspect_interface`
+  property sets) and runs it via `RunMAXScript`, which never saw the safe-mode filter, so
+  `value='(DOSCommand "...")'` executed. The blocklist now lives once in
+  `HandlerHelpers::ContainsSafeModeBlockedCall` and is applied to every spliced value as well as to
+  `execute_maxscript`. Live check added to `scripts/verify_numeric_values.py`.
+- `render_float_exr`: picked any `<stem>*.exr` as the render output, which could move an unrelated
+  `shot_backup.exr` onto `shot.exr`; now only the exact target or `<stem>[.]<digits>.exr`. V-Ray
+  split channels are switched off for the render and restored (hardening; the reported leak did not
+  reproduce on V-Ray 7.40).
+- V-Ray GPU: output settings refused by the renderer's read-only mirrors are written to and read
+  back from `renderers.current.V_Ray_settings` (`written_to_V_Ray_settings` lists them).
+- `save_scene_versioned`: render-path changes and `saveMaxFile` share one guard; any failure
+  restores the paths and Render Setup is reopened on every exit.
+- Camera tools: new cameras use the scene's `renderPixelAspect` for pixel shifts; `import_camera`
+  carries `pixel_aspect` (written with `set_render_size`, otherwise a warning); null near/far turns
+  clipping off; render width/height/aspect are written with Render Setup closed and the aspect lock
+  released, then read back.
+- `transform_object` scale verification compares the full 3x3 basis (world- or local-axis scale)
+  instead of the determinant, so a controller that refuses `[2,0.5,1]` returns PARTIAL_APPLY.
+- `export_geometry` writes to a temp file renamed onto the target only after success; a failure
+  frees the mesh, closes the stream and keeps the previous file. No `deleteFile` in MAXScript
+  (safe mode blocks it).
+- `maxmcp/pid_fence.py` no longer emits a SyntaxWarning (raw docstring).
+
 ### Verification (workstream round, 2026-10-12)
 - Python: 692 tests pass. Native unit tests (transport, number_text under de-DE, param_units) pass
   from the merged tree.

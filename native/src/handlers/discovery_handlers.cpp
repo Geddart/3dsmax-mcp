@@ -443,9 +443,19 @@ std::string NativeHandlers::InvokeInterface(const std::string& params, MCPBridge
                             found = true;
                             break;
                         }
-                        // Use MAXScript for setting — type coercion is complex
+                        // Use MAXScript for setting — type coercion is complex.
+                        // The value text is spliced into MAXScript, so it must
+                        // pass the same safe-mode blocklist as execute_maxscript.
+                        // (no is_string(): collides with a MAXScript header macro)
+                        const std::string valueText =
+                            val.type() == json::value_t::string ? val.get<std::string>() : val.dump();
+                        if (ContainsSafeModeBlockedCall(valueText)) {
+                            setResults[key] = "blocked_by_safe_mode";
+                            found = true;
+                            break;
+                        }
                         try {
-                            std::string script = ifaceName + "." + key + " = " + val.get<std::string>();
+                            std::string script = ifaceName + "." + key + " = " + valueText;
                             RunMAXScript(script);
                             setResults[key] = "ok";
                         } catch (...) {

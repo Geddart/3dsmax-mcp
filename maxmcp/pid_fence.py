@@ -1,4 +1,4 @@
-"""Operator fence naming 3ds Max instances that no MCP path may drive.
+r"""Operator fence naming 3ds Max instances that no MCP path may drive.
 
 `MCP_UI_DENY_PIDS` and `%LOCALAPPDATA%\3dsmax-mcp\protected_pids.json` are read
 here rather than inside one tool family, because a fence that only covers the

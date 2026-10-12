@@ -308,22 +308,8 @@ static std::string BuildResponse(
 
 // ── Safe mode filter ────────────────────────────────────────────
 static bool ContainsBlockedCommand(const std::string& cmd) {
-    // Case-insensitive check for dangerous MAXScript commands
-    std::string lower = cmd;
-    for (auto& c : lower) c = (char)tolower((unsigned char)c);
-
-    static const char* blocked[] = {
-        "doscommand",
-        "shelllaunch",
-        "deletefile",
-        "python.execute",
-        "createfile",
-        "hiddendoscommand",
-    };
-    for (const char* b : blocked) {
-        if (lower.find(b) != std::string::npos) return true;
-    }
-    return false;
+    // Single list, shared with the bridge's own value-splicing fallbacks.
+    return HandlerHelpers::ContainsSafeModeBlockedCall(cmd);
 }
 
 // ── MAXScript handler ───────────────────────────────────────────

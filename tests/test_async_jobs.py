@@ -233,8 +233,14 @@ class SchedulingFailureTests(unittest.TestCase):
         self.assertIn(jid, self.store.jobs)
 
     def test_native_blocklist_matches_the_cpp_dispatcher(self):
-        source = (Path(__file__).resolve().parents[1] / 'native/src/command_dispatcher.cpp').read_text(encoding='utf-8')
-        block = source.split('static const char* blocked[]')[1].split('};')[0]
+        # The C++ list lives once in handler_helpers.h (ContainsSafeModeBlockedCall),
+        # shared by execute_maxscript and the bridge's value-splicing fallbacks.
+        root = Path(__file__).resolve().parents[1]
+        source = (root / 'native/include/mcp_bridge/handler_helpers.h').read_text(encoding='utf-8')
+        block = source.split('inline bool ContainsSafeModeBlockedCall')[1].split('static const char* const blocked[]')[1].split('};')[0]
+        dispatcher = (root / 'native/src/command_dispatcher.cpp').read_text(encoding='utf-8')
+        self.assertIn('ContainsSafeModeBlockedCall', dispatcher)
+        self.assertNotIn('"doscommand"', dispatcher)
         self.assertEqual([line.strip().strip('",') for line in block.splitlines() if '"' in line],
                          list(BLOCKED_COMMANDS))
 

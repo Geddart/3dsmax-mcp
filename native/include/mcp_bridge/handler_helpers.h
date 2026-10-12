@@ -399,6 +399,27 @@ inline std::string RunMAXScript(const std::string& script) {
     return "OK";
 }
 
+// Safe-mode blocklist, shared by the raw execute_maxscript path
+// (command_dispatcher.cpp) and every place the bridge splices caller-supplied
+// value text into its own MAXScript (TrySetViaMaxScript and friends), which
+// would otherwise run through RunMAXScript without any filter.
+inline bool ContainsSafeModeBlockedCall(const std::string& text) {
+    std::string lower = text;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    static const char* const blocked[] = {
+        "doscommand",
+        "shelllaunch",
+        "deletefile",
+        "python.execute",
+        "createfile",
+        "hiddendoscommand",
+    };
+    for (const char* b : blocked) {
+        if (lower.find(b) != std::string::npos) return true;
+    }
+    return false;
+}
+
 // A bare MAXScript identifier (property name) — the only shape we splice into
 // fallback scripts, so a caller-supplied name can never inject code.
 inline bool IsPlainIdentifier(const std::string& s) {
@@ -474,6 +495,9 @@ inline SetOutcome TrySetViaMaxScript(const std::string& targetExpr, const std::s
         return NotHandled("invalid property name");
     }
     if (value.empty()) return NotHandled("empty value");
+    // Property values are spliced into MAXScript below; refuse the safe-mode
+    // blocklist unconditionally (no property value legitimately needs it).
+    if (ContainsSafeModeBlockedCall(value)) return NotHandled("value contains a function blocked by safe mode");
     static const char* kOk = "__MCP_SET_OK__:";
     static const char* kMismatch = "__MCP_SET_MISMATCH__:";
     static const char* kUnreadable = "__MCP_SET_UNREADABLE__";
