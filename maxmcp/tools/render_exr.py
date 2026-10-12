@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -116,6 +117,9 @@ try (
     mcpSetProp cmHost #output_rawExrUseHalf {half_value} mcpSaved mcpUsed
     mcpSetProp cmHost #output_rawExrDeep false mcpSaved mcpUsed
     mcpSetProp cmHost #output_rawSaveColorCorrections false mcpSaved mcpUsed
+    -- "Save separate render channels" would write output_splitfilename, a path
+    -- the path policy never saw: off for this render (restored below).
+    mcpSetProp cmHost #output_splitgbuffer false mcpSaved mcpUsed
     mcpSetProp cmHost #colorMapping_clampOutput false mcpSaved mcpUsed
     if {no_cm} do mcpSetProp cmHost #colorMapping_adaptationOnly 1 mcpSaved mcpUsed
     bm = render {render_args}
@@ -143,12 +147,18 @@ else (
 
 
 def _find_written(path: Path, started: float) -> Path | None:
-    """The file the renderer wrote: ``path`` itself, or a frame-numbered sibling."""
+    """The file the renderer wrote: ``path`` itself, or its frame-numbered sibling.
+
+    Only ``<stem>.<digits><suffix>`` / ``<stem><digits><suffix>`` (V-Ray appends the
+    frame, ``name.0000.exr``) qualify; ``shot_backup.exr`` next to ``shot.exr`` never does,
+    so an unrelated recent file is neither reported as the render nor moved onto it.
+    """
     if path.exists() and path.stat().st_mtime >= started - 1:
         return path
+    frame_name = re.compile(re.escape(path.stem) + r"\.?\d+" + re.escape(path.suffix), re.IGNORECASE)
     candidates = [
-        p for p in path.parent.glob(f"{path.stem}*{path.suffix}")
-        if p.is_file() and p.stat().st_mtime >= started - 1
+        p for p in path.parent.iterdir()
+        if frame_name.fullmatch(p.name) and p.is_file() and p.stat().st_mtime >= started - 1
     ]
     return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
 

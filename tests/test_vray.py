@@ -192,6 +192,22 @@ class RendererToolTests(unittest.TestCase):
         self.assertIn('undo "MCP vray_set_settings" on', script)
         self.assertEqual(out["set"]["GI_on"], False)
 
+    def test_set_settings_gpu_read_only_mirror_falls_back_to_v_ray_settings(self):
+        # Regression (review 2026-10-12): V-Ray GPU's output_* are read-only mirrors of
+        # renderers.current.V_Ray_settings; the write and the read-back must use the owner.
+        readback = {"readback": {"output_rawFileName": "C:/p/raw.exr"}, "on_sub_object": ["output_rawFileName"],
+                    "errors": {}, "renderer_class": "V_Ray_GPU_7"}
+        mock = _client(RENDERER_DUMP, readback)
+        with patch("maxmcp.tools.vray.client", mock), patch("maxmcp.tools.vray.resolve_write_path"):
+            out = json.loads(V.vray_set_settings({"output_rawFileName": "C:/p/raw.exr"}))
+        script = _scripts(mock)[1]
+        self.assertIn("local sub = if (isProperty r #V_Ray_settings) then r.V_Ray_settings else undefined", script)
+        self.assertIn("if sub != undefined and (isProperty sub #output_rawFileName) then", script)
+        self.assertIn("try (setProperty sub #output_rawFileName", script)
+        self.assertIn("getProperty hosts[1] #output_rawFileName", script)
+        self.assertEqual(out["written_to_V_Ray_settings"], ["output_rawFileName"])
+        self.assertEqual(out["set"]["output_rawFileName"], "C:/p/raw.exr")
+
     def test_set_settings_mismatch_raises(self):
         readback = {"readback": {"progressive_maxSamples": 60}, "errors": {}}
         mock = _client(RENDERER_DUMP, readback)

@@ -492,6 +492,9 @@ def vray_set_settings(props: DictValue) -> str:
     Output-path string props (*FileName, *_file, *_path) must be inside the
     allowed folders (path policy). Mirror pairs are independent: setting
     imageSampler_type does not change imageSampler_type_new (the UI one).
+    V-Ray GPU: a property the renderer refuses (its output_* are read-only
+    mirrors) is written to and read back from renderers.current.V_Ray_settings;
+    those names are listed in written_to_V_Ray_settings.
     """
     if not isinstance(props, dict) or not props:
         raise ValueError("props must be a non-empty object of property -> value")
@@ -522,20 +525,35 @@ def vray_set_settings(props: DictValue) -> str:
     if problems:
         raise ValueError("No settings were written. " + "; ".join(problems))
 
+    # V-Ray GPU exposes some properties (output_*) as READ-ONLY mirrors of its
+    # V_Ray_settings sub-object: a write that the renderer refuses goes to the
+    # sub-object when it has the property, and that host is the one read back.
     lines = ["local r = renderers.current",
              'if not (matchPattern ((classOf r) as string) pattern:"V_Ray*") do throw "renderers.current is not V-Ray"',
+             "local sub = if (isProperty r #V_Ray_settings) then r.V_Ray_settings else undefined",
              'local errs = ""',
+             "local hosts = #()",
              'undo "MCP vray_set_settings" on (']
     for name, literal, _ in plan:
+        err = (f'(errs += (if errs == "" then "" else ",") + "\\"{name}\\":\\"" + '
+               f'(MCP_Server.escapeJsonString (getCurrentException())) + "\\"")')
         lines.append(
-            f'    try (setProperty r #{name} ({literal})) catch '
-            f'(errs += (if errs == "" then "" else ",") + "\\"{name}\\":\\"" + (MCP_Server.escapeJsonString (getCurrentException())) + "\\"")')
+            f"    try (setProperty r #{name} ({literal}); append hosts r) catch (\n"
+            f"        if sub != undefined and (isProperty sub #{name}) then (\n"
+            f"            append hosts sub\n"
+            f"            try (setProperty sub #{name} ({literal})) catch {err}\n"
+            f"        ) else (append hosts r; {err})\n"
+            f"    )")
     lines.append(")")
     lines.append('local s = "{\\"readback\\":{"')
     for i, (name, _, _) in enumerate(plan):
         sep = "," if i else ""
-        lines.append(f's += "{sep}\\"{name}\\":" + (try (mcpVJ (getProperty r #{name})) catch ("null"))')
-    lines.append('s += "},\\"errors\\":{" + errs + "},\\"renderer_class\\":\\"" + (MCP_Server.escapeJsonString ((classOf r) as string)) + "\\"}"')
+        lines.append(f's += "{sep}\\"{name}\\":" + (try (mcpVJ (getProperty hosts[{i + 1}] #{name})) catch ("null"))')
+    lines.append('s += "},\\"on_sub_object\\":["')
+    lines.append('local nSub = 0')
+    for i, (name, _, _) in enumerate(plan):
+        lines.append(f'if hosts[{i + 1}] != r do (s += (if nSub > 0 then "," else "") + "\\"{name}\\""; nSub += 1)')
+    lines.append('s += "],\\"errors\\":{" + errs + "},\\"renderer_class\\":\\"" + (MCP_Server.escapeJsonString ((classOf r) as string)) + "\\"}"')
     lines.append("s")
     data = _run("\n".join(lines))
     readback = data.get("readback", {})
@@ -552,7 +570,10 @@ def vray_set_settings(props: DictValue) -> str:
     if mismatches:
         raise RuntimeError("V-Ray settings read-back mismatch: " + "; ".join(mismatches)
                            + f". Stored now: {json.dumps(applied)}")
-    return json.dumps({"renderer_class": data.get("renderer_class"), "set": applied})
+    result: dict[str, Any] = {"renderer_class": data.get("renderer_class"), "set": applied}
+    if data.get("on_sub_object"):
+        result["written_to_V_Ray_settings"] = data["on_sub_object"]
+    return json.dumps(result)
 
 
 # --------------------------------------------------------------------------- render elements

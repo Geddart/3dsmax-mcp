@@ -11,6 +11,7 @@ import json as _json
 import math
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -142,6 +143,11 @@ _EXPORT_TEMPLATE = "(" + _MS_JSTR + r'''
             local unitName = units.SystemType as string
             local vOff = 0
             local tOff = 0
+            local m = undefined
+            local writeErr = undefined
+            -- outPath is a temp file next to the target (Python renames it on success);
+            -- whatever throws, the mesh is freed, the stream closed and the temp deleted.
+            try (
             if isObj then (
                 format "# 3dsmax-mcp export_geometry\n# space=% system_units=% scale=% objects=%\n" (if isLocal then "local" else "world") unitName (formattedPrint units.SystemScale format:fmt) exportable.count to:f
             ) else (
@@ -151,7 +157,7 @@ _EXPORT_TEMPLATE = "(" + _MS_JSTR + r'''
             with undo off (
                 for oi = 1 to exportable.count do (
                     local o = exportable[oi]
-                    local m = snapshotAsMesh o
+                    m = snapshotAsMesh o
                     local tm = o.objectTransform
                     local itm = inverse tm
                     local nv = m.numVerts
@@ -241,10 +247,19 @@ _EXPORT_TEMPLATE = "(" + _MS_JSTR + r'''
                     vOff += nv
                     tOff += ntv
                     delete m
+                    m = undefined
                 )
             )
             if not isObj do format "\n]}\n" to:f
             close f
+            f = undefined
+            ) catch (writeErr = getCurrentException())
+            if writeErr != undefined then (
+                if m != undefined do try (delete m) catch ()
+                if f != undefined do try (close f) catch ()
+                try (deleteFile outPath) catch ()
+                "{\"error\":" + (mcpSfJ ("Export failed; the target was not touched: " + writeErr)) + "}"
+            ) else (
             format "]" to:summary
             local ws = stringStream ""
             format "[" to:ws
@@ -255,6 +270,7 @@ _EXPORT_TEMPLATE = "(" + _MS_JSTR + r'''
             for i = 1 to skipped.count do (if i > 1 do format "," to:ks; format "%" (mcpSfJ skipped[i]) to:ks)
             format "]" to:ks
             "{\"objects\":" + (summary as string) + ",\"skipped\":" + (ks as string) + ",\"warnings\":" + (ws as string) + ",\"system_units\":" + (mcpSfJ unitName) + "}"
+            )
         )
     )
 )'''
@@ -354,8 +370,11 @@ def export_geometry(
     if target.exists() and target.is_dir():
         raise IsADirectoryError(f"{target} is a folder; pass a file path")
 
+    # Max writes a temp file in the target folder; it replaces the target only once the
+    # whole export succeeded, so a failure never leaves a partial file (or a half-overwritten one).
+    staging = target.with_name(f"{target.name}.{uuid.uuid4().hex[:8]}.mcptmp")
     script = build_export_script(
-        out_path=str(target),
+        out_path=str(staging),
         expected_scene=scene_path + scene_name,
         names=names_l,
         handles=handles_l,
@@ -365,7 +384,17 @@ def export_geometry(
         include_uvs=bool(include_uvs),
         precision=precision,
     )
-    data = _run(script, timeout=float(timeout_s))
+    try:
+        data = _run(script, timeout=float(timeout_s))
+        if not staging.is_file():
+            raise RuntimeError(f"3ds Max reported success but {staging} does not exist")
+        os.replace(staging, target)
+    finally:
+        if staging.exists():
+            try:
+                staging.unlink()
+            except OSError:
+                pass
     objects = list(data.get("objects") or [])
     if not target.is_file():
         raise RuntimeError(f"3ds Max reported success but {target} does not exist")
@@ -521,6 +550,14 @@ _SAVE_READ_SCRIPT = "(" + _MS_JSTR + r'''
 
 
 _SAVE_APPLY_TEMPLATE = "(" + _MS_JSTR + r'''
+    -- V-Ray GPU exposes output_* as READ-ONLY mirrors of renderers.current.V_Ray_settings:
+    -- write the renderer first, the sub-object when the renderer refuses; returns the host.
+    fn mcpSfVSet r p v = (
+        try (setProperty r p v; r) catch (
+            local sub = if (isProperty r #V_Ray_settings) then r.V_Ray_settings else undefined
+            if sub != undefined and (isProperty sub p) then (setProperty sub p v; sub) else throw()
+        )
+    )
     local newPath = @NEW_PATH@
     local result = undefined
     if (maxFilePath + maxFileName) != @EXPECTED_SCENE@ then (
@@ -538,32 +575,42 @@ _SAVE_APPLY_TEMPLATE = "(" + _MS_JSTR + r'''
             local r = renderers.current
             local oldOut = rendOutputFilename
             local oldV = #()
+            local vHosts = #()
             local vProps = @VRAY_PROPS@
             local vVals = @VRAY_VALUES@
             local re = maxOps.GetCurRenderElementMgr()
             local eVals = @ELEMENT_VALUES@
             local oldE = for i = 0 to (re.NumRenderElements() - 1) collect (re.GetRenderElementFilename i)
-            if @SET_OUTPUT@ do rendOutputFilename = @NEW_OUTPUT@
-            for i = 1 to vProps.count do (
-                append oldV (getProperty r vProps[i])
-                setProperty r vProps[i] vVals[i]
-            )
-            if eVals.count == oldE.count do (
-                for i = 1 to eVals.count do re.SetRenderElementFilename (i - 1) eVals[i]
-            )
             local ok = false
-            try (ok = saveMaxFile newPath quiet:true) catch (ok = false)
-            if not ok or not (doesFileExist newPath) then (
-                rendOutputFilename = oldOut
-                for i = 1 to vProps.count do setProperty r vProps[i] oldV[i]
-                for i = 1 to oldE.count do (if oldE[i] != undefined do re.SetRenderElementFilename (i - 1) oldE[i])
-                result = "{\"error\":" + (mcpSfJ ("saveMaxFile failed for " + newPath + "; render paths restored")) + "}"
+            local failMsg = ""
+            -- Every path mutation and the save sit in one guard: whatever throws, the
+            -- paths are restored below and Render Setup is reopened.
+            try (
+                if @SET_OUTPUT@ do rendOutputFilename = @NEW_OUTPUT@
+                for i = 1 to vProps.count do (
+                    append oldV (getProperty r vProps[i])
+                    append vHosts (mcpSfVSet r vProps[i] vVals[i])
+                )
+                if eVals.count == oldE.count do (
+                    for i = 1 to eVals.count do re.SetRenderElementFilename (i - 1) eVals[i]
+                )
+                ok = saveMaxFile newPath quiet:true
+            ) catch (
+                ok = false
+                failMsg = getCurrentException()
+            )
+            if ok != true or not (doesFileExist newPath) then (
+                try (rendOutputFilename = oldOut) catch ()
+                for i = 1 to vHosts.count do try (setProperty vHosts[i] vProps[i] oldV[i]) catch ()
+                for i = 1 to oldE.count do (if oldE[i] != undefined do try (re.SetRenderElementFilename (i - 1) oldE[i]) catch ())
+                local why = if failMsg == "" then "saveMaxFile failed" else ("saving failed: " + failMsg)
+                result = "{\"error\":" + (mcpSfJ (why + " for " + newPath + "; render paths restored")) + "}"
             ) else (
                 local vs = stringStream ""
                 format "{" to:vs
                 for i = 1 to vProps.count do (
                     if i > 1 do format "," to:vs
-                    format "%:%" (mcpSfJ (vProps[i] as string)) (mcpSfJ ((getProperty r vProps[i]) as string)) to:vs
+                    format "%:%" (mcpSfJ (vProps[i] as string)) (mcpSfJ ((getProperty vHosts[i] vProps[i]) as string)) to:vs
                 )
                 format "}" to:vs
                 local es = stringStream ""

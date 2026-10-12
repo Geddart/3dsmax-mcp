@@ -235,6 +235,34 @@ class RenderFloatExrToolTests(unittest.TestCase):
         self.assertIn("no EXR was written", result["error"])
         self.assertEqual(target.read_bytes(), b"previous render")
 
+    def test_unrelated_recent_sibling_is_not_taken_for_the_render(self) -> None:
+        # Regression (review 2026-10-12): the old stem*.exr glob picked shot_backup.exr,
+        # moved it onto shot.exr and reported success for a render that wrote nothing.
+        target = self.scene_dir / "shot.exr"
+        sibling = self.scene_dir / "shot_backup.exr"
+
+        def fake_send(command, timeout=None):
+            if command == "maxFilePath":
+                return {"result": str(self.scene_dir) + "\\"}
+            sibling.write_bytes(b"someone else's file")
+            return {"result": "MCPEXR|OK|V_Ray_7|vray_raw|"}
+
+        with patch.object(render_exr.client, "send_command", side_effect=fake_send):
+            result = json.loads(render_float_exr(output_path=str(target)))
+        self.assertIn("no EXR was written", result["error"])
+        self.assertEqual(sibling.read_bytes(), b"someone else's file")
+        self.assertFalse(target.exists())
+
+    def test_frame_number_without_dot_is_accepted(self) -> None:
+        target = self.scene_dir / "beauty.exr"
+        write_exr(self.scene_dir / "beauty0001.exr", 4, 2, lambda c, x, y: 1.0)
+        found = render_exr._find_written(target, time.time() - 5)
+        self.assertEqual(found, self.scene_dir / "beauty0001.exr")
+
+    def test_split_channels_are_switched_off_for_the_render(self) -> None:
+        script = build_render_float_exr_maxscript("C:/p/o.exr")
+        self.assertIn("mcpSetProp cmHost #output_splitgbuffer false mcpSaved mcpUsed", script)
+
     def test_render_error_is_reported(self) -> None:
         def fake_send(command, timeout=None):
             if command == "maxFilePath":

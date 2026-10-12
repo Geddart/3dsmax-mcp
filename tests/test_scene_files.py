@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -136,6 +137,12 @@ class PlanTargetTests(_PolicySandbox):
                 scene_path=str(self.scene_dir) + "\\", scene_name="a_V001.max", path=None, base_name=r"..\evil")
 
 
+def staging_path(script: str) -> Path:
+    match = re.search(r'local outPath = "((?:[^"\\]|\\.)*)"', script)
+    assert match, "no outPath in the export script"
+    return Path(match.group(1).replace("\\\\", "\\"))
+
+
 class ExportGeometryTests(_PolicySandbox):
     def test_path_outside_allowed_roots_is_refused_before_export(self) -> None:
         fake = self.use([self.scene_state()])
@@ -154,8 +161,9 @@ class ExportGeometryTests(_PolicySandbox):
         out = self.scene_dir / "exports" / "geo.json"
 
         def max_writes(command: str) -> dict:
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text('{"objects":[]}')
+            staged = staging_path(command)
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            staged.write_text('{"objects":[]}')
             return {
                 "objects": [
                     {"name": 'Box "A"', "handle": 7, "vertices": 8, "faces": 12, "uv_vertices": 0, "normals": True},
@@ -170,7 +178,10 @@ class ExportGeometryTests(_PolicySandbox):
         res = scene_files.export_geometry(path=str(out), names=['Box "A"'], handles=[9], format="JSON",
                                           space="local", precision=7)
         script = fake.calls[1]
-        self.assertIn(scene_files._ms_str(str(out)), script)
+        staged = staging_path(script)
+        self.assertEqual(staged.parent, out.parent)
+        self.assertTrue(staged.name.startswith("geo.json.") and staged.name.endswith(".mcptmp"))
+        self.assertFalse(staged.exists())  # renamed onto the target
         self.assertIn(r'#("Box \"A\"")', script)
         self.assertIn("#(9)", script)
         self.assertIn('local fmt = ".7g"', script)
@@ -178,10 +189,29 @@ class ExportGeometryTests(_PolicySandbox):
         self.assertIn("local isObj = false", script)
         self.assertIn('mode:"wt"', script)
         self.assertNotIn("createfile", script.lower())
-        self.assertNotIn("deletefile", script.lower())
+        self.assertIn("catch (writeErr = getCurrentException())", script)
         self.assertEqual((res["object_count"], res["vertex_count"], res["face_count"]), (2, 12, 14))
         self.assertEqual(res["file_size"], out.stat().st_size)
         self.assertTrue(any("Camera01" in w for w in res["warnings"]))
+
+    def test_failed_export_keeps_the_previous_file_and_cleans_the_temp(self) -> None:
+        # Regression (review 2026-10-12): an exception mid-export used to leave a partial
+        # file at the target (an overwrite destroyed the old one) and leak the stream/mesh.
+        out = self.scene_dir / "geo.obj"
+        out.write_text("previous export")
+
+        def max_fails(command: str) -> dict:
+            staging_path(command).write_text("partial")
+            return {"error": "Export failed; the target was not touched: -- disk full"}
+
+        fake = self.use([self.scene_state(), max_fails])
+        with self.assertRaisesRegex(RuntimeError, "disk full"):
+            scene_files.export_geometry(path=str(out), names=["Box001"], overwrite=True)
+        script = fake.calls[1]
+        self.assertIn("if m != undefined do try (delete m) catch ()", script)
+        self.assertIn("if f != undefined do try (close f) catch ()", script)
+        self.assertEqual(out.read_text(), "previous export")
+        self.assertEqual([p.name for p in self.scene_dir.iterdir()], ["geo.obj"])
 
     def test_argument_validation(self) -> None:
         for kwargs in ({"names": []}, {"names": ["a"], "format": "fbx"}, {"names": ["a"], "space": "pivot"},
@@ -239,6 +269,16 @@ class SaveVersionedTests(_PolicySandbox):
         self.assertEqual(res["version_label"], "V005")
         self.assertEqual(res["render_output"], {"old": out_old, "new": out_new})
         self.assertEqual(res["vray_output"]["output_rawFileName"]["new"], raw_new)
+        # Regression (review 2026-10-12): every path write sits inside the guard that
+        # restores them, GPU read-only mirrors fall back to V_Ray_settings, and Render
+        # Setup is reopened on every exit.
+        guard = script.index("try (\n                if true do rendOutputFilename")
+        self.assertLess(guard, script.index("append vHosts (mcpSfVSet r vProps[i] vVals[i])"))
+        self.assertLess(script.index("ok = saveMaxFile newPath quiet:true"), script.index("failMsg = getCurrentException()"))
+        self.assertIn("if sub != undefined and (isProperty sub p) then (setProperty sub p v; sub) else throw()", script)
+        self.assertIn("for i = 1 to vHosts.count do try (setProperty vHosts[i] vProps[i] oldV[i]) catch ()", script)
+        self.assertGreater(script.index("if dlgOpen do renderSceneDialog.open()"),
+                           script.index("render paths restored"))
 
     def test_readback_mismatch_raises(self) -> None:
         target = self.scene_dir / "shot_V005.max"

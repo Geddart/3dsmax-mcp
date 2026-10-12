@@ -75,5 +75,69 @@ inline double QuatRelativeAngle(const double* q1, const double* q2) {
     return 2.0 * std::acos(dot);
 }
 
+// ── Scale read-back (transform_object) ───────────────────────────────────
+// 3x3 matrices are row-major double[9] in Max's row-vector convention
+// (p_world = p_local * M; row r is local axis r in world space).
+
+inline double Det3(const double* m) {
+    return m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) +
+           m[2] * (m[3] * m[7] - m[4] * m[6]);
+}
+
+inline bool Invert3(const double* m, double* out) {
+    const double det = Det3(m);
+    double scale = 0.0;
+    for (int i = 0; i < 9; ++i) scale = std::max(scale, std::fabs(m[i]));
+    if (!std::isfinite(det) || scale == 0.0 || std::fabs(det) <= 1e-12 * scale * scale * scale) return false;
+    out[0] = (m[4] * m[8] - m[5] * m[7]) / det;
+    out[1] = (m[2] * m[7] - m[1] * m[8]) / det;
+    out[2] = (m[1] * m[5] - m[2] * m[4]) / det;
+    out[3] = (m[5] * m[6] - m[3] * m[8]) / det;
+    out[4] = (m[0] * m[8] - m[2] * m[6]) / det;
+    out[5] = (m[2] * m[3] - m[0] * m[5]) / det;
+    out[6] = (m[3] * m[7] - m[4] * m[6]) / det;
+    out[7] = (m[1] * m[6] - m[0] * m[7]) / det;
+    out[8] = (m[0] * m[4] - m[1] * m[3]) / det;
+    return true;
+}
+
+inline void Mul3(const double* a, const double* b, double* out) {
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            out[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
+}
+
+// |m - diag(s)| element-wise within relTol * max|s|.
+inline bool IsDiagonal(const double* m, const double* s, double relTol) {
+    double mag = 0.0;
+    for (int i = 0; i < 3; ++i) mag = std::max(mag, std::fabs(s[i]));
+    const double tol = relTol * std::max(mag, 1e-9);
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            if (std::fabs(m[r * 3 + c] - (r == c ? s[r] : 0.0)) > tol) return false;
+    return true;
+}
+
+enum class ScaleFrame { None, World, Local };
+
+// Which axis frame the node's 3x3 was scaled by `s` in, comparing the FULL
+// transform (a determinant ratio accepted [2,0.5,1] refused as "volume x1"
+// and hid two-axis sign flips). World: after = before * diag(s) (scale along
+// world axes about the pivot). Local: after = diag(s) * before (scale along
+// the node's own axes, how a Max scale controller may apply it). None: the
+// basis did not change by s in either frame (refused, partly applied, or a
+// degenerate starting basis).
+inline ScaleFrame AppliedScaleFrame(const double* before, const double* after, const double* s,
+                                    double relTol = 1e-3) {
+    double inv[9];
+    if (!Invert3(before, inv)) return ScaleFrame::None;
+    double d[9];
+    Mul3(inv, after, d);
+    if (IsDiagonal(d, s, relTol)) return ScaleFrame::World;
+    Mul3(after, inv, d);
+    if (IsDiagonal(d, s, relTol)) return ScaleFrame::Local;
+    return ScaleFrame::None;
+}
+
 }  // namespace param_units
 }  // namespace mcp_bridge

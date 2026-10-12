@@ -680,9 +680,11 @@ std::string NativeHandlers::TransformObject(const std::string& params, MCPBridge
             decomp_affine(tm, &parts);
             out[0] = parts.q.x; out[1] = parts.q.y; out[2] = parts.q.z; out[3] = parts.q.w;
         };
-        auto det3 = [](const Matrix3& m) {
-            const Point3 a = m.GetRow(0), b = m.GetRow(1), c = m.GetRow(2);
-            return static_cast<double>(DotProd(a, CrossProd(b, c)));
+        auto basis3 = [](const Matrix3& m, double out[9]) {
+            for (int r = 0; r < 3; ++r) {
+                const Point3 row = m.GetRow(r);
+                out[r * 3] = row.x; out[r * 3 + 1] = row.y; out[r * 3 + 2] = row.z;
+            }
         };
 
         // Move — read back: the world translation must change by the offset.
@@ -759,19 +761,26 @@ std::string NativeHandlers::TransformObject(const std::string& params, MCPBridge
             } else {
                 throw std::runtime_error("scale must be [s] or [x,y,z]");
             }
-            const double detBefore = det3(node->GetNodeTM(t));
+            double before3[9], after3[9];
+            basis3(node->GetNodeTM(t), before3);
             Matrix3 tmAxis;
             node->Scale(t, tmAxis, scaleVal, TRUE, TRUE, PIV_NONE, TRUE);
             didSomething = true;
-            // Read back: scaling by (sx,sy,sz) about any axes multiplies the
-            // node's volume (3x3 determinant) by sx*sy*sz.
-            const double detAfter = det3(node->GetNodeTM(t));
-            const double want = static_cast<double>(scaleVal.x) * scaleVal.y * scaleVal.z;
-            const double got = (std::fabs(detBefore) > 1e-20) ? detAfter / detBefore : 0.0;
-            applied["scale"] = "volume x" + ntx::FormatDouble(got);
-            if (!pu::FloatsMatch(want, got, 1e-4)) {
-                failedKeys.push_back(PartialKey("scale", listText(sv), "volume x" + ntx::FormatDouble(got), true,
-                    "node volume changed by a different factor than requested (locked scale or scale controller?)"));
+            // Read back the FULL basis: it must equal the old one scaled by
+            // (sx,sy,sz) along world or local axes. A determinant ratio alone
+            // accepted a refused [2,0.5,1] (ratio 1) and ignored sign flips.
+            basis3(node->GetNodeTM(t), after3);
+            const double s3[3] = {scaleVal.x, scaleVal.y, scaleVal.z};
+            const pu::ScaleFrame frame = pu::AppliedScaleFrame(before3, after3, s3);
+            const double detBefore = pu::Det3(before3);
+            const double got = (std::fabs(detBefore) > 1e-20) ? pu::Det3(after3) / detBefore : 0.0;
+            const std::string gotText = "volume x" + ntx::FormatDouble(got);
+            if (frame == pu::ScaleFrame::None) {
+                applied["scale"] = gotText;
+                failedKeys.push_back(PartialKey("scale", listText(sv), gotText + ", axes not scaled as requested", true,
+                    "node axes did not change by the requested factors (locked scale, scale controller, or a flat node?)"));
+            } else {
+                applied["scale"] = listText(sv) + (frame == pu::ScaleFrame::World ? " along world axes" : " along local axes");
             }
         }
 

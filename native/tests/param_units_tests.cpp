@@ -65,6 +65,46 @@ int main() {
         Check(Near(pu::QuatRelativeAngle(qi, qn), 0.0, 1e-7), "q and -q are the same orientation");
         Check(Near(pu::QuatRelativeAngle(qi, q45), pu::kPi / 4.0, 1e-9), "45 deg relative rotation");
 
+        // Scale read-back (review 2026-10-12): the full basis is compared, not the
+        // determinant ratio, so a refused [2,0.5,1] or [-1,-1,1] is caught.
+        using F = pu::ScaleFrame;
+        const double I[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        const double s1[3] = {2.0, 0.5, 1.0};
+        const double scaled[9] = {2, 0, 0, 0, 0.5, 0, 0, 0, 1};
+        Check(pu::AppliedScaleFrame(I, scaled, s1) == F::World, "identity basis scaled [2,0.5,1]");
+        Check(pu::AppliedScaleFrame(I, I, s1) == F::None, "refused [2,0.5,1] (det ratio 1) is caught");
+        const double flip[3] = {-1.0, -1.0, 1.0};
+        Check(pu::AppliedScaleFrame(I, I, flip) == F::None, "ignored two-axis sign flip is caught");
+        const double flipped[9] = {-1, 0, 0, 0, -1, 0, 0, 0, 1};
+        Check(pu::AppliedScaleFrame(I, flipped, flip) == F::World, "applied sign flip");
+        // Rotated (30 deg about Z) and non-uniformly scaled basis, scaled along world vs local axes.
+        const double cz = std::cos(pu::kPi / 6.0), sz = std::sin(pu::kPi / 6.0);
+        const double R[9] = {cz * 1.5, sz * 1.5, 0, -sz * 0.7, cz * 0.7, 0, 0, 0, 2.0};
+        const double s2[3] = {1.5, 1.0, 2.0};
+        double world[9], local[9];
+        const double D[9] = {s2[0], 0, 0, 0, s2[1], 0, 0, 0, s2[2]};
+        pu::Mul3(R, D, world);
+        pu::Mul3(D, R, local);
+        Check(pu::AppliedScaleFrame(R, world, s2) == F::World, "rotated node, world-axis scale");
+        Check(pu::AppliedScaleFrame(R, local, s2) == F::Local, "rotated node, local-axis scale");
+        Check(pu::AppliedScaleFrame(R, R, s2) == F::None, "rotated node, refused scale");
+        double partly[9];
+        const double s3[3] = {1.5, 1.0, 1.0};
+        const double D3[9] = {1.5, 0, 0, 0, 1, 0, 0, 0, 1};
+        pu::Mul3(R, D3, partly);
+        Check(pu::AppliedScaleFrame(R, partly, s2) == F::None, "only one axis applied");
+        float rounded[9];
+        double back[9];
+        for (int i = 0; i < 9; ++i) { rounded[i] = static_cast<float>(world[i]); back[i] = rounded[i]; }
+        Check(pu::AppliedScaleFrame(R, back, s2) == F::World, "float32 TM rounding tolerated");
+        const double flat[9] = {1, 0, 0, 0, 1, 0, 0, 0, 0};
+        Check(pu::AppliedScaleFrame(flat, flat, s1) == F::None, "flat (singular) basis cannot be verified");
+        double inv[9], prod[9];
+        Check(pu::Invert3(R, inv), "invertible");
+        pu::Mul3(R, inv, prod);
+        const double ones[3] = {1.0, 1.0, 1.0};
+        Check(pu::IsDiagonal(prod, ones, 1e-12), "R * inv(R) == I");
+
         std::cout << "param_units tests passed\n";
         return 0;
     } catch (const std::exception& e) {

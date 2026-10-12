@@ -451,6 +451,7 @@ def _build_set_script(
     fov: float | None, film_width_mm: float | None,
     shift: tuple[float | None, float | None], near: float | None, far: float | None,
     render_size: tuple[int, int] | None, untarget: bool,
+    clip: bool | None = None, pixel_aspect: float | None = None,
 ) -> tuple[str, list[str]]:
     notes: list[str] = []
     cls = state["class"] if state else create_class
@@ -500,7 +501,11 @@ def _build_set_script(
                 lines.append(f"c.horizontal_shift = {_msf(sx * 100.0)}")
             if sy is not None:
                 lines.append(f"c.vertical_shift = {_msf(sy * 100.0)}")
-    if near is not None or far is not None:
+    if clip is False:
+        if near is not None or far is not None:
+            raise ValueError("clip=False turns clipping off; do not pass near/far with it")
+        lines.append("c.clip_on = false" if physical else "c.clipManually = false")
+    elif near is not None or far is not None:
         if physical:
             lines.append("c.clip_on = true")
             if near is not None:
@@ -525,8 +530,25 @@ def _build_set_script(
             notes.append("targeted camera: orientation set through its target; roll follows the look-at controller")
         else:
             lines.append(f"c.transform = matrix3 {_msp3(r)} {_msp3(u)} {_msp3(b)} {_msp3(position)}")
-    if render_size is not None:
-        lines += [f"renderWidth = {int(render_size[0])}", f"renderHeight = {int(render_size[1])}"]
+    if render_size is not None or pixel_aspect is not None:
+        # An open Render Setup writes its stale values back and the image-aspect lock
+        # rewrites the other side: close / release both, restore them even on a throw.
+        sets = []
+        if render_size is not None:
+            sets += [f"renderWidth = {int(render_size[0])}", f"renderHeight = {int(render_size[1])}"]
+        if pixel_aspect is not None:
+            sets.append(f"renderPixelAspect = {_msf(pixel_aspect)}")
+        lines += [
+            "local mcpDlg = renderSceneDialog.isOpen()",
+            "local mcpLock = rendLockImageAspectRatio",
+            "local mcpErr = undefined",
+            "if mcpDlg do renderSceneDialog.close()",
+            "rendLockImageAspectRatio = false",
+            f"try ({'; '.join(sets)}) catch (mcpErr = getCurrentException())",
+            "rendLockImageAspectRatio = mcpLock",
+            "if mcpDlg and not (renderSceneDialog.isOpen()) do renderSceneDialog.open()",
+            "if mcpErr != undefined do throw mcpErr",
+        ]
     body = "\n".join(lines)
     script = f'(\nundo "MCP set camera" on (\nwith animate off (\n{body}\n)\n)\n"OK"\n)'
     return script, notes
@@ -541,9 +563,21 @@ def _verify_readback(
     state: dict[str, Any], *, position: Vec | None, basis: tuple[Vec, Vec, Vec] | None,
     fov: float | None, shift: tuple[float | None, float | None],
     near: float | None, far: float | None,
+    clip: bool | None = None, render_size: tuple[int, int] | None = None,
+    pixel_aspect: float | None = None,
 ) -> None:
     mismatches: list[str] = []
     props = state["props"]
+    if render_size is not None:
+        got_size = (state["render_width"], state["render_height"])
+        if got_size != tuple(render_size):
+            mismatches.append(f"render size: wrote {list(render_size)}, read back {list(got_size)}")
+    if pixel_aspect is not None:
+        _check("pixel_aspect", state["pixel_aspect"], pixel_aspect, 1e-6 * max(1.0, abs(pixel_aspect)), mismatches)
+    if clip is False:
+        flag = "clip_on" if "clip_on" in props else "clipManually"
+        if props.get(flag) is not False:
+            mismatches.append(f"{flag}: wrote False, read back {props.get(flag)!r}")
     if position is not None:
         tol = POS_TOLERANCE * max(1.0, max(abs(c) for c in position))
         for i, axis in enumerate("xyz"):
@@ -593,7 +627,16 @@ def apply_camera(
     camera_class: str = "Physical",
     create: bool = True,
     untarget: bool = False,
+    clip: bool | None = None,
+    pixel_aspect: float | None = None,
 ) -> dict[str, Any]:
+    """Shared core of set_camera / import_camera.
+
+    clip=False turns the camera's clipping off (None leaves it unless near/far are
+    given). pixel_aspect is written as renderPixelAspect together with
+    set_render_size; without it, a value that differs from the scene's is
+    reported as a warning.
+    """
     if not name or not name.strip():
         raise ValueError("name is required")
     if camera_class not in _SUPPORTED_CLASSES:
@@ -611,7 +654,23 @@ def apply_camera(
         raise ValueError(f"camera class {state['class']} is not supported (supported: {list(_SUPPORTED_CLASSES)})")
     scene_w = int((state or {}).get("render_width") or 0) or int(_send("renderWidth as string").strip('"'))
     scene_h = int((state or {}).get("render_height") or 0) or int(_send("renderHeight as string").strip('"'))
-    pa = float((state or {}).get("pixel_aspect") or 1.0)
+    if state is not None:
+        scene_pa = float(state.get("pixel_aspect") or 1.0)
+    elif shift_y_px is not None or pixel_aspect is not None:
+        # New camera: renderPixelAspect is a scene setting, never assume square pixels.
+        scene_pa = _from_bits(_send("(bit.floatAsInt (renderPixelAspect as float)) as string").strip('"'))
+    else:
+        scene_pa = 1.0
+    if pixel_aspect is not None:
+        pixel_aspect = float(pixel_aspect)
+        if not math.isfinite(pixel_aspect) or pixel_aspect <= 0:
+            raise ValueError("pixel_aspect must be a positive number")
+    write_pa = pixel_aspect if (set_render_size and pixel_aspect is not None) else None
+    pa = write_pa if write_pa is not None else scene_pa
+    if pixel_aspect is not None and write_pa is None and abs(pixel_aspect - scene_pa) > 1e-6 * pixel_aspect:
+        warnings.append(
+            f"camera pixel_aspect {pixel_aspect:g} differs from the scene's renderPixelAspect {scene_pa:g}: "
+            "vertical framing will differ; pass set_render_size=True to apply it")
     if (render_width is None) != (render_height is None) and set_render_size:
         raise ValueError("set_render_size needs both render_width and render_height")
     lens_w = float(render_width) if render_width else float(scene_w)
@@ -665,16 +724,18 @@ def apply_camera(
         name=name, create_class=camera_class, exists=state is not None, state=state,
         position=pos_v, basis=basis, fov=fov, film_width_mm=film_width_mm, shift=shift,
         near=float(near) if near is not None else None, far=float(far) if far is not None else None,
-        render_size=render_size, untarget=untarget,
+        render_size=render_size, untarget=untarget, clip=clip, pixel_aspect=write_pa,
     )
     warnings += notes
     _send(script)
     after = _read_camera_state(name)
     near_f = float(near) if near is not None else None
     far_f = float(far) if far is not None else None
+    checks = {"clip": clip, "render_size": render_size, "pixel_aspect": write_pa}
     if after["has_target"] and basis is not None:
         # A look-at controller owns the rotation: check position and view direction, report roll.
-        _verify_readback(after, position=pos_v, basis=None, fov=fov, shift=shift, near=near_f, far=far_f)
+        _verify_readback(after, position=pos_v, basis=None, fov=fov, shift=shift, near=near_f, far=far_f,
+                         **checks)
         if max(abs(a - b) for a, b in zip(basis[2], after["back"])) > 1e-4:
             raise CameraReadbackError(
                 f"targeted camera view direction mismatch: wrote {list(basis[2])}, read {list(after['back'])}")
@@ -684,7 +745,8 @@ def apply_camera(
                 f"{list(basis[0])} (roll); pass untarget=True (Physical) or use a Freecamera. "
                 "Position and view direction were applied (undo restores them).")
     else:
-        _verify_readback(after, position=pos_v, basis=basis, fov=fov, shift=shift, near=near_f, far=far_f)
+        _verify_readback(after, position=pos_v, basis=basis, fov=fov, shift=shift, near=near_f, far=far_f,
+                         **checks)
     cam, readback_warnings = camera_dict_from_state(name, after)
     return {"created": state is None, "camera": cam, "warnings": warnings + readback_warnings}
 
@@ -802,7 +864,9 @@ def import_camera(
     `name` overrides the JSON name. The FOV is taken from fov_deg (else f_px with
     the JSON render_width); shift_x/shift_y are fractions of render width, so the
     camera frames the same image at any resolution. `set_render_size` also applies
-    the JSON render_width/render_height to the scene. Every value is read back.
+    the JSON render_width/render_height/pixel_aspect to the scene (otherwise a
+    different pixel_aspect is reported as a warning). near/far null (clipping off
+    at export) turns clipping off. Every value is read back.
     """
     cam = _load_camera_json(data, path)
     target_name = name or cam.get("name") or ""
@@ -815,6 +879,10 @@ def import_camera(
         if not rw:
             raise ValueError("f_px needs render_width in the camera JSON")
         fov = fov_from_f_px(float(cam["f_px"]), float(rw))
+    # export_camera writes near/far as null when clipping is off: that is an explicit
+    # "clipping off", not "leave the target camera's clipping as it is".
+    clip_off = "near" in cam and "far" in cam and cam["near"] is None and cam["far"] is None
+    pa = cam.get("pixel_aspect")
     return apply_camera(
         name=target_name,
         position=cam["position"], right=cam["right"], up=cam["up"], back=cam["back"],
@@ -827,6 +895,8 @@ def import_camera(
         near=cam.get("near"), far=cam.get("far"),
         camera_class=cls if cls != "Targetcamera" else "Freecamera",
         untarget=untarget,
+        clip=False if clip_off else None,
+        pixel_aspect=float(pa) if pa is not None else None,
     )
 
 

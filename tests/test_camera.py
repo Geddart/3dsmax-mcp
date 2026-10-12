@@ -257,12 +257,54 @@ class SetCameraTests(unittest.TestCase):
         f_px = 1000.0
         fov = cm.fov_from_f_px(f_px, 1920)
         after = state_string(fov=fov, w=1920, h=1080, hs=100 * 19.2 / 1920, vs=-100 * 10.8 / 1920)
-        result, fake = self.run_set(["ERR=not_found", "1920", "1080", "OK", after],
+        result, fake = self.run_set(["ERR=not_found", "1920", "1080", bits(1.0), "OK", after],
                                     name="cam", position=[0, 0, 0], right=[1, 0, 0], up=[0, 1, 0],
                                     back=[0, 0, 1], f_px=f_px, shift_x_px=19.2, shift_y_px=10.8)
+        self.assertIn("renderPixelAspect", fake.sent[3])
         self.assertAlmostEqual(result["camera"]["f_px"], f_px, places=2)
         self.assertAlmostEqual(result["camera"]["principal_point"][0], 960 + 19.2, places=3)
         self.assertAlmostEqual(result["camera"]["principal_point"][1], 540 + 10.8, places=3)
+
+    def test_new_camera_pixel_shift_uses_scene_pixel_aspect(self):
+        # Regression (review 2026-10-12): a new camera assumed square pixels, so
+        # shift_y_px=10 at renderPixelAspect 1.5 became a 15 px shift.
+        after = state_string(w=400, h=200, pa=1.5, vs=-100 * 10 / (400 * 1.5))
+        result, fake = self.run_set(["ERR=not_found", "400", "200", bits(1.5), "OK", after],
+                                    name="cam", position=[0, 0, 0], right=[1, 0, 0], up=[0, 1, 0],
+                                    back=[0, 0, 1], shift_y_px=10.0)
+        expected = -100.0 * 10.0 / (400 * 1.5)
+        line = next(x for x in fake.sent[4].splitlines() if x.startswith("c.vertical_shift = "))
+        self.assertAlmostEqual(float(line.split("=")[1]), expected, places=8)
+        self.assertAlmostEqual(result["camera"]["principal_point"][1], 110.0, places=3)
+
+    def test_render_size_is_written_guarded_and_verified(self):
+        # Regression (review 2026-10-12): render size was written without releasing the
+        # aspect lock / closing Render Setup and never compared after the write.
+        existing = state_string(w=400, h=200)
+        good = state_string(w=800, h=600)
+        result, fake = self.run_set([existing, "OK", good], name="cam", render_width=800, render_height=600,
+                                    set_render_size=True)
+        script = fake.sent[1]
+        self.assertIn("rendLockImageAspectRatio = false", script)
+        self.assertIn("if mcpDlg do renderSceneDialog.close()", script)
+        self.assertIn("try (renderWidth = 800; renderHeight = 600) catch (mcpErr = getCurrentException())", script)
+        self.assertLess(script.index("rendLockImageAspectRatio = mcpLock"), script.index("if mcpErr != undefined do throw"))
+        self.assertEqual(result["camera"]["render_width"], 800)
+        stale = state_string(w=800, h=400)
+        with self.assertRaisesRegex(cm.CameraReadbackError, "render size"):
+            self.run_set([existing, "OK", stale], name="cam", render_width=800, render_height=600,
+                         set_render_size=True)
+
+    def test_clip_false_turns_clipping_off_and_is_verified(self):
+        on = {"clip_on": "btrue"}
+        existing = state_string(extra=on)
+        off = state_string(extra={"clip_on": "bfalse"})
+        result, fake = self.run_set([existing, "OK", off], name="cam", clip=False)
+        self.assertIn("c.clip_on = false", fake.sent[1])
+        with self.assertRaisesRegex(cm.CameraReadbackError, "clip_on"):
+            self.run_set([existing, "OK", state_string(extra=on)], name="cam", clip=False)
+        with self.assertRaisesRegex(ValueError, "clip=False"):
+            self.run_set([existing], name="cam", clip=False, near=1.0)
 
     def test_argument_validation(self):
         with self.assertRaisesRegex(ValueError, "only one"):
@@ -333,6 +375,34 @@ class ImportExportTests(unittest.TestCase):
         self.assertEqual(captured["shift_x"], 0.02)
         self.assertEqual(captured["film_width_mm"], 24.0)
         self.assertEqual(captured["camera_class"], "Physical")
+        # near/far null at export = clipping off (review 2026-10-12)
+        self.assertIs(captured["clip"], False)
+        self.assertIsNone(captured["pixel_aspect"])
+
+    def test_import_carries_pixel_aspect_and_keeps_clipping_when_keys_absent(self):
+        cam = {"position": [0, 0, 0], "right": [1, 0, 0], "up": [0, 1, 0], "back": [0, 0, 1],
+               "fov_deg": 40.0, "render_width": 400, "render_height": 200, "pixel_aspect": 1.5}
+        captured = {}
+        with patch.object(cm, "apply_camera", lambda **kw: captured.update(kw) or {}):
+            cm.import_camera(data=cam, name="x", set_render_size=True)
+        self.assertEqual(captured["pixel_aspect"], 1.5)
+        self.assertIsNone(captured["clip"])
+        self.assertTrue(captured["set_render_size"])
+
+    def test_pixel_aspect_mismatch_warns_without_set_render_size(self):
+        existing = state_string(w=400, h=200, pa=1.0)
+        fake = QueueClient([existing, "OK", existing])
+        with patch.object(cm, "client", fake):
+            result = cm.apply_camera(name="cam", pixel_aspect=1.5)
+        self.assertTrue(any("pixel_aspect 1.5" in w for w in result["warnings"]))
+        self.assertNotIn("renderPixelAspect", fake.sent[1])
+        written = state_string(w=400, h=200, pa=1.5)
+        fake = QueueClient([existing, "OK", written])
+        with patch.object(cm, "client", fake):
+            result = cm.apply_camera(name="cam", pixel_aspect=1.5, render_width=400, render_height=200,
+                                     set_render_size=True)
+        self.assertIn("renderPixelAspect = 1.5", fake.sent[1])
+        self.assertFalse(any("pixel_aspect" in w for w in result["warnings"]))
 
     def test_import_f_px_only_and_validation(self):
         cam = {"position": [0, 0, 0], "right": [1, 0, 0], "up": [0, 1, 0], "back": [0, 0, 1],
