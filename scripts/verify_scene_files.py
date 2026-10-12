@@ -194,16 +194,25 @@ def main() -> int:
               "overwrite=True replaces the target", res_o["object_count"])
         check(not list(exp_dir.glob("*.mcptmp")), "no temp file left after a successful export")
         kept = obj_path.read_bytes()
-        staging = exp_dir / "two_boxes.obj.injected.mcptmp"
-        script = scene_files.build_export_script(
-            out_path=str(staging), expected_scene="", names=["vsfA"], handles=[], fmt="obj", space="world",
-            include_normals=True, include_uvs=True, precision=9)
         marker = 'format "[" to:summary'
-        check(script.count(marker) == 1, "failure injection point found once")
-        script = script.replace(marker, marker + '\n            throw "mcp injected failure"', 1)
-        failed = json.loads(ms(script))
-        check("mcp injected failure" in str(failed.get("error", "")), "mid-export throw reported as an error", failed)
-        check(not staging.exists(), "mid-export throw: temp file closed and deleted")
+        original_builder = scene_files.build_export_script
+
+        def injected_builder(**kwargs):
+            script = original_builder(**kwargs)
+            check(script.count(marker) == 1, "failure injection point found once")
+            # Throw after the header was written into the temp file.
+            return script.replace(marker, marker + '\n            throw "mcp injected failure"', 1)
+
+        scene_files.build_export_script = injected_builder
+        try:
+            scene_files.export_geometry(path=str(obj_path), names=["vsfA"], overwrite=True)
+            check(False, "mid-export throw reported as an error")
+        except RuntimeError as exc:
+            check("mcp injected failure" in str(exc), "mid-export throw reported as an error", str(exc)[:120])
+        finally:
+            scene_files.build_export_script = original_builder
+        # Python could delete the temp only if Max closed its stream in the catch.
+        check(not list(exp_dir.glob("*.mcptmp")), "mid-export throw: stream closed, temp file deleted")
         check(obj_path.read_bytes() == kept, "mid-export throw: target untouched")
 
         outside = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "mcp_scene_files_refuse.obj"

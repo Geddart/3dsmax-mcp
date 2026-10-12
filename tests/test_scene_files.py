@@ -188,7 +188,9 @@ class ExportGeometryTests(_PolicySandbox):
         self.assertIn("local isLocal = true", script)
         self.assertIn("local isObj = false", script)
         self.assertIn('mode:"wt"', script)
-        self.assertNotIn("createfile", script.lower())
+        # Safe mode refuses any command containing these names (live 2026-10-12).
+        for blocked in ("doscommand", "shelllaunch", "deletefile", "python.execute", "createfile"):
+            self.assertNotIn(blocked, script.lower())
         self.assertIn("catch (writeErr = getCurrentException())", script)
         self.assertEqual((res["object_count"], res["vertex_count"], res["face_count"]), (2, 12, 14))
         self.assertEqual(res["file_size"], out.stat().st_size)
@@ -279,6 +281,8 @@ class SaveVersionedTests(_PolicySandbox):
         self.assertIn("for i = 1 to vHosts.count do try (setProperty vHosts[i] vProps[i] oldV[i]) catch ()", script)
         self.assertGreater(script.index("if dlgOpen do renderSceneDialog.open()"),
                            script.index("render paths restored"))
+        for blocked in ("doscommand", "shelllaunch", "deletefile", "python.execute", "createfile"):
+            self.assertNotIn(blocked, script.lower())
 
     def test_readback_mismatch_raises(self) -> None:
         target = self.scene_dir / "shot_V005.max"

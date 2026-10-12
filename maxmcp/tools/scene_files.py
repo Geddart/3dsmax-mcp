@@ -145,8 +145,8 @@ _EXPORT_TEMPLATE = "(" + _MS_JSTR + r'''
             local tOff = 0
             local m = undefined
             local writeErr = undefined
-            -- outPath is a temp file next to the target (Python renames it on success);
-            -- whatever throws, the mesh is freed, the stream closed and the temp deleted.
+            -- outPath is a temp file next to the target (Python renames it on success and
+            -- deletes it on failure); whatever throws, the mesh is freed and the stream closed.
             try (
             if isObj then (
                 format "# 3dsmax-mcp export_geometry\n# space=% system_units=% scale=% objects=%\n" (if isLocal then "local" else "world") unitName (formattedPrint units.SystemScale format:fmt) exportable.count to:f
@@ -257,7 +257,7 @@ _EXPORT_TEMPLATE = "(" + _MS_JSTR + r'''
             if writeErr != undefined then (
                 if m != undefined do try (delete m) catch ()
                 if f != undefined do try (close f) catch ()
-                try (deleteFile outPath) catch ()
+                -- The temp file is deleted by Python (safe mode blocks that call in MAXScript).
                 "{\"error\":" + (mcpSfJ ("Export failed; the target was not touched: " + writeErr)) + "}"
             ) else (
             format "]" to:summary
