@@ -211,6 +211,18 @@ try:
     r = json.loads(transform_object(name="bF", move=[10.5, 0, 0], rotate=[0, 0, 30], scale=[2]))
     check_num("transform_object move read-back", ms("$bF.pos.x"), 10.5)
     check("transform_object reports applied", sorted((r.get("applied") or {}).keys()), ["move", "rotate", "scale"])
+    # Review 2026-10-12: a scale the controller refuses must fail even when the
+    # requested volume factor is 1 ([2,0.5,1]) - the old determinant check passed it.
+    ms('(local b = Box name:"bS" length:5 width:5 height:5; b.scale.controller = scale_script(); '
+       'b.scale.controller.script = "[1,1,1]"; "ok")')
+    err = expect_partial("transform_object scale [2,0.5,1] on a script-held scale -> PARTIAL_APPLY",
+                         transform_object, name="bS", scale=[2, 0.5, 1])
+    check("refused scale names the scale key",
+          [k.get("key") for k in (err.get("details") or {}).get("keys", [])], ["scale"])
+    ms('Box name:"bU" length:5 width:5 height:5')
+    r = json.loads(transform_object(name="bU", scale=[2, 0.5, 1]))
+    check("non-uniform scale on a plain box applies", ms("$bU.scale as string"), "[2,0.5,1]")
+    print("   applied:", r.get("applied"))
     # No false PARTIAL_APPLY on a parented, rotated, non-uniformly scaled node.
     ms('(local p = Point name:"tP" pos:[5,5,0]; p.rotation = eulerAngles 10 20 30; '
        'local b = Box name:"tB" length:5 width:5 height:5 pos:[10,0,0]; b.parent = p; '
@@ -221,6 +233,7 @@ try:
                                             scale=[1.5, 1, 2], coordinate_system=coord))
             check(f"transform_object {coord} on parented/rotated/non-uniform node succeeds",
                   sorted((r.get("applied") or {}).keys()), ["move", "rotate", "scale"])
+            print("   applied:", r.get("applied"))
         except MaxBridgeError as exc:
             err = _error_from_exception(exc)
             check(f"transform_object {coord} on parented/rotated/non-uniform node succeeds",

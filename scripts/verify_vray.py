@@ -95,6 +95,21 @@ try:
     V.vray_set_settings({"output_rawFileName": ""})
     check("output path cleared", ms("renderers.current.output_rawFileName"), "")
 
+    # 2b. V-Ray GPU: output_* on the renderer are read-only mirrors of V_Ray_settings
+    #     (review 2026-10-12); the tool must write the owner and read it back.
+    V.vray_set_renderer("gpu")
+    has_sub = ms("(isProperty renderers.current #V_Ray_settings) as string") == "true"
+    print("INFO GPU renderer has V_Ray_settings:", has_sub)
+    gpu_out = json.loads(V.vray_set_settings({"output_rawFileName": allowed, "output_saveRawFile": True}))
+    print("INFO GPU set:", json.dumps(gpu_out)[:300])
+    host = "renderers.current.V_Ray_settings" if has_sub else "renderers.current"
+    check("GPU raw path stored on its owner", ms(f"{host}.output_rawFileName"), allowed)
+    check("GPU raw save flag stored on its owner", ms(f"{host}.output_saveRawFile as string"), "true")
+    check("GPU tool readback", gpu_out["set"]["output_rawFileName"], allowed)
+    V.vray_set_settings({"output_rawFileName": "", "output_saveRawFile": False})
+    check("GPU raw path cleared", ms(f"{host}.output_rawFileName"), "")
+    V.vray_set_renderer("cpu")
+
     # 3. render elements: LightSelect with one light + Cryptomatte
     light_cls = "VRayLight" if ms("(VRayLight != undefined) as string") == "true" else "Omnilight"
     ms(f'{light_cls} name:"KeyLight" pos:[0,0,100]; Box name:"catcher" width:100 length:100 height:1; "ok"')

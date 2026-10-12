@@ -335,6 +335,42 @@ s
     except path_policy.PathNotAllowedError:
         check("export to a non-allowed folder is refused", True)
 
+    # 4b. Review 2026-10-12: pixel aspect, clipping and render size on create/import.
+    ms("renderWidth = 400; renderHeight = 200; renderPixelAspect = 1.5")
+    pa_cam = cm.set_camera("vcPA", position=[0, -500, 0], right=[1, 0, 0], up=[0, 0, 1], back=[0, -1, 0],
+                           fov_deg=45.0, shift_y_px=10.0)["camera"]
+    check("new camera shift_y_px=10 at pixel aspect 1.5 -> principal point y 110",
+          abs(pa_cam["principal_point"][1] - 110.0) < 1e-3, str(pa_cam["principal_point"]))
+    exp_pa = cm.export_camera("vcPA")["camera"]
+    ms("renderPixelAspect = 1.0")
+    imp = cm.import_camera(data=exp_pa, name="vcPA_sq")
+    check("import into square pixels warns about pixel_aspect",
+          any("pixel_aspect 1.5" in w for w in imp["warnings"]), str(imp["warnings"]))
+    imp2 = cm.import_camera(data=exp_pa, name="vcPA_set", set_render_size=True)
+    pa_now = cm._from_bits(ms("(bit.floatAsInt (renderPixelAspect as float)) as string"))
+    check("import with set_render_size restores pixel aspect 1.5", abs(pa_now - 1.5) < 1e-6, str(pa_now))
+    check("import with set_render_size: no pixel_aspect warning",
+          not any("pixel_aspect" in w for w in imp2["warnings"]), str(imp2["warnings"]))
+    pts = [[20.0, 0.0, 10.0]]
+    y_src = cm.project_points(exp_pa, pts)["points"][0]["y"]
+    y_imp = cm.project_points("vcPA_set", pts)["points"][0]["y"]
+    check("imported camera projects like the exported one", abs(y_src - y_imp) < 1e-3, f"{y_src} vs {y_imp}")
+    ms("renderPixelAspect = 1.0")
+    # Clipping off at export must turn it off on an existing clipped camera.
+    ms('(local c = getNodeByName "vcPA_sq" exact:true; c.clip_on = true; c.clip_near = 5.0; c.clip_far = 50.0; "ok")')
+    unclipped = dict(exp_pa, near=None, far=None)
+    cm.import_camera(data=unclipped, name="vcPA_sq")
+    check("import with near/far null turns clipping off", ms('$vcPA_sq.clip_on as string') == "false",
+          ms('$vcPA_sq.clip_on as string'))
+    # set_render_size with Render Setup open and the image-aspect lock on: verified and restored.
+    ms("rendLockImageAspectRatio = true; renderSceneDialog.open(); true")
+    sized = cm.set_camera("vcPA", render_width=800, render_height=600, set_render_size=True)["camera"]
+    state = ms('(renderWidth as string) + "x" + (renderHeight as string) + "|" + '
+               '(renderSceneDialog.isOpen() as string) + "|" + (rendLockImageAspectRatio as string)')
+    check("set_render_size 800x600 with dialog open + lock on", state == "800x600|true|true"
+          and (sized["render_width"], sized["render_height"]) == (800, 600), state)
+    ms("renderSceneDialog.close(); rendLockImageAspectRatio = false; renderWidth = 640; renderHeight = 360; true")
+
     # 5. capture_camera framing: plate marker vs projected scene object.
     ms("renderWidth = 640; renderHeight = 360")
     sphere_px = (400.0, 150.0, 300.0)

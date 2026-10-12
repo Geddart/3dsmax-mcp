@@ -187,6 +187,25 @@ def main() -> int:
         except FileExistsError:
             check(True, "existing export file refused without overwrite")
 
+        # Review 2026-10-12: Max writes a temp file that replaces the target only on success.
+        before_bytes = obj_path.read_bytes()
+        res_o = scene_files.export_geometry(path=str(obj_path), names=["vsfB"], overwrite=True)
+        check(res_o["object_count"] == 1 and obj_path.read_bytes() != before_bytes,
+              "overwrite=True replaces the target", res_o["object_count"])
+        check(not list(exp_dir.glob("*.mcptmp")), "no temp file left after a successful export")
+        kept = obj_path.read_bytes()
+        staging = exp_dir / "two_boxes.obj.injected.mcptmp"
+        script = scene_files.build_export_script(
+            out_path=str(staging), expected_scene="", names=["vsfA"], handles=[], fmt="obj", space="world",
+            include_normals=True, include_uvs=True, precision=9)
+        marker = 'format "[" to:summary'
+        check(script.count(marker) == 1, "failure injection point found once")
+        script = script.replace(marker, marker + '\n            throw "mcp injected failure"', 1)
+        failed = json.loads(ms(script))
+        check("mcp injected failure" in str(failed.get("error", "")), "mid-export throw reported as an error", failed)
+        check(not staging.exists(), "mid-export throw: temp file closed and deleted")
+        check(obj_path.read_bytes() == kept, "mid-export throw: target untouched")
+
         outside = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "mcp_scene_files_refuse.obj"
         try:
             scene_files.export_geometry(path=str(outside), names=["vsfA"])
@@ -262,6 +281,27 @@ def main() -> int:
             check(False, "versioned save outside allowed roots refused")
         except PathNotAllowedError:
             check(True, "versioned save outside allowed roots refused")
+
+        # Review 2026-10-12: V-Ray GPU keeps output_* on V_Ray_settings (the renderer's own
+        # are read-only mirrors); the versioned save must retarget them there.
+        ms('(local vc = undefined; for c in RendererClass.classes where matchPattern (c as string) '
+           'pattern:"V_Ray_GPU*" do vc = c; if vc != undefined do renderers.current = vc(); true)')
+        if ms('matchPattern ((classof renderers.current) as string) pattern:"V_Ray_GPU*"') == "true":
+            host = ("renderers.current.V_Ray_settings"
+                    if ms("(isProperty renderers.current #V_Ray_settings) as string") == "true" else "renderers.current")
+            raw_v3 = str(vtest / "renders" / "test_V003" / "test_V003_raw.exr")
+            ms(f"{host}.output_rawFileName = {scene_files._ms_str(raw_v3)}; true")
+            ms("renderSceneDialog.open(); true")
+            s4 = scene_files.save_scene_versioned()
+            raw4 = s4.get("vray_output", {}).get("output_rawFileName", {}).get("new", "")
+            want4 = raw_v3.replace("V003", "V004")
+            check(raw4 == want4 and ms(f"{host}.output_rawFileName") == want4,
+                  "V-Ray GPU raw output follows to V004 on its owner", raw4)
+            check(ms("maxFileName") == "test_V004.max", "scene is now test_V004.max")
+            check(ms("renderSceneDialog.isOpen() as string") == "true", "Render Setup reopened after the save")
+            ms("renderSceneDialog.close(); true")
+        else:
+            check(False, "V-Ray GPU renderer available for the GPU save branch")
 
         # ---- scene_setup round trip
         prev_lock = ms("rendLockImageAspectRatio") == "true"

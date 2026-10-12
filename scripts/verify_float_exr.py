@@ -53,9 +53,39 @@ def centre(rows):
     return red[H // 2][W // 2] if red else None
 
 
+def arm_side_outputs(tag, host):
+    """Review 2026-10-12: outputs the path policy never saw must not be written.
+
+    Turns on V-Ray "separate render channels" (when host is given) and Max's own
+    rendSaveFile, both aimed at a folder that must stay empty."""
+    side = out_dir / f"{tag}_side_outputs"
+    side.mkdir(parents=True, exist_ok=True)
+    for f in side.iterdir():
+        f.unlink()
+    if host:
+        ms(f'({host}.output_splitgbuffer = true; {host}.output_splitfilename = "{(side / "split.exr").as_posix()}"; "ok")')
+    ms(f'(rendSaveFile = true; rendOutputFilename = "{(side / "main.png").as_posix()}"; "ok")')
+    return side
+
+
+def check_side_outputs(tag, side, host, result):
+    written = sorted(p.name for p in side.iterdir())
+    check(f"{tag}: no split-channel / rendOutputFilename files written", not written, str(written))
+    if host:
+        check(f"{tag}: output_splitgbuffer switched off for the render",
+              "output_splitgbuffer=false" in (result.get("propertiesSet") or []), str(result.get("propertiesSet")))
+        check(f"{tag}: output_splitgbuffer restored afterwards",
+              ms(f"{host}.output_splitgbuffer as string") == "true")
+        ms(f'({host}.output_splitgbuffer = false; {host}.output_splitfilename = ""; "ok")')
+    ms('(rendSaveFile = false; rendOutputFilename = ""; "ok")')
+
+
 def vray_case(tag, renderer):
     ms(f"renderers.current = {renderer}()")
     print(f"\n== {tag}: {ms('(classOf renderers.current) as string')}")
+    host = "renderers.current.V_Ray_settings" if ms("(isProperty renderers.current #V_Ray_settings) as string") == "true" \
+        else "renderers.current"
+    side = arm_side_outputs(tag, host)
     for half in (False, True):
         target = out_dir / f"{tag}_{'half' if half else 'full'}.exr"
         r = json.loads(render_float_exr(output_path=str(target), width=W, height=H,
@@ -77,8 +107,8 @@ def vray_case(tag, renderer):
         check(f"{label}: centre pixel > 1.0 (unclamped)", value is not None and value > 1.0, f"R={value}")
         check(f"{label}: centre pixel ~ 5 (scene-linear)", value is not None and abs(value - 5.0) < 0.25, f"R={value}")
         check(f"{label}: tool reports fullFrame", (r.get("exr") or {}).get("fullFrame") is True)
-    host = "renderers.current.V_Ray_settings" if ms("(isProperty renderers.current #V_Ray_settings) as string") == "true" \
-        else "renderers.current"
+        if half:
+            check_side_outputs(tag, side, host, r)
     restored = ms(f'({host}.output_saveRawFile as string) + "|" + {host}.output_rawFileName + "|" + '
                   f'({host}.colorMapping_adaptationOnly as string)')
     check(f"{tag}: raw-output properties restored", restored == "false||2", repr(restored))
@@ -143,8 +173,10 @@ try:
     ms("renderers.current = Default_Scanline_Renderer()")
     ms('(local p = $mcpExrPlane; p.material = Standardmaterial diffuse:white selfIllumAmount:100)')
     target = out_dir / "scanline_fallback.exr"
+    side = arm_side_outputs("scanline", "")
     r = json.loads(render_float_exr(output_path=str(target), width=W, height=H, camera="mcpExrCam"))
     print("\n== scanline fallback:", json.dumps(r)[:400])
+    check_side_outputs("scanline", side, "", r)
     if "output" in r:
         header, rows = read_pixels(r["output"])
         types = {c.name: c.pixel_type for c in header.channels}
