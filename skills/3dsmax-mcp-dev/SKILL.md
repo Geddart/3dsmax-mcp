@@ -163,6 +163,7 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 
 ## MCP Tool Pitfalls
 
+- Property values passed to native write tools are spliced into MAXScript fallbacks, so they are refused when they contain a safe-mode blocked call (doscommand, shelllaunch, deletefile, createfile, python.execute) even with `safe_mode=false`; `execute_maxscript` alone follows the `safe_mode` setting.
 - Native bridge numbers: Max's CRT locale follows the Windows region, so on a German system `std::stof`/`sscanf("%f")`/`printf("%g")`/`std::to_string(float)` read "4.5" as 4 and write 4.5 as "4,5". In native code use only `mcp_bridge/number_text.h` (`from_chars`/`to_chars`); never call `setlocale` (process-global, changes Max). Live check: `scripts/verify_numeric_values.py <scratch PID>`.
 - PB2 colours: `(color r g b)` is 0-255 MAXScript syntax but `TYPE_RGBA`/`TYPE_FRGBA` store 0-1, so the native setter divides by 255; `[x,y,z]` passes through unscaled.
 - Native param setters return NotHandled for anything they cannot parse exactly (PB1 modifiers like Extrude, units, expressions); the handler then assigns via MAXScript by anim handle (`getAnimByHandle`, NOT `maxOps.getNodeByHandle` — `NodeHandle()` is an anim handle). Every write, native or MAXScript, is read back.

@@ -231,9 +231,11 @@ full profile now has 275 tools, and progressive discovery still exposes 3 (25 to
   caller value text into its own MAXScript (`TrySetViaMaxScript` fallbacks used by create_object,
   set_object_property, add_modifier, set_modifier_property, materials; `introspect_interface`
   property sets) and runs it via `RunMAXScript`, which never saw the safe-mode filter, so
-  `value='(DOSCommand "...")'` executed. The blocklist now lives once in
-  `HandlerHelpers::ContainsSafeModeBlockedCall` and is applied to every spliced value as well as to
-  `execute_maxscript`. Live check added to `scripts/verify_numeric_values.py`.
+  `value='(DOSCommand "...")'` would have run unfiltered (path confirmed by code reading; not
+  demonstrated against the pre-fix build). The blocklist now lives once in
+  `HandlerHelpers::ContainsSafeModeBlockedCall`. Spliced values are refused **unconditionally**,
+  even with `safe_mode=false` (no property value needs those calls), while `execute_maxscript`
+  still follows `safe_mode`. Live check added to `scripts/verify_numeric_values.py`.
 - `render_float_exr`: picked any `<stem>*.exr` as the render output, which could move an unrelated
   `shot_backup.exr` onto `shot.exr`; now only the exact target or `<stem>[.]<digits>.exr`. V-Ray
   split channels are switched off for the render and restored (hardening; the reported leak did not
