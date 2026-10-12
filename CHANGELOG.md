@@ -170,6 +170,82 @@ review round on PR #2.
 - `native/bin/mcp_bridge_2025.gup` rebuilt from source as a true Release build (4 593 664 -> 2 135 552 bytes; the committed binary was an unoptimized link — 2x `.text`, 6x `.pdata`, extra `.idata`/`.tls`/`.00cfg` sections — and predated the overlapped-I/O transport entirely). Binaries for 2023/2024/2026/2027 were **not** rebuilt: only the Max 2025 SDK is installed on this machine.
 <!-- /native -->
 
+### Added (workstream round, 2026-10-12)
+Merged from `wl/native`, `wl/camera`, `wl/vray`, `wl/files` into `wl/integrate`. 19 new tools; the
+full profile now has 275 tools, and progressive discovery still exposes 3 (25 toolsets).
+- **Read-back on every native write, `PARTIAL_APPLY`** — create_object, set_object_property,
+  add_modifier, set_modifier_property, assign_material, set_material_property(ies) and
+  transform_object read each value back (native ParamBlock2 or the MAXScript fallback) and raise
+  `PARTIAL_APPLY` (not retryable; `details.handle(s)`, `details.keys[{key, requested, applied,
+  reason}]`) when a key did not stick. The created object/modifier/material stays (the dispatcher
+  commits the undo hold). This replaces the `failedParams`/`warnings` reporting described above.
+- **Native units match MAXScript** — angle params are degrees and percentage params 0-100 on write
+  and in inspect_properties / get_material_slots / inspect_material_network (labelled `unit` /
+  `valueUnits`). Previously sliceFrom "30" was stored as 30 radians and opacity "50" as 5000 %.
+- **`render_float_exr`** (`maxmcp/tools/render_exr.py`, toolset `rendering`) — unclamped full-frame
+  float or half EXR. V-Ray CPU/GPU write the raw image file (GPU settings on
+  `renderers.current.V_Ray_settings`), restored afterwards; other renderers go through Max's EXR
+  writer. Header read back by the stdlib reader `maxmcp/helpers/exr.py`; a V-Ray region crop is
+  padded to the full frame (`paddedFrom`).
+- **Camera match** (`maxmcp/tools/camera.py`, toolset `camera`) — `set_camera`, `export_camera`,
+  `import_camera` (JSON `3dsmax-mcp/camera@1`), `project_points`, `capture_camera` (exact render
+  frame over a plate, shaded or wire). All values read back as IEEE bit patterns.
+- **V-Ray** (`maxmcp/tools/vray.py`, toolset `vray`) — `vray_set_renderer`, `vray_get_settings`,
+  `vray_set_settings`, `vray_list_render_elements`, `vray_add_render_element`,
+  `vray_remove_render_element`, `vray_get_object_properties`, `vray_set_object_properties`.
+- **Scene files** (`maxmcp/tools/scene_files.py`, toolset `scene_files`) — `export_geometry`
+  (OBJ/JSON written inside Max), `save_scene_versioned` (next `_V###`, retargets render-output,
+  element and V-Ray paths), `scene_setup` (units, fps, range, render size, pixel aspect).
+- Every new file-writing tool goes through `maxmcp/path_policy.resolve_write_path` with the open
+  scene's folder; refused paths fail with `SAFE_MODE` before anything is written.
+- **Upstream picks** (ported onto the fork's read-back and locale handling):
+  - `material_roles` (toolset `materials`) — upstream `6e17afe`, completed in `c2530b0`.
+  - `contact_check` (toolset `modeling`) — upstream `57bc91d`, intersection fix in `c2530b0`.
+  - inspect_material_network reads six levels deep by default, up to 16 — upstream `5681ddf`.
+  - UTF-8 texture paths decoded as wide on Windows / kept through material remapping — upstream
+    `2dd9ed6`, `5c960bb`.
+  - Sanitized plugin class lookup and inspection aliases — upstream `8a756dc`
+    (the `plugin_access.cpp` hunk dropped: file absent in this fork).
+  - Phoenix FD detection (`PHX*` / `PhoenixFD*`) and control-character class names
+    (`_CoronaPhysicalMtl`) — upstream `ad0ec8e`.
+  - assign_material validates targets and params before creating anything (hand-port of the
+    validation hunk of upstream `cae21ab`; a failed key raises the fork's `PARTIAL_APPLY` instead
+    of deleting the material).
+
+### Fixed (workstream round, 2026-10-12)
+- `render() outputFile:".exr"` with V-Ray clamped at 1.0 (Max's frame buffer is not 32-bit by
+  default); use `render_float_exr`. `render_scene` itself is unchanged and still clamps.
+- contact_check on de-DE: `units.decodeValue "0.1mm"` decoded to 0.0 and a Python `1.0` reached
+  MAXScript as the Integer `1`; thresholds are now coerced `as float` and defaults decoded from
+  whole millimetres.
+- `capture_camera(mode="wire")` cropped the physical-pixel viewport DIB with logical
+  `gw.getWinSizeX/Y`; at 200 % UI scaling the matte was 180-200 px off. Found and fixed during
+  integration.
+- `create_object_verified` passed create_object's JSON report as a node name ("Object not found:
+  {...}") since the 1.5.5 merge; it now reads the name from the report (`createResult` added).
+- `scripts/verify_upstream_picks.py` compared contact_check defaults at 1e-9 against a 7-digit
+  `as string`; failed in an inch-unit scene (Max 2027). Now relative 1e-6 against `.9g`.
+
+### Verification (workstream round, 2026-10-12)
+- Python: 692 tests pass. Native unit tests (transport, number_text under de-DE, param_units) pass
+  from the merged tree.
+- `native/bin/mcp_bridge_2025.gup` (sha256 `fbe2895f…`) and `mcp_bridge_2027.gup` (`7f580f8e…`) are
+  the `wl/native` builds; no native source changed after them. Both staged in
+  `C:\ProgramData\Autodesk\ApplicationPlugins\3dsmax-mcp\Contents\bin`.
+- **Live, scratch Max 2025 (V-Ray 7.40.04):** `verify_numeric_values.py`, `verify_upstream_picks.py`,
+  `verify_float_exr.py` (V-Ray GPU + CPU, float + half, centre R = 5.0, region padding, scanline
+  fallback), `verify_camera.py` (projection ≤ 0.041 px vs Scanline; wire capture after the DPI fix),
+  `verify_vray.py`, `verify_scene_files.py`, `verify_ui_jobs.py` and
+  `verify_feature_catalog.py --pid` (FULL 275, legacy names 188 retained, progressive 275 ops /
+  25 groups, schemas identical) — all pass. The `*_verified` wrappers were smoke-tested:
+  PARTIAL_APPLY surfaces as the envelope error with its hint.
+- **Live, scratch Max 2027 (no V-Ray):** `verify_numeric_values.py` (V-Ray case skipped) and
+  `verify_upstream_picks.py` pass. This is the first live load of the rebuilt 2027 bridge.
+- **Not verified:** `mcp_bridge_2023/2024/2026.gup` were not rebuilt and have neither read-back nor
+  `PARTIAL_APPLY`. camera / vray / scene_files / render_float_exr were not run in Max 2027.
+  The non-V-Ray EXR fallback always writes half float. `plugin_introspect_handlers.cpp` still
+  reports raw stored values (radians, 0-1) and `TYPE_COLOR_CHANNEL` scaling is unchecked.
+
 ## [0.5.3.1-fork] - 2026-04-17
 
 Bugfix release on top of v0.5.3+fork after a full trace of the server start/stop and MCP slot logic.

@@ -216,6 +216,8 @@ The `code` string is delivered as a JSON value, so it is **un-escaped once befor
 - In bridge-built MAXScript, `case classOf v of (Color: ... Point4: ...)` inside a `collect` failed to parse (Max 2025); use an if/else chain.
 - Locale (de-DE): `units.decodeValue` parses with the Windows locale, so `"0.1mm"` decodes to 0.0 and `"1.5cm"` to 1.0 — use whole units (`(units.decodeValue "1mm") / 10.0`). Python formats `1.0` as `"1"`, which MAXScript reads as an Integer, and `formattedPrint` of an Integer with `".7g"` prints 4.94e-324 — coerce with `as float`. `formattedPrint` itself writes '.'.
 - Exact, locale-free float read-back: return `bit.floatAsInt v` and decode the IEEE-754 bit pattern in Python (camera tools do this).
+- `gw.getViewportDib()` is in PHYSICAL pixels, `gw.getWinSizeX/Y` and `gw.wTransPoint` in DPI-scaled logical pixels (2628x1350 vs 1314x675 at 200 % UI scale). Crop a DIB with its own `.width`/`.height`, never with the window size.
+- `x as string` keeps ~7 significant digits (`0.0393701` for 1 mm in an inch scene); use `formattedPrint x format:".9g"` when comparing tightly.
 - `Nf` time literals are converted to ticks at parse time with the CURRENT frame rate: set `frameRate` first, then the range with plain integers, or the range lands on the wrong frames.
 - An open Render Setup dialog writes its stale values back over `renderWidth`/`renderHeight` edits, and `rendLockImageAspectRatio` constrains them: close the dialog and release the lock around size edits, restoring both even when a setter throws (`scene_setup` does).
 - Max's OBJ exporter takes its settings from a shared per-user ini (ZBrush preset, Y/Z flip, .mtl side files) that cannot be set per call — `export_geometry` writes OBJ/JSON from MAXScript instead.

@@ -194,11 +194,15 @@ try:
     check("contact_check tolerance parsed as 0.01", abs(report.get("tolerance", 0) - 0.01) < 1e-9,
           str(report.get("tolerance")))
     # Defaults: 0.1 mm / 10 mm decoded without locale-dependent decimals.
-    one_mm = float(ms('(units.decodeValue "1mm") as string'))
+    # `as string` keeps only ~7 digits (0.0393701 in an inch scene), too coarse for 1e-9.
+    one_mm = float(ms('formattedPrint (units.decodeValue "1mm") format:".9g"'))
     default_report = contact_check(names=["ccA", "ccC"])
-    check("contact_check default tolerance = 0.1 mm", abs(default_report["tolerance"] - one_mm / 10) < 1e-9,
+    # The report prints 7 significant digits (formattedPrint ".7g"): compare relatively.
+    check("contact_check default tolerance = 0.1 mm",
+          abs(default_report["tolerance"] - one_mm / 10) <= 1e-6 * one_mm / 10,
           f"{default_report['tolerance']} (1mm={one_mm})")
-    check("contact_check default near_gap = 10 mm", abs(default_report["near_gap"] - one_mm * 10) < 1e-9,
+    check("contact_check default near_gap = 10 mm",
+          abs(default_report["near_gap"] - one_mm * 10) <= 1e-6 * one_mm * 10,
           str(default_report["near_gap"]))
     scene_after = ms("objects.count as string") + "|" + ms("selection.count as string")
     check("contact_check left the scene unchanged", scene_after == scene_before, f"{scene_before} -> {scene_after}")
