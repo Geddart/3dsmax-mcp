@@ -1,0 +1,72 @@
+"""Deploy this merged checkout with reversible backups; no scene operations."""
+from pathlib import Path
+import hashlib,json,os,shutil,subprocess,sys,time,winreg
+ROOT=Path(__file__).resolve().parents[1]
+USER=Path.home()
+assert str(USER).lower() == r'C:\Users\sasch'.lower(), 'Run elevation as the same Windows user'
+sys.stdout=open(ROOT/'.deployment-log.txt','a',encoding='utf-8',buffering=1)
+sys.stderr=sys.stdout
+STAMP=time.strftime('%Y%m%d-%H%M%S')
+BACKUP=ROOT/'.deployment-backup'/STAMP
+BACKUP.mkdir(parents=True)
+manifest=[]
+def backup(path):
+    path=Path(path)
+    if not path.exists():return
+    dest=BACKUP/str(len(manifest))
+    if path.is_dir():shutil.copytree(path,dest)
+    else:shutil.copy2(path,dest)
+    manifest.append({'original':str(path),'backup':str(dest)})
+    (BACKUP/'manifest.json').write_text(json.dumps(manifest,indent=2))
+# Parse configs before any deployment. Do not reset unreadable files.
+claude_paths=[USER/'.claude.json',Path(os.environ['APPDATA'])/'Claude/claude_desktop_config.json']
+packages=Path(os.environ['LOCALAPPDATA'])/'Packages'
+claude_paths+=list(packages.glob('Claude_*/LocalCache/Roaming/Claude/claude_desktop_config.json'))
+configs={p:json.loads(p.read_text(encoding='utf-8-sig')) for p in claude_paths if p.exists()}
+for p in [USER/'.codex/config.toml',*configs.keys(),Path(os.environ['LOCALAPPDATA'])/'3dsmax-mcp',USER/'.claude/skills/3dsmax-mcp-dev',USER/'.agents/skills/3dsmax-mcp-dev']:
+    backup(p)
+package=Path(os.environ['ProgramData'])/'Autodesk/ApplicationPlugins/3dsmax-mcp'
+backup(package)
+legacy=[]
+maxdirs=set()
+for year in range(2023,2028):
+    maxdirs.add(Path('C:/Program Files/Autodesk')/f'3ds Max {year}')
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,rf'SOFTWARE\Autodesk\3dsMax\{year-1998}.0') as key:
+            maxdirs.add(Path(winreg.QueryValueEx(key,'Installdir')[0]))
+    except FileNotFoundError:
+        pass
+for maxdir in sorted(maxdirs):
+    for rel in ['plugins/mcp_bridge.gup','scripts/mcp/mcp_server.ms','scripts/startup/mcp_autostart.ms']:
+        p=maxdir/rel
+        if p.exists():backup(p);legacy.append(p)
+# Deploy all staged files and validate byte-for-byte before disabling the legacy copies.
+stage=ROOT/'.staged-bundle'
+assert (stage/'PackageContents.xml').is_file()
+package.mkdir(parents=True,exist_ok=True)
+for src in stage.rglob('*'):
+    if src.is_file() and src.name != 'PackageContents.xml':
+        dst=package/src.relative_to(stage);dst.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(src,dst)
+        assert hashlib.sha256(src.read_bytes()).digest()==hashlib.sha256(dst.read_bytes()).digest(),dst
+for p in legacy:
+    # Individual known files only; retain a sibling rollback copy outside loadable extensions.
+    dst=p.with_name(p.name+'.pre-'+STAMP)
+    p.rename(dst)
+# Current native binaries are installed. Preserve all other user config values.
+sys.path.insert(0,str(ROOT))
+import install
+install.deploy_config(tool_profile='progressive')
+entry={'command':str(ROOT/'.venv/Scripts/3dsmax-mcp.exe'),'args':[],'env':{'MCP_TOOL_PROFILE':'progressive'}}
+for p,cfg in configs.items():
+    cfg.setdefault('mcpServers',{})['3dsmax-mcp']=dict(entry,**({'type':'stdio'} if p.name=='.claude.json' else {}))
+    p.write_text(json.dumps(cfg,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+subprocess.run([sys.executable,str(ROOT/'scripts/build_skill.py'),'--target','both'],check=True)
+codex=shutil.which('codex') or str(USER/'AppData/Roaming/npm/codex.cmd')
+subprocess.run(subprocess.list2cmdline([codex,'mcp','add','3dsmax-mcp','--env','MCP_TOOL_PROFILE=progressive','--',entry['command']]),shell=True,check=True)
+# Activate only after legacy files and client configuration have been updated.
+shutil.copy2(stage/'PackageContents.xml',package/'PackageContents.xml')
+pending=package/'PackageContents.xml.pending-1.5.5'
+if pending.exists():pending.unlink()
+print('DEPLOYED',package)
+print('BACKUP',BACKUP)
+print('CLAUDE_CONFIGS',len(configs))

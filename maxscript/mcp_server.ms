@@ -1,73 +1,5 @@
-/*
-	3ds Max MCP Server - TCP Socket v2.0
-	Non-blocking TCP command server for Model Context Protocol bridge
-	Supports multi-instance via slot system (ports 8765-8767)
-
-	Usage:
-		-- Slot-based (recommended):
-		MCP_StartSlot 1    -- start on port 8765
-		MCP_StartSlot 2    -- start on port 8766
-		MCP_StopServer()   -- stop current server
-
-		-- Direct (backward compat):
-		MCP_Server = MCPServerStruct()
-		MCP_Server.start()
-		MCP_Server.stop()
-
-	Protocol: JSON over TCP
-	- Client connects, sends JSON + newline
-	- Server executes, returns JSON + newline, closes connection
-*/
-
--- Stop any existing server before redefining globals
-if MCP_Server != undefined and MCP_Server.isRunning then
-(
-	try (MCP_Server.stop()) catch ()
-)
-
-global MCP_Server = undefined
-global MCP_ActiveSlot = 0
-global MCP_BasePort = 8765
-
-struct MCPServerStruct
-(
-	timer = undefined,
-	listener = undefined,
-	isRunning = false,
-	port = 8765,
-	slot = 0,
-	pid = 0,
-	safeMode = true,
-	protocolVersion = 2,
-
-	-- Load safe_mode from shared config: %LOCALAPPDATA%\3dsmax-mcp\mcp_config.ini
-	fn loadSafeMode =
-	(
-		local iniPath = (dotNetClass "System.Environment").GetFolderPath (dotNetClass "System.Environment+SpecialFolder").LocalApplicationData
-		iniPath += "\\3dsmax-mcp\\mcp_config.ini"
-		local val = "true"
-		try (val = getINISetting iniPath "mcp" "safe_mode") catch ()
-		if val == "" do val = "true"
-		val = toLower (trimLeft (trimRight val))
-		not (val == "false" or val == "0" or val == "off")
-	),
-
-	-- Parse a hex string (e.g. "00e9") to integer for \uXXXX decoding
-	fn hexToInt hexStr =
-	(
-		local val = 0
-		for i = 1 to hexStr.count do
-		(
-			local c = bit.charAsInt (toLower hexStr[i])
-			local d = if c >= 48 and c <= 57 then c - 48
-					  else if c >= 97 and c <= 102 then c - 87
-					  else 0
-			val = val * 16 + d
-		)
-		val
-	),
-
-	-- Escape a string for safe JSON embedding (handles all JSON-required escapes)
+-- Native MCP helpers and instance UI. No TCP listener.
+struct MCPNativeHelpers (
 	fn escapeJsonString str =
 	(
 		if str == undefined then return ""
@@ -105,384 +37,62 @@ struct MCPServerStruct
 			s = result
 		)
 		s
-	),
-
-	-- Build a JSON response string
-	fn buildResponse success result errorMsg requestId:"" startedAt:0 cmdType:"maxscript" =
-	(
-		local safeResult = escapeJsonString (if result != undefined then (result as string) else "")
-		local safeError = escapeJsonString errorMsg
-		local successStr = if success then "true" else "false"
-		local safeReqId = escapeJsonString requestId
-		local safeCmdType = escapeJsonString cmdType
-		local reqField = if requestId != "" then ("\"" + safeReqId + "\"") else "null"
-		local durationMs = amax #(0, (timeStamp() - startedAt))
-
-		"{" + \
-			"\"success\":" + successStr + "," + \
-			"\"requestId\":" + reqField + "," + \
-			"\"result\":\"" + safeResult + "\"," + \
-			"\"error\":\"" + safeError + "\"," + \
-			"\"meta\":{" + \
-				"\"protocolVersion\":" + (protocolVersion as string) + "," + \
-				"\"cmdType\":\"" + safeCmdType + "\"," + \
-				"\"safeMode\":" + (if safeMode then "true" else "false") + "," + \
-				"\"durationMs\":" + (durationMs as string) + \
-			"}" + \
-		"}"
-	),
-
-	-- Extract a JSON string value by key (simple parser)
-	fn extractJsonValue jsonStr key =
-	(
-		searchKey = "\"" + key + "\""
-		keyPos = findString jsonStr searchKey
-		if keyPos == undefined then return ""
-
-		colonPos = findString (substring jsonStr (keyPos + searchKey.count) -1) ":"
-		if colonPos == undefined then return ""
-		startPos = keyPos + searchKey.count + colonPos
-
-		while startPos <= jsonStr.count and (jsonStr[startPos] == " " or jsonStr[startPos] == "\t") do
-			startPos += 1
-
-		if startPos > jsonStr.count then return ""
-
-		if jsonStr[startPos] == "\"" then
-		(
-			pos = startPos + 1
-			result = ""
-			while pos <= jsonStr.count do
-			(
-				if jsonStr[pos] == "\\" and pos + 1 <= jsonStr.count then
-				(
-					nextChar = jsonStr[pos + 1]
-					if nextChar == "\"" then (result += "\""; pos += 2)
-					else if nextChar == "\\" then (result += "\\"; pos += 2)
-					else if nextChar == "n" then (result += "\n"; pos += 2)
-					else if nextChar == "r" then (result += "\r"; pos += 2)
-					else if nextChar == "t" then (result += "\t"; pos += 2)
-					else if nextChar == "b" then (result += (bit.intAsChar 8); pos += 2)
-					else if nextChar == "f" then (result += (bit.intAsChar 12); pos += 2)
-					else if nextChar == "/" then (result += "/"; pos += 2)
-					else if nextChar == "u" and pos + 5 <= jsonStr.count then
-					(
-						local hexStr = substring jsonStr (pos + 2) 4
-						local codepoint = hexToInt hexStr
-						if codepoint > 0 then
-						(
-							if codepoint <= 255 then
-								result += bit.intAsChar codepoint
-							else
-								try (result += ((dotNetClass "System.Char").ConvertFromUtf32 codepoint))
-								catch (result += "?")
-						)
-						pos += 6
-					)
-					else (result += jsonStr[pos]; pos += 1)
-				)
-				else if jsonStr[pos] == "\"" then
-				(
-					exit
-				)
-				else
-				(
-					result += jsonStr[pos]
-					pos += 1
-				)
-			)
-			return result
-		)
-		else
-		(
-			pos = startPos
-			while pos <= jsonStr.count and jsonStr[pos] != "," and jsonStr[pos] != "}" do
-				pos += 1
-			return (trimRight (trimLeft (substring jsonStr startPos (pos - startPos))))
-		)
-	),
-
-	-- Process a request and return JSON response
-	fn processRequest jsonString =
-	(
-		local response = ""
-		local startedAt = timeStamp()
-
-		try
-		(
-			local command = extractJsonValue jsonString "command"
-			local cmdType = extractJsonValue jsonString "type"
-			local requestId = extractJsonValue jsonString "requestId"
-
-			if cmdType == "" do cmdType = "maxscript"
-
-			if cmdType != "ping" and command == "" then
-			(
-				return (buildResponse false undefined "Empty command" requestId:requestId startedAt:startedAt cmdType:cmdType)
-			)
-
-			local result = undefined
-			local success = true
-			local errorMsg = ""
-			local savedSafeMode = safeMode
-
-			try
-			(
-				if cmdType == "ping" then
-				(
-					local maxYear = ((1998 + ((maxVersion())[1] / 1000)) as integer)
-					local rendererName = try ((classOf renderers.current) as string) catch "unknown"
-					result = "{\"pong\":true" + \
-						",\"server\":\"3dsmax-mcp\"" + \
-						",\"protocolVersion\":" + (protocolVersion as string) + \
-						",\"maxVersion\":" + (maxYear as string) + \
-						",\"renderer\":\"" + (escapeJsonString rendererName) + "\"" + \
-						",\"objectCount\":" + (objects.count as string) + \
-						",\"selectionCount\":" + (selection.count as string) + \
-						",\"safeMode\":" + (if safeMode then "true" else "false") + \
-						",\"port\":" + (port as string) + "}"
-				)
-				else if cmdType == "maxscript" then
-				(
-					if safeMode then
-					(
-						-- Block dangerous commands
-						local lowerCmd = toLower command
-						local blocked = #("doscommand", "shelllaunch", "deletefile", "python.execute", "createfile", "hiddendoscommand")
-						local isBlocked = false
-						for b in blocked while not isBlocked do
-							if findString lowerCmd b != undefined do isBlocked = true
-						if isBlocked then
-						(
-							success = false
-							errorMsg = "Blocked by safe mode. Set safe_mode=false in %LOCALAPPDATA%\\3dsmax-mcp\\mcp_config.ini to disable."
-						)
-						else
-							result = execute command
-					)
-					else
-						result = execute command
-				)
-				else if cmdType == "python" then
-				(
-					if safeMode then
-					(
-						success = false
-						errorMsg = "Python execution blocked by safe mode"
-					)
-					else
-					(
-						python.Execute command
-						result = "Python executed"
-					)
-				)
-				else
-				(
-					success = false
-					errorMsg = "Unknown command type: " + cmdType
-				)
-			)
-			catch
-			(
-				success = false
-				errorMsg = getCurrentException()
-			)
-
-			-- Restore safeMode so commands cannot tamper with it
-			safeMode = savedSafeMode
-
-			response = buildResponse success result errorMsg requestId:requestId startedAt:startedAt cmdType:cmdType
-		)
-		catch
-		(
-			response = buildResponse false undefined ("Parse error: " + (getCurrentException())) startedAt:startedAt
-		)
-
-		response
-	),
-
-	-- Handle a single client connection
-	fn handleClient client =
-	(
-		try
-		(
-			stream = client.GetStream()
-			reader = dotNetObject "System.IO.StreamReader" stream
-			writer = dotNetObject "System.IO.StreamWriter" stream
-
-			-- Read the request line
-			requestLine = reader.ReadLine()
-
-			-- Convert .NET string to MAXScript string
-			requestStr = requestLine as string
-
-			format "MCP: Received request: %\n" requestStr
-
-			if requestStr != undefined and requestStr.count > 0 then
-			(
-				-- Process and send response
-				responseStr = processRequest requestStr
-				format "MCP: Sending response: %\n" responseStr
-				writer.WriteLine responseStr
-				writer.Flush()
-			)
-			else
-			(
-				format "MCP: Empty request received\n"
-			)
-
-			reader.Close()
-			writer.Close()
-			client.Close()
-		)
-		catch
-		(
-			format "MCP: Client error: %\n" (getCurrentException())
-			try (client.Close()) catch ()
-		)
-	),
-
-	-- Timer tick: check for pending connections
-	fn onTick sender args =
-	(
-		if MCP_Server == undefined or not MCP_Server.isRunning then return()
-		if MCP_Server.listener == undefined then return()
-
-		-- Guard: only process if this tick came from the current server's timer.
-		-- Orphaned timers from failed reloads will self-stop here.
-		if MCP_Server.timer != sender then
-		(
-			try (sender.Stop(); dotNet.removeAllEventHandlers sender) catch ()
-			format "MCP: Killed orphaned timer\n"
-			return()
-		)
-
-		try
-		(
-			-- Check if there's a pending connection (non-blocking)
-			local hasPending = MCP_Server.listener.Pending()
-			if hasPending then
-			(
-				local client = MCP_Server.listener.AcceptTcpClient()
-				MCP_Server.handleClient client
-			)
-		)
-		catch
-		(
-			-- Listener is invalid — stop server to prevent error flood
-			format "MCP: Listener error, stopping server: %\n" (getCurrentException())
-			try (MCP_Server.stop()) catch ()
-		)
-	),
-
-	-- Start the TCP server
-	fn start =
-	(
-		if not isRunning then
-		(
-			try
-			(
-				-- Capture PID (two-step to avoid parser issue with chained calls)
-				local proc = (dotNetClass "System.Diagnostics.Process").GetCurrentProcess()
-				pid = proc.Id
-
-				-- Create TCP listener
-				ipAddress = (dotNetClass "System.Net.IPAddress").Parse "127.0.0.1"
-				listener = dotNetObject "System.Net.Sockets.TcpListener" ipAddress port
-				listener.Start()
-
-				-- Create timer to poll for connections
-				timer = dotNetObject "System.Windows.Forms.Timer"
-				timer.Interval = 50  -- 50ms polling
-
-				dotNet.addEventHandler timer "Tick" onTick
-				timer.Start()
-				isRunning = true
-
-				local slotStr = if slot > 0 then (" slot " + slot as string) else ""
-				format "MCP Server started (TCP on port %%,  PID %)\n" port slotStr pid
-			)
-			catch
-			(
-				format "MCP: Failed to start on port %: %\n" port (getCurrentException())
-			)
-		)
-		else
-		(
-			format "MCP Server already running on port %\n" port
-		)
-	),
-
-	-- Stop the server
-	fn stop =
-	(
-		if isRunning then
-		(
-			try (timer.Stop()) catch ()
-			try (dotNet.removeAllEventHandlers timer) catch ()
-			try (listener.Stop()) catch ()
-			isRunning = false
-			timer = undefined
-			listener = undefined
-			local slotStr = if slot > 0 then (" slot " + slot as string) else ""
-			format "MCP Server stopped (port %%)\n" port slotStr
-		)
-		else
-		(
-			-- Defensive cleanup: stop timer/listener even if isRunning was false
-			try (if timer != undefined do (timer.Stop(); dotNet.removeAllEventHandlers timer; timer = undefined)) catch ()
-			try (if listener != undefined do (listener.Stop(); listener = undefined)) catch ()
-			format "MCP Server is not running\n"
-		)
-	),
-
-	-- Restart the server
-	fn restart =
-	(
-		stop()
-		start()
 	)
 )
+global MCP_Server = MCPNativeHelpers()
 
--- ============================================================
--- Slot management functions
--- ============================================================
+global MCP_InstancePanel
+fn MCP_ConfigDirectory = ((dotNetClass "System.Environment").GetFolderPath (dotNetClass "System.Environment+SpecialFolder").LocalApplicationData) + "/3dsmax-mcp"
 
-fn MCP_StartSlot slotNum =
-(
-	if slotNum < 1 or slotNum > 3 then
-	(
-		format "MCP: Invalid slot % (must be 1-3)\n" slotNum
-		return false
-	)
-
-	-- Stop existing server if running
-	if MCP_Server != undefined and MCP_Server.isRunning then
-		MCP_Server.stop()
-
-	-- Create new server on slot's port
-	MCP_Server = MCPServerStruct()
-	MCP_Server.slot = slotNum
-	MCP_Server.port = MCP_BasePort + slotNum - 1
-	MCP_Server.safeMode = MCP_Server.loadSafeMode()
-	MCP_Server.start()
-	MCP_ActiveSlot = if MCP_Server.isRunning then slotNum else 0
-	MCP_Server.isRunning
+fn MCP_ClaimProcess processId = (
+    local io = dotNetClass "System.IO.File"
+    local config = MCP_ConfigDirectory()
+    local record = config + "/instances/pid-" + (processId as string) + ".json"
+    local proc = (dotNetClass "System.Diagnostics.Process").GetProcessById processId
+    if proc.ProcessName != "3dsmax" or not (io.Exists record) do throw "This process has no native MCP discovery record"
+    io.Copy record (config + "/active_instance.json") true
+    format "MCP target: PID %\n" processId
 )
 
-fn MCP_StopServer =
-(
-	if MCP_Server != undefined and MCP_Server.isRunning then
-		MCP_Server.stop()
-	MCP_ActiveSlot = 0
-	true
+rollout MCP_InstancePanel "MCP Native Instances" width:540 height:175 (
+    local processIds = #()
+    label status "Native named pipes - no ports or slots" align:#left
+    dropdownList targets "Running Max instances:" items:#() width:515
+    button refresh "Refresh" width:120 across:2
+    button claim "Use selected instance" width:260
+    label detail "Claim sets the default; an MCP session may explicitly pin its own target." align:#left
+    fn refreshInstances = (
+        local rows = #()
+        processIds = #()
+        local io = dotNetClass "System.IO.File"
+        local regex = dotNetClass "System.Text.RegularExpressions.Regex"
+        local config = MCP_ConfigDirectory()
+        for proc in (dotNetClass "System.Diagnostics.Process").GetProcessesByName "3dsmax" do (
+            local record = config + "/instances/pid-" + (proc.Id as string) + ".json"
+            if io.Exists record do (
+                local raw = io.ReadAllText record
+                local version = (regex.Match raw "\"max_version\"\\s*:\\s*(\\d+)").Groups.Item[1].Value as string
+                append processIds proc.Id
+                append rows ("Max " + version + " | PID " + (proc.Id as string) + " | " + (proc.MainWindowTitle as string))
+            )
+        )
+        targets.items = rows
+        if rows.count > 0 do targets.selection = 1
+        status.text = "Native instances found: " + (rows.count as string)
+    )
+    on MCP_InstancePanel open do refreshInstances()
+    on refresh pressed do refreshInstances()
+    on claim pressed do (
+        if targets.selection > 0 do (
+            try (MCP_ClaimProcess processIds[targets.selection]; status.text = "Default target: PID " + (processIds[targets.selection] as string))
+            catch (status.text = getCurrentException() as string)
+        )
+    )
 )
 
-fn MCP_GetStatus =
-(
-	local running = MCP_Server != undefined and MCP_Server.isRunning
-	local p = if running then MCP_Server.port else 0
-	local s = if running then MCP_Server.slot else 0
-	local pid = if running then MCP_Server.pid else 0
-	#(s, p, running, pid)
+macroScript MCP_Claim_This_Max category:"MCP" tooltip:"Use this native Max instance" buttonText:"MCP Claim This Max" (
+    on execute do MCP_ClaimProcess ((dotNetClass "System.Diagnostics.Process").GetCurrentProcess()).Id
+)
+macroScript MCP_Instances category:"MCP" tooltip:"Choose a native Max instance" buttonText:"MCP Instances" (
+    on execute do (try(destroyDialog MCP_InstancePanel)catch(); createDialog MCP_InstancePanel)
 )

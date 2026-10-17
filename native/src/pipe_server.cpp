@@ -2,8 +2,10 @@
 #include "mcp_bridge/bridge_gup.h"
 #include "mcp_bridge/command_dispatcher.h"
 #include "mcp_bridge/native_handlers.h"
+#include "mcp_bridge/pipe_io.h"
 
-PipeServer::PipeServer(MCPBridgeGUP* gup) : gup_(gup) {
+PipeServer::PipeServer(MCPBridgeGUP* gup, std::wstring pipe_name)
+    : gup_(gup), pipe_name_(std::move(pipe_name)) {
     shutdown_event_ = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 }
 
@@ -61,9 +63,8 @@ void PipeServer::AcceptLoop() {
         // Cleanup finished client threads periodically
         CleanupFinishedThreads();
 
-        // Create pipe with UNLIMITED instances — multiple clients can connect
         HANDLE pipe = CreateNamedPipeW(
-            PIPE_NAME,
+            pipe_name_.c_str(),
             PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,
@@ -79,31 +80,20 @@ void PipeServer::AcceptLoop() {
         }
 
         // Wait for client with overlapped I/O so we can detect shutdown
-        OVERLAPPED overlapped = {};
-        overlapped.hEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-
-        BOOL connected = ConnectNamedPipe(pipe, &overlapped);
-        if (!connected) {
-            DWORD err = GetLastError();
-            if (err == ERROR_IO_PENDING) {
-                HANDLE events[2] = { overlapped.hEvent, shutdown_event_ };
-                DWORD wait = WaitForMultipleObjects(2, events, FALSE, INFINITE);
-
-                if (wait == WAIT_OBJECT_0 + 1) {
-                    // Shutdown
-                    CancelIoEx(pipe, &overlapped);
-                    CloseHandle(overlapped.hEvent);
-                    CloseHandle(pipe);
-                    break;
-                }
-            } else if (err != ERROR_PIPE_CONNECTED) {
-                CloseHandle(overlapped.hEvent);
-                CloseHandle(pipe);
-                continue;
-            }
+        PipeIOEvent connection;
+        if (!connection.operation.hEvent) {
+            CloseHandle(pipe);
+            break;
         }
-
-        CloseHandle(overlapped.hEvent);
+        BOOL connected = ConnectNamedPipe(pipe, &connection.operation);
+        const DWORD error = connected ? ERROR_SUCCESS : GetLastError();
+        DWORD transferred = 0;
+        if (error != ERROR_PIPE_CONNECTED &&
+            !CompletePipeIO(pipe, connection.operation, connected, error, shutdown_event_, transferred)) {
+            CloseHandle(pipe);
+            continue;
+        }
+        if (!running_.load()) { CloseHandle(pipe); break; }
 
         // Spawn a thread for this client — accept loop immediately creates
         // the next pipe instance so another client can connect with zero delay
@@ -156,30 +146,25 @@ void PipeServer::HandleClient(HANDLE pipe) {
 std::string PipeServer::ReadRequest(HANDLE pipe) {
     std::string data;
     char buf[4096];
-    DWORD bytes_read = 0;
-
-    while (true) {
-        BOOL ok = ReadFile(pipe, buf, sizeof(buf), &bytes_read, nullptr);
+    // One event for the whole request, reset per chunk — a large request used to
+    // burn a CreateEvent/CloseHandle pair every 4 KB.
+    PipeIOEvent read;
+    if (!read.operation.hEvent) return {};
+    while (running_.load()) {
+        read.Reset();
+        DWORD bytes_read = 0;
+        BOOL ok = ReadFile(pipe, buf, sizeof(buf), &bytes_read, &read.operation);
+        const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+        if (!CompletePipeIO(pipe, read.operation, ok, error, shutdown_event_, bytes_read)) return {};
+        if (bytes_read == 0) return {};
         if (bytes_read > 0) {
             data.append(buf, bytes_read);
         }
         if (data.find('\n') != std::string::npos) {
             break;
         }
-        if (!ok) {
-            DWORD err = GetLastError();
-            if (err == ERROR_MORE_DATA) {
-                continue;
-            }
-            if (err == ERROR_BROKEN_PIPE || err == ERROR_OPERATION_ABORTED) {
-                break;
-            }
-            break;
-        }
-        if (bytes_read == 0) {
-            break;
-        }
     }
+    if (data.find('\n') == std::string::npos) return {};
 
     while (!data.empty() && (data.back() == '\n' || data.back() == '\r')) {
         data.pop_back();
@@ -193,9 +178,14 @@ bool PipeServer::WriteResponse(HANDLE pipe, const std::string& response) {
     DWORD total = static_cast<DWORD>(out.size());
     const char* ptr = out.c_str();
 
+    PipeIOEvent write;
+    if (!write.operation.hEvent) return false;
     while (total > 0) {
-        BOOL ok = WriteFile(pipe, ptr, total, &written, nullptr);
-        if (!ok || written == 0) return false;
+        write.Reset();
+        written = 0;
+        BOOL ok = WriteFile(pipe, ptr, total, &written, &write.operation);
+        const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+        if (!CompletePipeIO(pipe, write.operation, ok, error, shutdown_event_, written) || written == 0) return false;
         ptr += written;
         total -= written;
     }
